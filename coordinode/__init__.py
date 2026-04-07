@@ -1,0 +1,36 @@
+"""
+CoordiNode Python SDK — graph + vector + full-text in one query.
+
+Quick start::
+
+    from coordinode import CoordinodeClient
+
+    with CoordinodeClient("localhost:7080") as db:
+        result = db.cypher("MATCH (n:Concept) RETURN n LIMIT 5")
+        for row in result.rows:
+            print(row)
+
+Async::
+
+    from coordinode import AsyncCoordinodeClient
+
+    async with AsyncCoordinodeClient("localhost:7080") as db:
+        result = await db.cypher("MATCH (n) RETURN count(n) AS total")
+"""
+
+from coordinode.client import (
+    AsyncCoordinodeClient,
+    CoordinodeClient,
+    EdgeResult,
+    NodeResult,
+    VectorResult,
+)
+
+__version__ = "0.3.0a1"
+__all__ = [
+    "CoordinodeClient",
+    "AsyncCoordinodeClient",
+    "NodeResult",
+    "EdgeResult",
+    "VectorResult",
+]

@@ -1,0 +1,31 @@
+version: "3.9"
+
+# CoordiNode development stack for SDK integration testing.
+# Usage:
+#   docker compose up -d
+#   curl http://localhost:7084/health
+
+services:
+  coordinode:
+    image: ghcr.io/structured-world/coordinode:latest
+    container_name: coordinode
+    ports:
+      - "7080:7080"   # gRPC
+      - "7081:7081"   # REST / HTTP
+      - "7084:7084"   # Prometheus + /health + /ready
+    volumes:
+      - coordinode_data:/data
+    command:
+      - serve
+      - --addr=[::]:7080
+      - --data=/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7084/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  coordinode_data:
