@@ -1,8 +1,25 @@
-"""Unit tests for _types.py — PropertyValue conversion round-trips."""
+"""Unit tests for _types.py — PropertyValue conversion round-trips.
+
+TestFromPropertyValue: pure mock-based, runs without proto stubs.
+TestToPropertyValue:   requires generated proto stubs (make proto).
+                       Tests are skipped automatically when stubs are absent.
+"""
 
 import pytest
 
 from coordinode._types import from_property_value, to_property_value
+
+# Detect whether proto stubs have been generated.
+try:
+    from coordinode._proto.coordinode.v1.common.types_pb2 import PropertyValue  # noqa: F401
+    _HAS_PROTO = True
+except ImportError:
+    _HAS_PROTO = False
+
+_requires_proto = pytest.mark.skipif(
+    not _HAS_PROTO,
+    reason="Proto stubs not generated — run `make proto` first",
+)
 
 
 class _FakeVec:
@@ -67,6 +84,7 @@ class _FakePV:
 
 # ── to_property_value ───────────────────────────────────────────────────────
 
+@_requires_proto
 class TestToPropertyValue:
     def test_int(self):
         pv = to_property_value(42)
