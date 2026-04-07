@@ -53,7 +53,7 @@ class _FakePV:
         return self._value
 
     @property
-    def vector(self):
+    def vector_value(self):
         return self._value
 
     @property
@@ -135,7 +135,7 @@ class TestFromPropertyValue:
 
     def test_vector(self):
         vec = _FakeVec([0.1, 0.2])
-        pv = _FakePV("vector", vec)
+        pv = _FakePV("vector_value", vec)
         result = from_property_value(pv)
         assert result == pytest.approx([0.1, 0.2])
 

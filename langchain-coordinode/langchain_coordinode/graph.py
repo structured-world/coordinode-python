@@ -83,12 +83,8 @@ class CoordinodeGraph(GraphStore):
         Returns:
             List of row dicts (column name → value).
         """
-        result = self._client.cypher(query, params=params or {})
-        rows: List[Dict[str, Any]] = []
-        columns = list(result.columns)
-        for row in result.rows:
-            rows.append(dict(zip(columns, row)))
-        return rows
+        # cypher() returns List[Dict[str, Any]] directly — column name → value.
+        return self._client.cypher(query, params=params or {})
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

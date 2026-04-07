@@ -15,7 +15,6 @@ from coordinode._types import (
     dict_to_props,
     from_property_value,
     props_to_dict,
-    to_property_value,
 )
 
 
@@ -82,8 +81,12 @@ class AsyncCoordinodeClient:
 
     Usage::
 
-        async with AsyncCoordinodeClient("localhost") as client:
+        async with AsyncCoordinodeClient("localhost:7080") as client:
             rows = await client.cypher("MATCH (n:Person) RETURN n.name LIMIT 5")
+
+        # Also accepts separate host and port:
+        async with AsyncCoordinodeClient("localhost", port=7080) as client:
+            ...
     """
 
     def __init__(
@@ -94,6 +97,10 @@ class AsyncCoordinodeClient:
         tls: bool = False,
         timeout: float = 30.0,
     ) -> None:
+        # Support "host:port" as a single string (common gRPC convention).
+        if ":" in host and port == 7080:
+            _h, _p = host.rsplit(":", 1)
+            host, port = _h, int(_p)
         self._host = host
         self._port = port
         self._tls = tls
@@ -307,7 +314,7 @@ class CoordinodeClient:
 
     Usage::
 
-        with CoordinodeClient("localhost") as client:
+        with CoordinodeClient("localhost:7080") as client:
             rows = client.cypher("MATCH (n:Person) RETURN n.name LIMIT 5")
             print(rows)  # [{"n.name": "Alice"}, ...]
     """

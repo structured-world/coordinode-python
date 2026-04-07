@@ -22,14 +22,15 @@ def client():
 
 
 def test_health(client):
-    h = client.health()
-    assert h.get("status") in ("ok", "serving", "SERVING")
+    # health() returns bool — True when server reports SERVING
+    assert client.health() is True
 
 
 def test_cypher_return_literal(client):
+    # cypher() returns List[Dict[str, Any]] — one row per result row
     result = client.cypher("RETURN 1 AS n")
-    assert result.columns == ["n"] or "n" in result.columns
-    assert len(result.rows) == 1
+    assert len(result) == 1
+    assert result[0]["n"] == 1
 
 
 def test_create_and_get_node(client):
@@ -37,9 +38,9 @@ def test_create_and_get_node(client):
         "CREATE (n:IntegrationTest {name: $name}) RETURN id(n) AS node_id",
         params={"name": "sdk-test-node"},
     )
-    assert result.rows, "CREATE returned no rows"
-    node_id = str(result.rows[0][0])
-    assert node_id
+    assert result, "CREATE returned no rows"
+    node_id = result[0]["node_id"]
+    assert node_id is not None
 
     # Clean up
     client.cypher(
@@ -49,7 +50,8 @@ def test_create_and_get_node(client):
 
 
 def test_vector_search(client):
-    # Insert a node with an embedding, then search for it
+    # Insert a node with an embedding, then search for it.
+    # VectorResult has .node (NodeResult) and .distance (float).
     vec = [0.1] * 16
     client.cypher(
         "CREATE (d:VecTestDoc {id: 'vs-test', embedding: $vec})",
@@ -63,5 +65,7 @@ def test_vector_search(client):
             top_k=1,
         )
         assert len(results) >= 1
+        assert hasattr(results[0], "distance")
+        assert hasattr(results[0], "node")
     finally:
         client.cypher("MATCH (d:VecTestDoc {id: 'vs-test'}) DELETE d")

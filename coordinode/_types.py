@@ -3,7 +3,7 @@ Python-friendly type wrappers and PropertyValue conversion.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any, Dict, List, Union
 
 # We import proto types lazily to avoid hard-fail when stubs aren't generated yet.
 
