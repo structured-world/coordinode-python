@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_community.graphs.graph_store import GraphStore
@@ -113,16 +114,23 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
             "relationships": [{"start": "A", "type": "REL", "end": "B"}, ...],
         }
 
-    CoordiNode's ``/schema`` endpoint returns a human-readable text; we do a
-    best-effort parse here. For reliable structured access use the gRPC
-    ``SchemaService`` directly.
+    CoordiNode's schema text format (from ``get_schema_text()``)::
+
+        Node labels:
+          - Person (properties: name: STRING, age: INT64)
+          - Company
+
+        Edge types:
+          - KNOWS (properties: since: INT64)
+          - WORKS_FOR
+
+    We parse inline ``(properties: ...)`` lists on each bullet line.
+    For reliable structured access use the gRPC ``SchemaService`` directly.
     """
     node_props: dict[str, list[dict[str, str]]] = {}
     rel_props: dict[str, list[dict[str, str]]] = {}
     relationships: list[dict[str, str]] = []
 
-    current_label: str | None = None
-    current_type: str | None = None
     in_nodes = False
     in_rels = False
 
@@ -134,42 +142,28 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
         if stripped.lower().startswith("node labels"):
             in_nodes, in_rels = True, False
             continue
-        if stripped.lower().startswith("relationship types"):
+        # Accept both "Edge types:" (current format) and "Relationship types:" (legacy)
+        if stripped.lower().startswith("edge types") or stripped.lower().startswith("relationship types"):
             in_nodes, in_rels = False, True
             continue
 
-        if in_nodes:
-            if stripped.startswith("-") or stripped.startswith("*"):
-                label = stripped.lstrip("-* ").split()[0].strip(":")
-                current_label = label
-                node_props.setdefault(label, [])
-            elif current_label and ":" in stripped:
-                parts = stripped.split(":", 1)
-                prop = parts[0].strip()
-                typ = parts[1].strip().upper()
-                node_props[current_label].append({"property": prop, "type": typ})
-
-        if in_rels:
-            if stripped.startswith("-") or stripped.startswith("*"):
-                rel = stripped.lstrip("-* ").split()[0].strip()
-                current_type = rel
-                rel_props.setdefault(rel, [])
-            elif current_type and "->" in stripped:
-                parts = stripped.split("->")
-                start = parts[0].strip().strip("(: )")
-                end = parts[-1].strip().strip("(: )")
-                relationships.append(
-                    {
-                        "start": start,
-                        "type": current_type,
-                        "end": end,
-                    }
-                )
-            elif current_type and ":" in stripped:
-                parts = stripped.split(":", 1)
-                prop = parts[0].strip()
-                typ = parts[1].strip().upper()
-                rel_props[current_type].append({"property": prop, "type": typ})
+        if (in_nodes or in_rels) and (stripped.startswith("-") or stripped.startswith("*")):
+            # Extract name (part before optional "(properties: ...)")
+            name = stripped.lstrip("-* ").split("(")[0].strip()
+            if not name:
+                continue
+            # Parse inline properties: "- Label (properties: prop1: TYPE, prop2: TYPE)"
+            props: list[dict[str, str]] = []
+            m = re.search(r"\(properties:\s*([^)]+)\)", stripped)
+            if m:
+                for prop_str in m.group(1).split(","):
+                    kv = prop_str.strip().split(":", 1)
+                    if len(kv) == 2:
+                        props.append({"property": kv[0].strip(), "type": kv[1].strip()})
+            if in_nodes:
+                node_props[name] = props
+            else:
+                rel_props[name] = props
 
     return {
         "node_props": node_props,

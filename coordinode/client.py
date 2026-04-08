@@ -106,7 +106,7 @@ class AsyncCoordinodeClient:
     def __init__(
         self,
         host: str = "localhost",
-        port: int = 7080,
+        port: int | None = None,
         *,
         tls: bool = False,
         timeout: float = 30.0,
@@ -114,16 +114,19 @@ class AsyncCoordinodeClient:
         # Support "host:port" as a single string (common gRPC convention).
         # _HOST_PORT_RE matches "hostname:port" and "[IPv6]:port" but not bare
         # IPv6 addresses, avoiding the ambiguity of rsplit(":", 1) on "::1".
+        # port=None means "not specified by caller" — distinct from explicit port=7080.
         m = _HOST_PORT_RE.match(host)
         if m:
             parsed_port = int(m.group(2))
-            if port != 7080 and port != parsed_port:
+            if port is not None and port != parsed_port:
                 raise ValueError(
                     f"Conflicting ports: port={port!r} (argument) vs {parsed_port!r} "
                     f"(embedded in host={host!r}). Specify the port in the host string "
                     "only, or use the port argument only."
                 )
             host, port = m.group(1), parsed_port
+        if port is None:
+            port = 7080
         self._host = host
         self._port = port
         self._tls = tls
@@ -336,23 +339,36 @@ class CoordinodeClient:
     def __init__(
         self,
         host: str = "localhost",
-        port: int = 7080,
+        port: int | None = None,
         *,
         tls: bool = False,
         timeout: float = 30.0,
     ) -> None:
         self._async = AsyncCoordinodeClient(host, port, tls=tls, timeout=timeout)
         self._loop = asyncio.new_event_loop()
+        self._connected = False
 
     def __enter__(self) -> CoordinodeClient:
-        self._loop.run_until_complete(self._async.connect())
+        if not self._connected:
+            self._loop.run_until_complete(self._async.connect())
+            self._connected = True
         return self
 
     def __exit__(self, *_: Any) -> None:
-        self._loop.run_until_complete(self._async.close())
-        self._loop.close()
+        self.close()
+
+    def close(self) -> None:
+        """Close the underlying gRPC channel and event loop."""
+        if self._connected:
+            self._loop.run_until_complete(self._async.close())
+            self._connected = False
+        if not self._loop.is_closed():
+            self._loop.close()
 
     def _run(self, coro: Any) -> Any:
+        if not self._connected:
+            self._loop.run_until_complete(self._async.connect())
+            self._connected = True
         return self._loop.run_until_complete(coro)
 
     def cypher(

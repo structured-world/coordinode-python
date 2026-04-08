@@ -36,8 +36,8 @@ class _FakeList:
 
 
 class _FakeMap:
-    def __init__(self, fields):
-        self.fields = dict(fields)
+    def __init__(self, entries):
+        self.entries = dict(entries)
 
 
 class _FakePV:

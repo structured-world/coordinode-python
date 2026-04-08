@@ -256,24 +256,30 @@ def test_hybrid_search_returns_results(client):
 
 
 def test_hostport_string_parsing():
-    """CoordinodeClient("host:port") must parse correctly."""
-    c = CoordinodeClient("localhost:7080")
-    assert c._async._host == "localhost"
-    assert c._async._port == 7080
+    """AsyncCoordinodeClient("host:port") must parse correctly."""
+    c = AsyncCoordinodeClient("localhost:7080")
+    assert c._host == "localhost"
+    assert c._port == 7080
 
 
 def test_ipv6_bracket_parsing():
     """Bracketed IPv6 [::1]:7080 must parse correctly."""
-    c = CoordinodeClient("[::1]:7080")
-    assert c._async._host == "[::1]"
-    assert c._async._port == 7080
+    c = AsyncCoordinodeClient("[::1]:7080")
+    assert c._host == "[::1]"
+    assert c._port == 7080
 
 
 def test_bare_ipv6_not_parsed():
     """Unbracketed IPv6 must NOT be misinterpreted as host:port."""
-    c = CoordinodeClient("::1")
-    assert c._async._host == "::1"
-    assert c._async._port == 7080  # default unchanged
+    c = AsyncCoordinodeClient("::1")
+    assert c._host == "::1"
+    assert c._port == 7080  # default unchanged
+
+
+def test_explicit_port_conflict_raises():
+    """Explicit port that conflicts with host-embedded port must raise ValueError."""
+    with pytest.raises(ValueError, match="Conflicting ports"):
+        AsyncCoordinodeClient("db.example.com:7443", port=7080)
 
 
 # ── Async client ──────────────────────────────────────────────────────────────
@@ -303,7 +309,7 @@ async def test_async_create_node():
         await c.cypher("MATCH (n:AsyncTest {tag: $tag}) DELETE n", params={"tag": tag})
 
 
-# ── Vector search (xfail until wired) ─────────────────────────────────────────
+# ── Vector search ─────────────────────────────────────────────────────────────
 
 
 def test_vector_search_returns_results(client):
