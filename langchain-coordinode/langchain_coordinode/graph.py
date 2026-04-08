@@ -67,8 +67,21 @@ class CoordinodeGraph(GraphStore):
         """Fetch current schema from CoordiNode."""
         text = self._client.get_schema_text()
         self._schema = text
-        # Parse schema text into structured form expected by LangChain
-        self._structured_schema = _parse_schema(text)
+        structured = _parse_schema(text)
+        # Augment with relationship triples (start_label, type, end_label) via
+        # Cypher — get_schema_text() only lists edge types without direction.
+        try:
+            rows = self._client.cypher(
+                "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a)[0] AS src, type(r) AS rel, labels(b)[0] AS dst"
+            )
+            structured["relationships"] = [
+                {"start": row["src"], "type": row["rel"], "end": row["dst"]}
+                for row in rows
+                if row.get("src") and row.get("rel") and row.get("dst")
+            ]
+        except Exception:  # noqa: BLE001
+            pass  # Graph may have no relationships yet; structured["relationships"] stays []
+        self._structured_schema = structured
 
     def query(
         self,
@@ -129,9 +142,6 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
     """
     node_props: dict[str, list[dict[str, str]]] = {}
     rel_props: dict[str, list[dict[str, str]]] = {}
-    # TODO: CoordiNode's schema text does not include relationship direction info
-    # (start_label → end_label). Populate via Cypher introspection when needed:
-    # MATCH (a)-[r]->(b) RETURN DISTINCT labels(a)[0], type(r), labels(b)[0]
     relationships: list[dict[str, str]] = []
 
     in_nodes = False

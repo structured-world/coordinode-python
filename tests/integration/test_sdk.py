@@ -26,7 +26,6 @@ def client():
         yield c
 
 
-
 def uid() -> str:
     return uuid.uuid4().hex[:8]
 
