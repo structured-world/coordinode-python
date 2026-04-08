@@ -13,7 +13,6 @@ from typing import Any
 import grpc
 import grpc.aio
 
-from coordinode._proto import __init__ as _setup_path  # noqa: F401 — path fix
 from coordinode._types import (
     PyValue,
     dict_to_props,
