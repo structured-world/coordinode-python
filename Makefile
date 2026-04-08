@@ -7,7 +7,7 @@ PROTO_OUT  := coordinode/_proto
 proto:
 	@echo "==> Generating proto stubs..."
 	@mkdir -p $(PROTO_OUT)
-	python -m grpc_tools.protoc \
+	python3 -m grpc_tools.protoc \
 		-I$(PROTO_SRC) \
 		--python_out=$(PROTO_OUT) \
 		--grpc_python_out=$(PROTO_OUT) \
@@ -15,9 +15,9 @@ proto:
 		$$(find $(PROTO_SRC) -name '*.proto')
 	@# Add __init__.py to every generated package directory
 	@find $(PROTO_OUT) -type d -exec touch {}/__init__.py \;
-	@# Fix relative imports in generated *_pb2_grpc.py files (grpc_tools generates absolute)
-	@find $(PROTO_OUT) -name '*_pb2_grpc.py' -exec sed -i '' \
-		's/^from coordinode\./from coordinode._proto.coordinode./g' {} \;
+	@# Fix absolute imports in all generated pb2 files (grpc_tools generates absolute paths)
+	@find $(PROTO_OUT) -name '*.py' -exec sed -i '' \
+		's/from coordinode\./from coordinode._proto.coordinode./g' {} \;
 	@echo "==> Proto generation complete: $(PROTO_OUT)/"
 
 proto-check:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain_community.graphs.graph_store import GraphStore
 
@@ -39,12 +39,12 @@ class CoordinodeGraph(GraphStore):
         self,
         addr: str = "localhost:7080",
         *,
-        database: Optional[str] = None,
+        database: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._client = CoordinodeClient(addr, timeout=timeout)
-        self._schema: Optional[str] = None
-        self._structured_schema: Optional[Dict[str, Any]] = None
+        self._schema: str | None = None
+        self._structured_schema: dict[str, Any] | None = None
 
     # ── GraphStore interface ──────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ class CoordinodeGraph(GraphStore):
         return self._schema or ""
 
     @property
-    def structured_schema(self) -> Dict[str, Any]:
+    def structured_schema(self) -> dict[str, Any]:
         """Return structured schema dict (refreshed by `refresh_schema`)."""
         if self._structured_schema is None:
             self.refresh_schema()
@@ -72,8 +72,8 @@ class CoordinodeGraph(GraphStore):
     def query(
         self,
         query: str,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Run a Cypher query and return rows as dicts.
 
         Args:
@@ -92,7 +92,7 @@ class CoordinodeGraph(GraphStore):
         """Close the underlying gRPC connection."""
         self._client.close()
 
-    def __enter__(self) -> "CoordinodeGraph":
+    def __enter__(self) -> CoordinodeGraph:
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -101,7 +101,8 @@ class CoordinodeGraph(GraphStore):
 
 # ── Schema parser ─────────────────────────────────────────────────────────
 
-def _parse_schema(schema_text: str) -> Dict[str, Any]:
+
+def _parse_schema(schema_text: str) -> dict[str, Any]:
     """Convert CoordiNode schema text into LangChain's structured format.
 
     LangChain's ``GraphCypherQAChain`` expects::
@@ -116,12 +117,12 @@ def _parse_schema(schema_text: str) -> Dict[str, Any]:
     best-effort parse here. For reliable structured access use the gRPC
     ``SchemaService`` directly.
     """
-    node_props: Dict[str, List[Dict[str, str]]] = {}
-    rel_props: Dict[str, List[Dict[str, str]]] = {}
-    relationships: List[Dict[str, str]] = []
+    node_props: dict[str, list[dict[str, str]]] = {}
+    rel_props: dict[str, list[dict[str, str]]] = {}
+    relationships: list[dict[str, str]] = []
 
-    current_label: Optional[str] = None
-    current_type: Optional[str] = None
+    current_label: str | None = None
+    current_type: str | None = None
     in_nodes = False
     in_rels = False
 
@@ -157,11 +158,13 @@ def _parse_schema(schema_text: str) -> Dict[str, Any]:
                 parts = stripped.split("->")
                 start = parts[0].strip().strip("(: )")
                 end = parts[-1].strip().strip("(: )")
-                relationships.append({
-                    "start": start,
-                    "type": current_type,
-                    "end": end,
-                })
+                relationships.append(
+                    {
+                        "start": start,
+                        "type": current_type,
+                        "end": end,
+                    }
+                )
             elif current_type and ":" in stripped:
                 parts = stripped.split(":", 1)
                 prop = parts[0].strip()

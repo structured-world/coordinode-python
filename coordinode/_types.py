@@ -1,21 +1,22 @@
 """
 Python-friendly type wrappers and PropertyValue conversion.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Union
+from typing import Any
 
 # We import proto types lazily to avoid hard-fail when stubs aren't generated yet.
 
-PyValue = Union[int, float, str, bool, bytes, List[float], List[Any], Dict[str, Any], None]
+PyValue = int | float | str | bool | bytes | list[float] | list[Any] | dict[str, Any] | None
 
 
 def to_property_value(py_val: PyValue) -> Any:
     """Convert a Python value to a proto PropertyValue."""
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
-        PropertyValue,
         PropertyList,
         PropertyMap,
+        PropertyValue,
         Vector,
     )
 
@@ -32,9 +33,9 @@ def to_property_value(py_val: PyValue) -> Any:
         pv.string_value = py_val
     elif isinstance(py_val, bytes):
         pv.bytes_value = py_val
-    elif isinstance(py_val, (list, tuple)):
+    elif isinstance(py_val, list | tuple):
         # Homogeneous float list → Vector; mixed/str list → PropertyList
-        if py_val and all(isinstance(v, (int, float)) for v in py_val):
+        if py_val and all(isinstance(v, int | float) for v in py_val):
             vec = Vector(values=[float(v) for v in py_val])
             pv.vector_value.CopyFrom(vec)
         else:
@@ -76,11 +77,11 @@ def from_property_value(pv: Any) -> PyValue:
         return None
 
 
-def props_to_dict(proto_map: Any) -> Dict[str, PyValue]:
+def props_to_dict(proto_map: Any) -> dict[str, PyValue]:
     """Convert a proto properties map to a plain Python dict."""
     return {k: from_property_value(v) for k, v in proto_map.items()}
 
 
-def dict_to_props(d: Dict[str, PyValue]) -> Dict[str, Any]:
+def dict_to_props(d: dict[str, PyValue]) -> dict[str, Any]:
     """Convert a Python dict to a proto properties map."""
     return {k: to_property_value(v) for k, v in d.items()}

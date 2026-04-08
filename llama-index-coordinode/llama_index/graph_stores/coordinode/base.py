@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+from coordinode import CoordinodeClient
 from llama_index.core.graph_stores.types import (
     ChunkNode,
     EntityNode,
@@ -12,8 +13,6 @@ from llama_index.core.graph_stores.types import (
     Relation,
 )
 from llama_index.core.vector_stores.types import VectorStoreQuery
-
-from coordinode import CoordinodeClient
 
 
 class CoordinodePropertyGraphStore(PropertyGraphStore):
@@ -54,11 +53,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
     def get(
         self,
-        properties: Optional[Dict[str, Any]] = None,
-        ids: Optional[List[str]] = None,
-    ) -> List[LabelledNode]:
+        properties: dict[str, Any] | None = None,
+        ids: list[str] | None = None,
+    ) -> list[LabelledNode]:
         """Retrieve nodes by properties or IDs."""
-        nodes: List[LabelledNode] = []
+        nodes: list[LabelledNode] = []
 
         if ids:
             for node_id in ids:
@@ -66,9 +65,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
                 if result is not None:
                     nodes.append(_node_result_to_labelled(node_id, result))
         elif properties:
-            where_clauses = " AND ".join(
-                f"n.{k} = ${k}" for k in properties
-            )
+            where_clauses = " AND ".join(f"n.{k} = ${k}" for k in properties)
             cypher = f"MATCH (n) WHERE {where_clauses} RETURN n, id(n) AS _id LIMIT 1000"
             result = self._client.cypher(cypher, params=properties)
             for row in result:
@@ -80,14 +77,14 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
     def get_triplets(
         self,
-        entity_names: Optional[List[str]] = None,
-        relation_names: Optional[List[str]] = None,
-        properties: Optional[Dict[str, Any]] = None,
-        ids: Optional[List[str]] = None,
-    ) -> List[List[LabelledNode]]:
+        entity_names: list[str] | None = None,
+        relation_names: list[str] | None = None,
+        properties: dict[str, Any] | None = None,
+        ids: list[str] | None = None,
+    ) -> list[list[LabelledNode]]:
         """Retrieve triplets (subject, predicate, object) as node triples."""
-        conditions: List[str] = []
-        params: Dict[str, Any] = {}
+        conditions: list[str] = []
+        params: dict[str, Any] = {}
 
         if entity_names:
             conditions.append("(n.name IN $entity_names OR m.name IN $entity_names)")
@@ -107,7 +104,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         )
         result = self._client.cypher(cypher, params=params)
 
-        triplets: List[List[LabelledNode]] = []
+        triplets: list[list[LabelledNode]] = []
         for row in result:
             src_data = row.get("n", {})
             rel_type = row.get("rel_type", "RELATED")
@@ -123,11 +120,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
     def get_rel_map(
         self,
-        graph_nodes: List[LabelledNode],
+        graph_nodes: list[LabelledNode],
         depth: int = 2,
         limit: int = 30,
-        ignore_rels: Optional[List[str]] = None,
-    ) -> List[List[LabelledNode]]:
+        ignore_rels: list[str] | None = None,
+    ) -> list[list[LabelledNode]]:
         """Get relationship map for a set of nodes up to ``depth`` hops."""
         if not graph_nodes:
             return []
@@ -144,7 +141,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         )
         result = self._client.cypher(cypher, params={"ids": ids})
 
-        triplets: List[List[LabelledNode]] = []
+        triplets: list[list[LabelledNode]] = []
         for row in result:
             src_data = row.get("n", {})
             dst_data = row.get("m", {})
@@ -160,25 +157,20 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
         return triplets
 
-    def upsert_nodes(self, nodes: List[LabelledNode]) -> None:
+    def upsert_nodes(self, nodes: list[LabelledNode]) -> None:
         """Upsert nodes into the graph."""
         for node in nodes:
             props = _labelled_to_props(node)
             label = _node_label(node)
-            cypher = (
-                f"MERGE (n:{label} {{id: $id}}) "
-                "SET n += $props"
-            )
+            cypher = f"MERGE (n:{label} {{id: $id}}) SET n += $props"
             self._client.cypher(cypher, params={"id": node.id, "props": props})
 
-    def upsert_relations(self, relations: List[Relation]) -> None:
+    def upsert_relations(self, relations: list[Relation]) -> None:
         """Upsert relationships into the graph."""
         for rel in relations:
             props = rel.properties or {}
             cypher = (
-                "MATCH (src {id: $src_id}), (dst {id: $dst_id}) "
-                f"MERGE (src)-[r:{rel.label}]->(dst) "
-                "SET r += $props"
+                f"MATCH (src {{id: $src_id}}), (dst {{id: $dst_id}}) MERGE (src)-[r:{rel.label}]->(dst) SET r += $props"
             )
             self._client.cypher(
                 cypher,
@@ -191,10 +183,10 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
     def delete(
         self,
-        entity_names: Optional[List[str]] = None,
-        relation_names: Optional[List[str]] = None,
-        properties: Optional[Dict[str, Any]] = None,
-        ids: Optional[List[str]] = None,
+        entity_names: list[str] | None = None,
+        relation_names: list[str] | None = None,
+        properties: dict[str, Any] | None = None,
+        ids: list[str] | None = None,
     ) -> None:
         """Delete nodes and/or relations matching given criteria."""
         if ids:
@@ -210,7 +202,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         self,
         query: VectorStoreQuery,
         **kwargs: Any,
-    ) -> tuple[List[LabelledNode], List[float]]:
+    ) -> tuple[list[LabelledNode], list[float]]:
         """Run a vector similarity query against node embeddings."""
         if query.query_embedding is None:
             return [], []
@@ -222,8 +214,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             top_k=query.similarity_top_k,
         )
 
-        nodes: List[LabelledNode] = []
-        scores: List[float] = []
+        nodes: list[LabelledNode] = []
+        scores: list[float] = []
         for r in results:
             # VectorResult has .node (NodeResult with .id/.properties) and .distance
             node = ChunkNode(
@@ -248,7 +240,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "CoordinodePropertyGraphStore":
+    def __enter__(self) -> CoordinodePropertyGraphStore:
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -259,7 +251,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     def structured_query(
         self,
         query: str,
-        param_map: Optional[Dict[str, Any]] = None,
+        param_map: dict[str, Any] | None = None,
     ) -> Any:
         """Execute a raw Cypher query."""
         # cypher() returns List[Dict[str, Any]] — column name → value.
@@ -267,6 +259,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
+
 
 def _node_result_to_labelled(node_id: str, data: Any) -> LabelledNode:
     """Convert a raw node result to a LlamaIndex LabelledNode."""
@@ -280,9 +273,9 @@ def _node_result_to_labelled(node_id: str, data: Any) -> LabelledNode:
     return EntityNode(name=node_id, label="Entity")
 
 
-def _labelled_to_props(node: LabelledNode) -> Dict[str, Any]:
+def _labelled_to_props(node: LabelledNode) -> dict[str, Any]:
     """Extract serialisable properties from a LabelledNode."""
-    props: Dict[str, Any] = dict(node.properties or {})
+    props: dict[str, Any] = dict(node.properties or {})
     if isinstance(node, ChunkNode):
         props["text"] = node.text
     elif isinstance(node, EntityNode):

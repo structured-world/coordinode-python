@@ -20,3 +20,4 @@ env/
 coordinode/_version.py
 langchain_coordinode/_version.py
 llama_index/graph_stores/coordinode/_version.py
+GAPS.md

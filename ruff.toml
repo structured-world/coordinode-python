@@ -1,0 +1,13 @@
+line-length = 120
+target-version = "py311"
+
+exclude = [
+    # Generated proto stubs — do not lint
+    "coordinode/_proto/",
+]
+
+[lint]
+select = ["E", "F", "I", "W", "UP"]
+ignore = [
+    "E501",  # line length handled by formatter
+]

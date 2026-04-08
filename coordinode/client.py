@@ -1,10 +1,12 @@
 """
 CoordinodeClient — synchronous and asynchronous gRPC client for CoordiNode.
 """
+
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import grpc
 import grpc.aio
@@ -17,8 +19,8 @@ from coordinode._types import (
     props_to_dict,
 )
 
-
 # ── Low-level helpers ────────────────────────────────────────────────────────
+
 
 def _make_channel(host: str, port: int, tls: bool) -> grpc.Channel:
     target = f"{host}:{port}"
@@ -36,13 +38,14 @@ def _make_async_channel(host: str, port: int, tls: bool) -> grpc.aio.Channel:
 
 # ── Result types ─────────────────────────────────────────────────────────────
 
+
 class NodeResult:
     """A node returned from a graph operation."""
 
     def __init__(self, proto_node: Any) -> None:
         self.id: int = proto_node.node_id
-        self.labels: List[str] = list(proto_node.labels)
-        self.properties: Dict[str, PyValue] = props_to_dict(proto_node.properties)
+        self.labels: list[str] = list(proto_node.labels)
+        self.properties: dict[str, PyValue] = props_to_dict(proto_node.properties)
 
     def __repr__(self) -> str:
         return f"Node(id={self.id}, labels={self.labels}, properties={self.properties})"
@@ -56,7 +59,7 @@ class EdgeResult:
         self.type: str = proto_edge.edge_type
         self.source_id: int = proto_edge.source_node_id
         self.target_id: int = proto_edge.target_node_id
-        self.properties: Dict[str, PyValue] = props_to_dict(proto_edge.properties)
+        self.properties: dict[str, PyValue] = props_to_dict(proto_edge.properties)
 
     def __repr__(self) -> str:
         return f"Edge(id={self.id}, type={self.type!r}, {self.source_id}→{self.target_id})"
@@ -74,6 +77,7 @@ class VectorResult:
 
 
 # ── Async client ─────────────────────────────────────────────────────────────
+
 
 class AsyncCoordinodeClient:
     """
@@ -105,9 +109,9 @@ class AsyncCoordinodeClient:
         self._port = port
         self._tls = tls
         self._timeout = timeout
-        self._channel: Optional[grpc.aio.Channel] = None
+        self._channel: grpc.aio.Channel | None = None
 
-    async def __aenter__(self) -> "AsyncCoordinodeClient":
+    async def __aenter__(self) -> AsyncCoordinodeClient:
         await self.connect()
         return self
 
@@ -130,8 +134,8 @@ class AsyncCoordinodeClient:
     async def cypher(
         self,
         query: str,
-        params: Optional[Dict[str, PyValue]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: dict[str, PyValue] | None = None,
+    ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts."""
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
@@ -143,10 +147,7 @@ class AsyncCoordinodeClient:
         )
         resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
         columns = list(resp.columns)
-        return [
-            {col: from_property_value(val) for col, val in zip(columns, row.values)}
-            for row in resp.rows
-        ]
+        return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
 
     async def vector_search(
         self,
@@ -155,13 +156,13 @@ class AsyncCoordinodeClient:
         vector: Sequence[float],
         top_k: int = 10,
         metric: str = "cosine",
-    ) -> List[VectorResult]:
+    ) -> list[VectorResult]:
         """Nearest-neighbour search on a labelled property."""
-        from coordinode._proto.coordinode.v1.query.vector_pb2 import (  # type: ignore[import]
-            VectorSearchRequest,
-            DistanceMetric,
-        )
         from coordinode._proto.coordinode.v1.common.types_pb2 import Vector  # type: ignore[import]
+        from coordinode._proto.coordinode.v1.query.vector_pb2 import (  # type: ignore[import]
+            DistanceMetric,
+            VectorSearchRequest,
+        )
 
         metric_map = {
             "cosine": DistanceMetric.DISTANCE_METRIC_COSINE,
@@ -188,13 +189,13 @@ class AsyncCoordinodeClient:
         max_depth: int = 2,
         vector_property: str = "embedding",
         metric: str = "cosine",
-    ) -> List[VectorResult]:
+    ) -> list[VectorResult]:
         """Graph traversal + vector search: traverse from start_node, then rank by embedding."""
-        from coordinode._proto.coordinode.v1.query.vector_pb2 import (  # type: ignore[import]
-            HybridSearchRequest,
-            DistanceMetric,
-        )
         from coordinode._proto.coordinode.v1.common.types_pb2 import Vector  # type: ignore[import]
+        from coordinode._proto.coordinode.v1.query.vector_pb2 import (  # type: ignore[import]
+            DistanceMetric,
+            HybridSearchRequest,
+        )
 
         metric_map = {
             "cosine": DistanceMetric.DISTANCE_METRIC_COSINE,
@@ -214,9 +215,7 @@ class AsyncCoordinodeClient:
         resp = await self._vector_stub.HybridSearch(req, timeout=self._timeout)
         return [VectorResult(r) for r in resp.results]
 
-    async def create_node(
-        self, labels: List[str], properties: Dict[str, PyValue]
-    ) -> NodeResult:
+    async def create_node(self, labels: list[str], properties: dict[str, PyValue]) -> NodeResult:
         from coordinode._proto.coordinode.v1.graph.graph_pb2 import CreateNodeRequest  # type: ignore[import]
 
         req = CreateNodeRequest(labels=labels, properties=dict_to_props(properties))
@@ -235,7 +234,7 @@ class AsyncCoordinodeClient:
         edge_type: str,
         source_id: int,
         target_id: int,
-        properties: Optional[Dict[str, PyValue]] = None,
+        properties: dict[str, PyValue] | None = None,
     ) -> EdgeResult:
         from coordinode._proto.coordinode.v1.graph.graph_pb2 import CreateEdgeRequest  # type: ignore[import]
 
@@ -251,10 +250,10 @@ class AsyncCoordinodeClient:
     async def get_schema_text(self) -> str:
         """Return schema as a human/LLM-readable string."""
         from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
-            ListLabelsRequest,
             ListEdgeTypesRequest,
+            ListLabelsRequest,
+            PropertyType,  # type: ignore[import]
         )
-        from coordinode._proto.coordinode.v1.graph.schema_pb2 import PropertyType  # type: ignore[import]
 
         _type_name = {
             PropertyType.PROPERTY_TYPE_INT64: "INT64",
@@ -268,25 +267,17 @@ class AsyncCoordinodeClient:
             PropertyType.PROPERTY_TYPE_MAP: "MAP",
         }
 
-        labels_resp = await self._schema_stub.ListLabels(
-            ListLabelsRequest(), timeout=self._timeout
-        )
-        edges_resp = await self._schema_stub.ListEdgeTypes(
-            ListEdgeTypesRequest(), timeout=self._timeout
-        )
+        labels_resp = await self._schema_stub.ListLabels(ListLabelsRequest(), timeout=self._timeout)
+        edges_resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
 
         lines = ["Node labels:"]
         for label in labels_resp.labels:
-            props = ", ".join(
-                f"{p.name}: {_type_name.get(p.type, '?')}" for p in label.properties
-            )
+            props = ", ".join(f"{p.name}: {_type_name.get(p.type, '?')}" for p in label.properties)
             lines.append(f"  - {label.name} (properties: {props})" if props else f"  - {label.name}")
 
         lines.append("\nEdge types:")
         for et in edges_resp.edge_types:
-            props = ", ".join(
-                f"{p.name}: {_type_name.get(p.type, '?')}" for p in et.properties
-            )
+            props = ", ".join(f"{p.name}: {_type_name.get(p.type, '?')}" for p in et.properties)
             lines.append(f"  - {et.name} (properties: {props})" if props else f"  - {et.name}")
 
         return "\n".join(lines)
@@ -298,15 +289,14 @@ class AsyncCoordinodeClient:
         )
 
         try:
-            resp = await self._health_stub.Check(
-                HealthCheckRequest(), timeout=5.0
-            )
+            resp = await self._health_stub.Check(HealthCheckRequest(), timeout=5.0)
             return resp.status == ServingStatus.SERVING_STATUS_SERVING
         except grpc.RpcError:
             return False
 
 
 # ── Sync client (wraps async) ─────────────────────────────────────────────────
+
 
 class CoordinodeClient:
     """
@@ -330,7 +320,7 @@ class CoordinodeClient:
         self._async = AsyncCoordinodeClient(host, port, tls=tls, timeout=timeout)
         self._loop = asyncio.new_event_loop()
 
-    def __enter__(self) -> "CoordinodeClient":
+    def __enter__(self) -> CoordinodeClient:
         self._loop.run_until_complete(self._async.connect())
         return self
 
@@ -344,8 +334,8 @@ class CoordinodeClient:
     def cypher(
         self,
         query: str,
-        params: Optional[Dict[str, PyValue]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: dict[str, PyValue] | None = None,
+    ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts."""
         return self._run(self._async.cypher(query, params))
 
@@ -356,7 +346,7 @@ class CoordinodeClient:
         vector: Sequence[float],
         top_k: int = 10,
         metric: str = "cosine",
-    ) -> List[VectorResult]:
+    ) -> list[VectorResult]:
         return self._run(self._async.vector_search(label, property, vector, top_k, metric))
 
     def hybrid_search(
@@ -368,14 +358,12 @@ class CoordinodeClient:
         max_depth: int = 2,
         vector_property: str = "embedding",
         metric: str = "cosine",
-    ) -> List[VectorResult]:
+    ) -> list[VectorResult]:
         return self._run(
-            self._async.hybrid_search(
-                start_node_id, edge_type, vector, top_k, max_depth, vector_property, metric
-            )
+            self._async.hybrid_search(start_node_id, edge_type, vector, top_k, max_depth, vector_property, metric)
         )
 
-    def create_node(self, labels: List[str], properties: Dict[str, PyValue]) -> NodeResult:
+    def create_node(self, labels: list[str], properties: dict[str, PyValue]) -> NodeResult:
         return self._run(self._async.create_node(labels, properties))
 
     def get_node(self, node_id: int) -> NodeResult:
@@ -386,7 +374,7 @@ class CoordinodeClient:
         edge_type: str,
         source_id: int,
         target_id: int,
-        properties: Optional[Dict[str, PyValue]] = None,
+        properties: dict[str, PyValue] | None = None,
     ) -> EdgeResult:
         return self._run(self._async.create_edge(edge_type, source_id, target_id, properties))
 
@@ -399,22 +387,32 @@ class CoordinodeClient:
 
 # ── Stub factories (deferred import) ─────────────────────────────────────────
 
+
 def _cypher_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.query.cypher_pb2_grpc import CypherServiceStub  # type: ignore[import]
+
     return CypherServiceStub(channel)
+
 
 def _vector_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.query.vector_pb2_grpc import VectorServiceStub  # type: ignore[import]
+
     return VectorServiceStub(channel)
+
 
 def _graph_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.graph.graph_pb2_grpc import GraphServiceStub  # type: ignore[import]
+
     return GraphServiceStub(channel)
+
 
 def _schema_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.graph.schema_pb2_grpc import SchemaServiceStub  # type: ignore[import]
+
     return SchemaServiceStub(channel)
+
 
 def _health_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.health.health_pb2_grpc import HealthServiceStub  # type: ignore[import]
+
     return HealthServiceStub(channel)
