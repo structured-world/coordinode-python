@@ -24,6 +24,19 @@ def _cypher_ident(value: str) -> str:
     return f"`{value.replace('`', '``')}`"
 
 
+def _cypher_param_name(key: str) -> str:
+    """Return a valid Cypher parameter name derived from *key*.
+
+    Cypher parameter names must be valid identifiers (letters, digits, ``_``).
+    Replace any other character with ``_`` and prepend ``p_`` when the result
+    starts with a digit.
+    """
+    safe = "".join(c if c.isalnum() or c == "_" else "_" for c in key)
+    if safe and safe[0].isdigit():
+        safe = f"p_{safe}"
+    return safe or "p_"
+
+
 class CoordinodePropertyGraphStore(PropertyGraphStore):
     """LlamaIndex ``PropertyGraphStore`` backed by CoordiNode.
 
@@ -78,9 +91,15 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
                 node_id = str(row.get("_nid", ""))
                 nodes.append(_node_result_to_labelled(node_id, node_data))
         elif properties:
-            where_clauses = " AND ".join(f"n.{_cypher_ident(k)} = ${k}" for k in properties)
+            # Build param mapping: safe Cypher param name → original value.
+            # Property keys may contain hyphens or other chars invalid in
+            # Cypher parameter names; _cypher_param_name() sanitises them.
+            param_map = {_cypher_param_name(k): v for k, v in properties.items()}
+            where_clauses = " AND ".join(
+                f"n.{_cypher_ident(k)} = ${_cypher_param_name(k)}" for k in properties
+            )
             cypher = f"MATCH (n) WHERE {where_clauses} RETURN n, n.id AS _nid LIMIT 1000"
-            result = self._client.cypher(cypher, params=properties)
+            result = self._client.cypher(cypher, params=param_map)
             for row in result:
                 node_data = row.get("n", {})
                 node_id = str(row.get("_nid", ""))
@@ -145,15 +164,23 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             return []
 
         node_ids = [n.id for n in graph_nodes]
-        ignored = set(ignore_rels) if ignore_rels else set()
+        ignored = list(ignore_rels) if ignore_rels else []
+
+        # Push ignore_rels filter into Cypher so LIMIT applies after filtering;
+        # a Python-side filter after LIMIT would silently truncate valid results.
+        params: dict[str, object] = {"ids": node_ids}
+        ignore_clause = ""
+        if ignored:
+            ignore_clause = " AND NONE(rel IN r WHERE type(rel) IN $ignored_rels)"
+            params["ignored_rels"] = ignored
 
         cypher = (
             f"MATCH (n)-[r*1..{depth}]->(m) "
-            f"WHERE id(n) IN $ids "
+            f"WHERE id(n) IN $ids{ignore_clause} "
             f"RETURN n, r, m, id(n) AS _src_id, id(m) AS _dst_id "
             f"LIMIT {limit}"
         )
-        result = self._client.cypher(cypher, params={"ids": node_ids})
+        result = self._client.cypher(cypher, params=params)
 
         triplets: list[list[LabelledNode]] = []
         for row in result:
@@ -163,10 +190,6 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             dst_id = str(row.get("_dst_id", ""))
             # Variable-length path [r*1..N] returns a list of relationship dicts.
             rels = row.get("r", [])
-            # Skip paths that contain any ignored relationship type.
-            if ignored and isinstance(rels, list):
-                if any(isinstance(r, dict) and r.get("type") in ignored for r in rels):
-                    continue
             if isinstance(rels, list) and rels:
                 first_rel = rels[0]
                 rel_label = first_rel.get("type", "RELATED") if isinstance(first_rel, dict) else str(first_rel)

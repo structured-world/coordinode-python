@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -21,6 +22,12 @@ from coordinode._types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Matches "host:port" strings where host is either a bracketed IPv6 address
+# ([::1], [2001:db8::1]) or a name/IPv4 with no colons.  Unbracketed IPv6
+# addresses (e.g. "2001:db8::1") are intentionally NOT matched — they cannot
+# be reliably distinguished from a "host:port" pair.
+_HOST_PORT_RE = re.compile(r"^(\[.+\]|[^:]+):(\d+)$")
 
 # ── Low-level helpers ────────────────────────────────────────────────────────
 
@@ -105,13 +112,11 @@ class AsyncCoordinodeClient:
         timeout: float = 30.0,
     ) -> None:
         # Support "host:port" as a single string (common gRPC convention).
-        # Parse whenever the last colon-delimited segment is numeric, regardless
-        # of default port. IPv6 bracket notation ([::1]:7080) is handled correctly
-        # by rsplit(":", 1): "[::1]" + "7080".
-        if ":" in host:
-            _h, _p = host.rsplit(":", 1)
-            if _p.isdigit():
-                host, port = _h, int(_p)
+        # _HOST_PORT_RE matches "hostname:port" and "[IPv6]:port" but not bare
+        # IPv6 addresses, avoiding the ambiguity of rsplit(":", 1) on "::1".
+        m = _HOST_PORT_RE.match(host)
+        if m:
+            host, port = m.group(1), int(m.group(2))
         self._host = host
         self._port = port
         self._tls = tls

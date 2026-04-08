@@ -27,15 +27,18 @@ proto-check:
 	@test -f $(PROTO_OUT)/coordinode/v1/query/cypher_pb2.py || \
 		(echo "ERROR: Proto stubs not generated. Run: make proto" && exit 1)
 
-# Install using uv (recommended for contributors)
-install: proto
+# Install using uv (recommended for contributors).
+# uv sync runs first — it installs grpcio-tools which proto generation requires.
+install:
 	uv sync
+	$(MAKE) proto
 
 # Install using pip (alternative — works without uv)
-install-pip: proto
+install-pip:
 	pip install -e "coordinode[dev]"
 	pip install -e langchain-coordinode/
 	pip install -e llama-index-coordinode/
+	$(MAKE) proto
 
 test: proto-check test-unit
 

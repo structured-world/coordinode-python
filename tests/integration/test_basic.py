@@ -8,6 +8,7 @@ Run via:
 """
 
 import os
+import uuid
 
 import pytest
 
@@ -37,25 +38,27 @@ def test_cypher_return_literal(client):
 def test_create_and_get_node(client):
     # CREATE returns the node as an integer ID; RETURN n.prop verifies properties.
     # Note: id(n) is not yet implemented in alpha — use RETURN n.name.
+    # UUID suffix prevents collisions when tests run in parallel or are retried.
+    name = f"sdk-test-node-{uuid.uuid4().hex[:8]}"
     result = client.cypher(
         "CREATE (n:IntegrationTest {name: $name}) RETURN n.name AS name",
-        params={"name": "sdk-test-node"},
+        params={"name": name},
     )
     assert result, "CREATE returned no rows"
-    assert result[0]["name"] == "sdk-test-node"
+    assert result[0]["name"] == name
 
     # Verify node is retrievable
     found = client.cypher(
         "MATCH (n:IntegrationTest {name: $name}) RETURN n.name AS name",
-        params={"name": "sdk-test-node"},
+        params={"name": name},
     )
     assert found, "MATCH returned no rows"
-    assert found[0]["name"] == "sdk-test-node"
+    assert found[0]["name"] == name
 
     # Clean up
     client.cypher(
         "MATCH (n:IntegrationTest {name: $name}) DELETE n",
-        params={"name": "sdk-test-node"},
+        params={"name": name},
     )
 
 
@@ -63,9 +66,8 @@ def test_create_and_get_node(client):
     reason=(
         "VectorServiceImpl is a stub in server/src/services/vector.rs — always returns []."
         " HNSW algorithm (coordinode-vector crate) is implemented, but not wired to the RPC handler."
-        " Tracked as gap G007 in coordinode-python GAPS.md."
     ),
-    strict=False,
+    strict=True,
 )
 def test_vector_search(client):
     # Insert a node with an embedding, then search for it.

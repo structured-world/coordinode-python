@@ -10,9 +10,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: "3.11"
 
@@ -28,11 +28,11 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -55,19 +55,20 @@ jobs:
           - 7080:7080
           - 7084:7084
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: "3.11"
 
       - name: Wait for coordinode
         run: |
-          echo "Waiting for coordinode health endpoint..."
+          echo "Waiting for coordinode to be ready (HTTP :7084 + gRPC :7080)..."
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:7084/health >/dev/null 2>&1; then
+            if curl -sf http://localhost:7084/health >/dev/null 2>&1 && \
+               (echo > /dev/tcp/localhost/7080) 2>/dev/null; then
               echo "coordinode is ready (attempt $i)"
               exit 0
             fi
