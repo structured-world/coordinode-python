@@ -95,9 +95,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             # Property keys may contain hyphens or other chars invalid in
             # Cypher parameter names; _cypher_param_name() sanitises them.
             param_map = {_cypher_param_name(k): v for k, v in properties.items()}
-            where_clauses = " AND ".join(
-                f"n.{_cypher_ident(k)} = ${_cypher_param_name(k)}" for k in properties
-            )
+            where_clauses = " AND ".join(f"n.{_cypher_ident(k)} = ${_cypher_param_name(k)}" for k in properties)
             cypher = f"MATCH (n) WHERE {where_clauses} RETURN n, n.id AS _nid LIMIT 1000"
             result = self._client.cypher(cypher, params=param_map)
             for row in result:
