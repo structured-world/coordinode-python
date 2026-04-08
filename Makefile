@@ -2,12 +2,13 @@
 
 PROTO_SRC  := proto
 PROTO_OUT  := coordinode/_proto
+PYTHON     ?= python3
 
 # Generate gRPC stubs from proto submodule into coordinode/_proto/
 proto:
 	@echo "==> Generating proto stubs..."
 	@mkdir -p $(PROTO_OUT)
-	python3 -m grpc_tools.protoc \
+	$(PYTHON) -m grpc_tools.protoc \
 		-I$(PROTO_SRC) \
 		--python_out=$(PROTO_OUT) \
 		--grpc_python_out=$(PROTO_OUT) \
@@ -19,7 +20,7 @@ proto:
 	@# sed -i.bak is portable: macOS needs empty-string backup arg, GNU sed uses -i alone;
 	@# using .bak suffix works on both, then we clean up the backup files.
 	@find $(PROTO_OUT) -name '*.py' -exec sed -i.bak \
-		's/from coordinode\./from coordinode._proto.coordinode./g' {} \;
+		's/from coordinode\.v1\./from coordinode._proto.coordinode.v1./g' {} \;
 	@find $(PROTO_OUT) -name '*.py.bak' -delete
 	@echo "==> Proto generation complete: $(PROTO_OUT)/"
 

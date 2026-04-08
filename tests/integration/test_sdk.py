@@ -226,9 +226,7 @@ def test_hybrid_search_returns_results(client):
     vec = [float(i) / 8 for i in range(8)]
     # Create two nodes connected by RELATED edge, both have embeddings.
     client.cypher(
-        "CREATE (a:HybridTest {tag: $tag, embedding: $vec})"
-        "-[:RELATED]->"
-        "(b:HybridTest {tag: $tag, embedding: $vec})",
+        "CREATE (a:HybridTest {tag: $tag, embedding: $vec})-[:RELATED]->(b:HybridTest {tag: $tag, embedding: $vec})",
         params={"tag": tag, "vec": vec},
     )
     # Retrieve the start node id.
@@ -247,7 +245,7 @@ def test_hybrid_search_returns_results(client):
             top_k=1,
             vector_property="embedding",
         )
-        assert len(results) >= 1, f"hybrid_search returned no results"
+        assert len(results) >= 1, "hybrid_search returned no results"
         assert hasattr(results[0], "distance")
         assert hasattr(results[0], "node")
     finally:

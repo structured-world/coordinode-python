@@ -116,7 +116,14 @@ class AsyncCoordinodeClient:
         # IPv6 addresses, avoiding the ambiguity of rsplit(":", 1) on "::1".
         m = _HOST_PORT_RE.match(host)
         if m:
-            host, port = m.group(1), int(m.group(2))
+            parsed_port = int(m.group(2))
+            if port != 7080 and port != parsed_port:
+                raise ValueError(
+                    f"Conflicting ports: port={port!r} (argument) vs {parsed_port!r} "
+                    f"(embedded in host={host!r}). Specify the port in the host string "
+                    "only, or use the port argument only."
+                )
+            host, port = m.group(1), parsed_port
         self._host = host
         self._port = port
         self._tls = tls

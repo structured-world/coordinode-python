@@ -91,11 +91,16 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
                 node_id = str(row.get("_nid", ""))
                 nodes.append(_node_result_to_labelled(node_id, node_data))
         elif properties:
-            # Build param mapping: safe Cypher param name → original value.
-            # Property keys may contain hyphens or other chars invalid in
-            # Cypher parameter names; _cypher_param_name() sanitises them.
-            param_map = {_cypher_param_name(k): v for k, v in properties.items()}
-            where_clauses = " AND ".join(f"n.{_cypher_ident(k)} = ${_cypher_param_name(k)}" for k in properties)
+            # Use indexed parameter names (p0, p1, …) to avoid collisions when
+            # different property keys sanitize to the same Cypher identifier
+            # (e.g. "a-b" and "a_b" both become "a_b").
+            param_map: dict[str, Any] = {}
+            clauses: list[str] = []
+            for idx, (k, v) in enumerate(properties.items()):
+                pname = f"p{idx}"
+                clauses.append(f"n.{_cypher_ident(k)} = ${pname}")
+                param_map[pname] = v
+            where_clauses = " AND ".join(clauses)
             cypher = f"MATCH (n) WHERE {where_clauses} RETURN n, n.id AS _nid LIMIT 1000"
             result = self._client.cypher(cypher, params=param_map)
             for row in result:
