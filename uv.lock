@@ -332,6 +332,7 @@ wheels = [
 name = "coordinode"
 source = { editable = "coordinode" }
 dependencies = [
+    { name = "googleapis-common-protos" },
     { name = "grpcio" },
     { name = "protobuf" },
 ]
@@ -346,6 +347,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "googleapis-common-protos", specifier = ">=1.62" },
     { name = "grpcio", specifier = ">=1.60" },
     { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.60" },
     { name = "protobuf", specifier = ">=4.25" },
@@ -359,6 +361,9 @@ provides-extras = ["dev"]
 name = "coordinode-workspace"
 version = "0.0.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "googleapis-common-protos" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -371,6 +376,7 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "googleapis-common-protos", specifier = ">=1.74.0" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -537,6 +543,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e1/cf/b50ddf667c15276a9ab15a70ef5f257564de271957933ffea49d2cdbcdfb/fsspec-2026.3.0.tar.gz", hash = "sha256:1ee6a0e28677557f8c2f994e3eea77db6392b4de9cd1f5d7a9e87a0ae9d01b41", size = 313547, upload-time = "2026-03-27T19:11:14.892Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/1f/5f4a3cd9e4440e9d9bc78ad0a91a1c8d46b4d429d5239ebe6793c9fe5c41/fsspec-2026.3.0-py3-none-any.whl", hash = "sha256:d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4", size = 202595, upload-time = "2026-03-27T19:11:13.595Z" },
+]
+
+[[package]]
+name = "googleapis-common-protos"
+version = "1.74.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/20/18/a746c8344152d368a5aac738d4c857012f2c5d1fd2eac7e17b647a7861bd/googleapis_common_protos-1.74.0.tar.gz", hash = "sha256:57971e4eeeba6aad1163c1f0fc88543f965bb49129b8bb55b2b7b26ecab084f1", size = 151254, upload-time = "2026-04-02T21:23:26.679Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/b0/be5d3329badb9230b765de6eea66b73abd5944bdeb5afb3562ddcd80ae84/googleapis_common_protos-1.74.0-py3-none-any.whl", hash = "sha256:702216f78610bb510e3f12ac3cafd281b7ac45cc5d86e90ad87e4d301a3426b5", size = 300743, upload-time = "2026-04-02T21:22:49.108Z" },
 ]
 
 [[package]]
