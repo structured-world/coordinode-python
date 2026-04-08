@@ -85,27 +85,17 @@ def test_cypher_no_rows(client):
     assert rows == []
 
 
-# ── Graph RPC API (stubs — data not yet persisted, node_id always 0) ──────────
-# GraphService (CreateNode / GetNode / CreateEdge) returns the request echoed
-# back with node_id=0. The nodes are NOT stored; MATCH via Cypher returns empty.
-# These tests document the current alpha behaviour so regressions are visible.
-
-_GRAPH_RPC_REASON = (
-    "GraphService stubs echo request data but do not persist nodes (id always 0). "
-    "CypherService is the production path for node/edge creation in alpha."
-)
+# ── Graph RPC API ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(reason=_GRAPH_RPC_REASON, strict=True)
 def test_create_node_rpc_returns_id(client):
-    """CreateNode RPC must return a non-zero node_id once implemented."""
+    """CreateNode RPC returns a non-zero node_id."""
     node = client.create_node(labels=["Person"], properties={"name": f"rpc-{uid()}"})
     assert node.id > 0
 
 
-@pytest.mark.xfail(reason=_GRAPH_RPC_REASON, strict=True)
 def test_create_node_rpc_persists(client):
-    """Node created via RPC must be retrievable via Cypher."""
+    """Node created via RPC is retrievable via Cypher."""
     name = f"persist-{uid()}"
     client.create_node(labels=["Person"], properties={"name": name})
     rows = client.cypher("MATCH (n:Person {name: $name}) RETURN n.name AS name", params={"name": name})
@@ -113,17 +103,15 @@ def test_create_node_rpc_persists(client):
     client.cypher("MATCH (n:Person {name: $name}) DELETE n", params={"name": name})
 
 
-@pytest.mark.xfail(reason=_GRAPH_RPC_REASON, strict=True)
 def test_get_node_rpc(client):
-    """GetNode must return the stored node once CreateNode persists."""
+    """GetNode returns the stored node with matching id."""
     node = client.create_node(labels=["Person"], properties={"name": f"get-{uid()}"})
     fetched = client.get_node(node.id)
     assert fetched.id == node.id
 
 
-@pytest.mark.xfail(reason=_GRAPH_RPC_REASON, strict=True)
 def test_create_edge_rpc(client):
-    """CreateEdge must create a traversable relationship once node IDs are valid."""
+    """CreateEdge connects two nodes; edge_id > 0 and endpoints match."""
     a = client.create_node(labels=["EdgeTest"], properties={"name": f"a-{uid()}"})
     b = client.create_node(labels=["EdgeTest"], properties={"name": f"b-{uid()}"})
     edge = client.create_edge("KNOWS", a.id, b.id, properties={"since": 2020})
