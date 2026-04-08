@@ -183,7 +183,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         """Upsert nodes into the graph."""
         for node in nodes:
             props = _labelled_to_props(node)
-            label = _node_label(node)
+            label = _cypher_ident(_node_label(node))
             cypher = f"MERGE (n:{label} {{id: $id}}) SET n += $props"
             self._client.cypher(cypher, params={"id": node.id, "props": props})
 
@@ -215,7 +215,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         if relation_names or properties:
             raise NotImplementedError("delete() does not yet support filtering by relation_names or properties")
         if ids:
-            cypher = "MATCH (n) WHERE id(n) IN $ids DETACH DELETE n"
+            # Use n.id (string adapter ID) for consistency with get()
+            cypher = "MATCH (n) WHERE n.id IN $ids DETACH DELETE n"
             self._client.cypher(cypher, params={"ids": ids})
         elif entity_names:
             cypher = "MATCH (n) WHERE n.name IN $names DETACH DELETE n"

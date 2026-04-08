@@ -5,6 +5,7 @@ CoordinodeClient — synchronous and asynchronous gRPC client for CoordiNode.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -18,6 +19,8 @@ from coordinode._types import (
     from_property_value,
     props_to_dict,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── Low-level helpers ────────────────────────────────────────────────────────
 
@@ -295,7 +298,12 @@ class AsyncCoordinodeClient:
         try:
             resp = await self._health_stub.Check(HealthCheckRequest(), timeout=5.0)
             return resp.status == ServingStatus.SERVING_STATUS_SERVING
-        except grpc.RpcError:
+        except grpc.RpcError as e:
+            logger.debug(
+                "health check failed: %s %s",
+                e.code(),  # type: ignore[union-attr]
+                e.details(),  # type: ignore[union-attr]
+            )
             return False
 
 
