@@ -31,22 +31,20 @@ jobs:
           submodules: recursive
           fetch-depth: 0   # hatch-vcs needs full history for tag detection
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.11"
 
-      - name: Install protoc + build tools
-        run: |
-          sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          pip install hatchling hatch-vcs grpcio-tools build
+      - name: Install build tools
+        run: uv sync
 
       - name: Generate proto stubs (coordinode only)
         if: matrix.package.name == 'coordinode'
-        run: make proto
+        run: uv run make proto
 
       - name: Build wheel + sdist
         working-directory: ${{ matrix.package.path }}
-        run: python -m build
+        run: uv run python -m build
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4

@@ -23,6 +23,7 @@ coordinode = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "build>=1.2",
     "grpcio-tools>=1.60",
     "pytest>=8",
     "pytest-asyncio>=0.23",
