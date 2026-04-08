@@ -365,6 +365,8 @@ class CoordinodeClient:
             self._loop.close()
 
     def _run(self, coro: Any) -> Any:
+        if self._loop.is_closed():
+            raise RuntimeError("CoordinodeClient has been closed and cannot be reused")
         if not self._connected:
             self._loop.run_until_complete(self._async.connect())
             self._connected = True

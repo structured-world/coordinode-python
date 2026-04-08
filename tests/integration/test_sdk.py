@@ -7,7 +7,6 @@ Requires a running CoordiNode instance:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import uuid
 
@@ -26,13 +25,6 @@ def client():
     with CoordinodeClient(ADDR) as c:
         yield c
 
-
-@pytest.fixture(scope="module")
-def run():
-    """Run a coroutine synchronously (re-used event loop for the module)."""
-    loop = asyncio.new_event_loop()
-    yield loop.run_until_complete
-    loop.close()
 
 
 def uid() -> str:

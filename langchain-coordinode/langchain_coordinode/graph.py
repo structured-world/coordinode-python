@@ -129,6 +129,9 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
     """
     node_props: dict[str, list[dict[str, str]]] = {}
     rel_props: dict[str, list[dict[str, str]]] = {}
+    # TODO: CoordiNode's schema text does not include relationship direction info
+    # (start_label → end_label). Populate via Cypher introspection when needed:
+    # MATCH (a)-[r]->(b) RETURN DISTINCT labels(a)[0], type(r), labels(b)[0]
     relationships: list[dict[str, str]] = []
 
     in_nodes = False
