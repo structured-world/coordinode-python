@@ -62,13 +62,6 @@ def test_create_and_get_node(client):
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "VectorServiceImpl is a stub in server/src/services/vector.rs — always returns []."
-        " HNSW algorithm (coordinode-vector crate) is implemented, but not wired to the RPC handler."
-    ),
-    strict=True,
-)
 def test_vector_search(client):
     # Insert a node with an embedding, then search for it.
     # VectorResult has .node (NodeResult) and .distance (float).
