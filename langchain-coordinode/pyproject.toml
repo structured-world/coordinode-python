@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "langchain-coordinode"
 dynamic = ["version"]
 description = "LangChain integration for CoordiNode — GraphStore backed by graph + vector + full-text"
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "structured.world", email = "dev@structured.world" }]
@@ -33,6 +33,8 @@ Repository = "https://github.com/structured-world/coordinode-python"
 [tool.hatch.version]
 source = "vcs"
 tag-pattern = "v(?P<version>.*)"
+fallback-version = "0.0.0"
+raw-options = {root = ".."}
 
 [tool.hatch.build.hooks.vcs]
 version-file = "langchain_coordinode/_version.py"

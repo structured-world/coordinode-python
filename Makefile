@@ -1,4 +1,4 @@
-.PHONY: proto proto-check install test test-unit test-integration lint clean
+.PHONY: proto proto-check install install-uv test test-unit test-integration lint clean
 
 PROTO_SRC  := proto
 PROTO_OUT  := coordinode/_proto
@@ -24,8 +24,12 @@ proto-check:
 	@test -f $(PROTO_OUT)/coordinode/v1/query/cypher_pb2.py || \
 		(echo "ERROR: Proto stubs not generated. Run: make proto" && exit 1)
 
-# Install all packages in editable mode for development
+# Install using uv (recommended for contributors)
 install: proto
+	uv sync
+
+# Install using pip (alternative — works without uv)
+install-pip: proto
 	pip install -e "coordinode[dev]"
 	pip install -e langchain-coordinode/
 	pip install -e llama-index-coordinode/

@@ -1,0 +1,31 @@
+# Workspace root — not a package. Controls uv workspace and shared dev tooling.
+# uv users: `uv sync` installs all packages in editable mode.
+# pip users: `pip install -e coordinode/` installs individual packages.
+
+[project]
+name = "coordinode-workspace"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[tool.uv]
+package = false  # virtual root — not installed as a package
+
+[tool.uv.workspace]
+members = [
+    "coordinode",
+    "langchain-coordinode",
+    "llama-index-coordinode",
+]
+
+[tool.uv.sources]
+# Local editable installs for workspace members
+coordinode = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.60",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2",
+    "ruff>=0.4",
+]

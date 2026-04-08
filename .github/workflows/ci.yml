@@ -16,9 +16,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: uv pip install ruff --system
-      - run: ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
-      - run: ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv sync
+      - run: uv run ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv run ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -36,18 +36,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install packages
-        run: |
-          uv pip install grpcio-tools --system
-          uv pip install -e "coordinode[dev]" --system
-          uv pip install -e langchain-coordinode/ --system
-          uv pip install -e llama-index-coordinode/ --system
+      - name: Install dependencies
+        run: uv sync
 
       - name: Generate proto stubs
-        run: make proto
+        run: uv run make proto
 
       - name: Unit tests
-        run: pytest tests/unit/ -v
+        run: uv run pytest tests/unit/ -v
 
   test-integration:
     name: Integration tests
@@ -74,11 +70,10 @@ jobs:
 
       - name: Install + generate proto
         run: |
-          uv pip install grpcio-tools --system
-          uv pip install -e "coordinode[dev]" --system
-          make proto
+          uv sync
+          uv run make proto
 
       - name: Integration tests
         env:
           COORDINODE_ADDR: "localhost:7080"
-        run: pytest tests/integration/ -v --timeout=30
+        run: uv run pytest tests/integration/ -v --timeout=30
