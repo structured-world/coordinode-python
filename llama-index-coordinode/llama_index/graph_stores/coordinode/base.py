@@ -147,9 +147,13 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             dst_data = row.get("m", {})
             src_id = str(row.get("_src_id", ""))
             dst_id = str(row.get("_dst_id", ""))
-            # Variable-length path r returns a list; take first rel type as label.
+            # Variable-length path [r*1..N] returns a list of relationship dicts.
             rels = row.get("r", [])
-            rel_label = str(rels[0]) if isinstance(rels, list) and rels else "RELATED"
+            if isinstance(rels, list) and rels:
+                first_rel = rels[0]
+                rel_label = first_rel.get("type", "RELATED") if isinstance(first_rel, dict) else str(first_rel)
+            else:
+                rel_label = "RELATED"
             src = _node_result_to_labelled(src_id, src_data)
             dst = _node_result_to_labelled(dst_id, dst_data)
             rel = Relation(label=rel_label, source_id=src_id, target_id=dst_id)
