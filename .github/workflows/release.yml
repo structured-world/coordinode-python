@@ -95,4 +95,3 @@ jobs:
           prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
           generate_release_notes: true
           files: dist/*
-

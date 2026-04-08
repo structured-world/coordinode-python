@@ -35,6 +35,8 @@ def to_property_value(py_val: PyValue) -> Any:
         pv.bytes_value = py_val
     elif isinstance(py_val, list | tuple):
         # Homogeneous float list → Vector; mixed/str list → PropertyList
+        # isinstance() with X|Y union syntax is valid from Python 3.10+ (PEP 604).
+        # This package requires Python >=3.11, so no tuple-of-types workaround needed.
         if py_val and all(isinstance(v, int | float) for v in py_val):
             vec = Vector(values=[float(v) for v in py_val])
             pv.vector_value.CopyFrom(vec)

@@ -15,6 +15,15 @@ from llama_index.core.graph_stores.types import (
 from llama_index.core.vector_stores.types import VectorStoreQuery
 
 
+def _cypher_ident(value: str) -> str:
+    """Backtick-escape a Cypher identifier (label, rel-type, property key).
+
+    Doubles any embedded backticks per the OpenCypher spec so that arbitrary
+    strings can be used safely as identifiers without Cypher injection.
+    """
+    return f"`{value.replace('`', '``')}`"
+
+
 class CoordinodePropertyGraphStore(PropertyGraphStore):
     """LlamaIndex ``PropertyGraphStore`` backed by CoordiNode.
 
@@ -60,17 +69,21 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         nodes: list[LabelledNode] = []
 
         if ids:
-            for node_id in ids:
-                result = self._client.get_node(node_id)
-                if result is not None:
-                    nodes.append(_node_result_to_labelled(node_id, result))
+            # Query by the stored n.id property (string adapter ID), not by the
+            # graph-internal integer node ID that get_node() expects.
+            cypher = "MATCH (n) WHERE n.id IN $ids RETURN n, n.id AS _nid LIMIT 1000"
+            result = self._client.cypher(cypher, params={"ids": ids})
+            for row in result:
+                node_data = row.get("n", {})
+                node_id = str(row.get("_nid", ""))
+                nodes.append(_node_result_to_labelled(node_id, node_data))
         elif properties:
-            where_clauses = " AND ".join(f"n.{k} = ${k}" for k in properties)
-            cypher = f"MATCH (n) WHERE {where_clauses} RETURN n, id(n) AS _id LIMIT 1000"
+            where_clauses = " AND ".join(f"n.{_cypher_ident(k)} = ${k}" for k in properties)
+            cypher = f"MATCH (n) WHERE {where_clauses} RETURN n, n.id AS _nid LIMIT 1000"
             result = self._client.cypher(cypher, params=properties)
             for row in result:
                 node_data = row.get("n", {})
-                node_id = str(row.get("_id", ""))
+                node_id = str(row.get("_nid", ""))
                 nodes.append(_node_result_to_labelled(node_id, node_data))
 
         return nodes
@@ -86,12 +99,14 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         conditions: list[str] = []
         params: dict[str, Any] = {}
 
+        if properties or ids:
+            raise NotImplementedError("get_triplets() does not yet support filtering by properties or ids")
         if entity_names:
             conditions.append("(n.name IN $entity_names OR m.name IN $entity_names)")
             params["entity_names"] = entity_names
         if relation_names:
-            rel_filter = "|".join(relation_names)
-            # Inline into pattern — CoordiNode supports dynamic type lists
+            # Escape each type name to prevent Cypher injection
+            rel_filter = "|".join(_cypher_ident(t) for t in relation_names)
             rel_pattern = f"[r:{rel_filter}]"
         else:
             rel_pattern = "[r]"
@@ -129,9 +144,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         if not graph_nodes:
             return []
 
-        ids = [n.id for n in graph_nodes]
-        # ignore_rels: OpenCypher doesn't support dynamic type exclusion in patterns;
-        # would require WHERE NOT type(r) IN $ignore_rels — added when needed.
+        node_ids = [n.id for n in graph_nodes]
+        ignored = set(ignore_rels) if ignore_rels else set()
 
         cypher = (
             f"MATCH (n)-[r*1..{depth}]->(m) "
@@ -139,7 +153,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             f"RETURN n, r, m, id(n) AS _src_id, id(m) AS _dst_id "
             f"LIMIT {limit}"
         )
-        result = self._client.cypher(cypher, params={"ids": ids})
+        result = self._client.cypher(cypher, params={"ids": node_ids})
 
         triplets: list[list[LabelledNode]] = []
         for row in result:
@@ -149,6 +163,10 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             dst_id = str(row.get("_dst_id", ""))
             # Variable-length path [r*1..N] returns a list of relationship dicts.
             rels = row.get("r", [])
+            # Skip paths that contain any ignored relationship type.
+            if ignored and isinstance(rels, list):
+                if any(isinstance(r, dict) and r.get("type") in ignored for r in rels):
+                    continue
             if isinstance(rels, list) and rels:
                 first_rel = rels[0]
                 rel_label = first_rel.get("type", "RELATED") if isinstance(first_rel, dict) else str(first_rel)
@@ -174,7 +192,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         for rel in relations:
             props = rel.properties or {}
             cypher = (
-                f"MATCH (src {{id: $src_id}}), (dst {{id: $dst_id}}) MERGE (src)-[r:{rel.label}]->(dst) SET r += $props"
+                f"MATCH (src {{id: $src_id}}), (dst {{id: $dst_id}}) "
+                f"MERGE (src)-[r:{_cypher_ident(rel.label)}]->(dst) SET r += $props"
             )
             self._client.cypher(
                 cypher,
@@ -193,6 +212,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         ids: list[str] | None = None,
     ) -> None:
         """Delete nodes and/or relations matching given criteria."""
+        if relation_names or properties:
+            raise NotImplementedError("delete() does not yet support filtering by relation_names or properties")
         if ids:
             cypher = "MATCH (n) WHERE id(n) IN $ids DETACH DELETE n"
             self._client.cypher(cypher, params={"ids": ids})

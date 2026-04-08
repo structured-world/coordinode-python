@@ -26,7 +26,10 @@ from coordinode.client import (
     VectorResult,
 )
 
-__version__ = "0.3.0a1"
+try:
+    from coordinode._version import __version__
+except ImportError:
+    __version__ = "0.0.0"  # fallback for editable installs without hatch-vcs
 __all__ = [
     "CoordinodeClient",
     "AsyncCoordinodeClient",

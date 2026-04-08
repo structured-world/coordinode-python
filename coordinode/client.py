@@ -102,9 +102,13 @@ class AsyncCoordinodeClient:
         timeout: float = 30.0,
     ) -> None:
         # Support "host:port" as a single string (common gRPC convention).
-        if ":" in host and port == 7080:
+        # Parse whenever the last colon-delimited segment is numeric, regardless
+        # of default port. IPv6 bracket notation ([::1]:7080) is handled correctly
+        # by rsplit(":", 1): "[::1]" + "7080".
+        if ":" in host:
             _h, _p = host.rsplit(":", 1)
-            host, port = _h, int(_p)
+            if _p.isdigit():
+                host, port = _h, int(_p)
         self._host = host
         self._port = port
         self._tls = tls

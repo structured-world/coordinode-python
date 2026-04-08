@@ -1,4 +1,4 @@
-.PHONY: proto proto-check install install-uv test test-unit test-integration lint clean
+.PHONY: proto proto-check install install-pip test test-unit test-integration lint clean
 
 PROTO_SRC  := proto
 PROTO_OUT  := coordinode/_proto
@@ -16,8 +16,11 @@ proto:
 	@# Add __init__.py to every generated package directory
 	@find $(PROTO_OUT) -type d -exec touch {}/__init__.py \;
 	@# Fix absolute imports in all generated pb2 files (grpc_tools generates absolute paths)
-	@find $(PROTO_OUT) -name '*.py' -exec sed -i '' \
+	@# sed -i.bak is portable: macOS needs empty-string backup arg, GNU sed uses -i alone;
+	@# using .bak suffix works on both, then we clean up the backup files.
+	@find $(PROTO_OUT) -name '*.py' -exec sed -i.bak \
 		's/from coordinode\./from coordinode._proto.coordinode./g' {} \;
+	@find $(PROTO_OUT) -name '*.py.bak' -delete
 	@echo "==> Proto generation complete: $(PROTO_OUT)/"
 
 proto-check:

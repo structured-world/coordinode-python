@@ -49,7 +49,8 @@ def test_create_and_get_node(client):
         "MATCH (n:IntegrationTest {name: $name}) RETURN n.name AS name",
         params={"name": "sdk-test-node"},
     )
-    assert found and found[0]["name"] == "sdk-test-node"
+    assert found, "MATCH returned no rows"
+    assert found[0]["name"] == "sdk-test-node"
 
     # Clean up
     client.cypher(
