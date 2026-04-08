@@ -201,8 +201,57 @@ def test_bool_not_serialised_as_vector(client):
 
 
 def test_get_schema_text(client):
-    schema = client.get_schema_text()
-    assert isinstance(schema, str)
+    """get_schema_text returns a non-empty string that lists labels and edge types."""
+    tag = uid()
+    client.cypher(
+        "CREATE (a:SchemaTestLabel {tag: $tag})-[:SCHEMA_EDGE]->(b:SchemaTestLabel {tag: $tag})",
+        params={"tag": tag},
+    )
+    try:
+        schema = client.get_schema_text()
+        assert isinstance(schema, str)
+        assert len(schema) > 0, "schema text must not be empty after data creation"
+        assert "SchemaTestLabel" in schema, f"label missing from schema text: {schema!r}"
+        assert "SCHEMA_EDGE" in schema, f"edge type missing from schema text: {schema!r}"
+    finally:
+        client.cypher("MATCH (n:SchemaTestLabel {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+
+
+# ── Hybrid search ─────────────────────────────────────────────────────────────
+
+
+def test_hybrid_search_returns_results(client):
+    """hybrid_search traverses graph edges then ranks neighbours by vector distance."""
+    tag = uid()
+    vec = [float(i) / 8 for i in range(8)]
+    # Create two nodes connected by RELATED edge, both have embeddings.
+    client.cypher(
+        "CREATE (a:HybridTest {tag: $tag, embedding: $vec})"
+        "-[:RELATED]->"
+        "(b:HybridTest {tag: $tag, embedding: $vec})",
+        params={"tag": tag, "vec": vec},
+    )
+    # Retrieve the start node id.
+    # `a` in RETURN resolves to Value::Int(node_id) via NodeScan — no id() function needed.
+    rows = client.cypher(
+        "MATCH (a:HybridTest {tag: $tag})-[:RELATED]->(b) RETURN a AS aid",
+        params={"tag": tag},
+    )
+    try:
+        assert len(rows) >= 1, f"setup nodes not found: {rows}"
+        start_id = rows[0]["aid"]
+        results = client.hybrid_search(
+            start_node_id=start_id,
+            edge_type="RELATED",
+            vector=vec,
+            top_k=1,
+            vector_property="embedding",
+        )
+        assert len(results) >= 1, f"hybrid_search returned no results"
+        assert hasattr(results[0], "distance")
+        assert hasattr(results[0], "node")
+    finally:
+        client.cypher("MATCH (n:HybridTest {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
 
 # ── Host:port string parsing ──────────────────────────────────────────────────
@@ -247,7 +296,7 @@ async def test_async_client_cypher():
 
 @pytest.mark.asyncio
 async def test_async_create_node():
-    # Use Cypher; graph RPC stubs not yet wired (see test_create_node_rpc_*).
+    # Create node via Cypher to verify async client write path.
     tag = uid()
     async with AsyncCoordinodeClient(ADDR) as c:
         await c.cypher("CREATE (n:AsyncTest {tag: $tag})", params={"tag": tag})
