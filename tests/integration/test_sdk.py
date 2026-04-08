@@ -271,13 +271,6 @@ async def test_async_create_node():
 # ── Vector search (xfail until wired) ─────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    reason=(
-        "VectorServiceImpl is a stub — always returns []."
-        " HNSW is implemented in coordinode-vector but not wired to the RPC handler."
-    ),
-    strict=True,
-)
 def test_vector_search_returns_results(client):
     tag = uid()
     vec = [float(i) / 16 for i in range(16)]
