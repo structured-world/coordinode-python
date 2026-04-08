@@ -47,7 +47,7 @@ fallback-version = "0.0.0"
 raw-options = {root = ".."}
 
 [tool.hatch.build.hooks.vcs]
-version-file = "coordinode/_version.py"
+version-file = "_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["coordinode"]
