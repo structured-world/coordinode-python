@@ -59,7 +59,11 @@ def test_create_and_get_node(client):
 
 
 @pytest.mark.xfail(
-    reason="Vector index not yet implemented in alpha server — returns empty results",
+    reason=(
+        "VectorServiceImpl is a stub in server/src/services/vector.rs — always returns []."
+        " HNSW algorithm (coordinode-vector crate) is implemented, but not wired to the RPC handler."
+        " Tracked as gap G007 in coordinode-python GAPS.md."
+    ),
     strict=False,
 )
 def test_vector_search(client):
