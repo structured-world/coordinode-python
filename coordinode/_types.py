@@ -37,7 +37,9 @@ def to_property_value(py_val: PyValue) -> Any:
         # Homogeneous float list → Vector; mixed/str list → PropertyList
         # isinstance() with X|Y union syntax is valid from Python 3.10+ (PEP 604).
         # This package requires Python >=3.11, so no tuple-of-types workaround needed.
-        if py_val and all(isinstance(v, int | float) for v in py_val):
+        # bool is a subclass of int, so exclude it explicitly — [True, False] must
+        # not be serialised as a Vector of 1.0/0.0 but as a PropertyList.
+        if py_val and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in py_val):
             vec = Vector(values=[float(v) for v in py_val])
             pv.vector_value.CopyFrom(vec)
         else:

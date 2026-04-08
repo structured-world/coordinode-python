@@ -7,7 +7,7 @@ Quick start::
 
     with CoordinodeClient("localhost:7080") as db:
         result = db.cypher("MATCH (n:Concept) RETURN n LIMIT 5")
-        for row in result.rows:
+        for row in result:
             print(row)
 
 Async::

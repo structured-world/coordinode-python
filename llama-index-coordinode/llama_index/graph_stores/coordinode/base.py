@@ -131,7 +131,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cypher = (
             f"MATCH (n)-{rel_pattern}->(m) {where} "
-            "RETURN n, type(r) AS rel_type, m, id(n) AS _src_id, id(m) AS _dst_id "
+            "RETURN n, type(r) AS rel_type, m, n.id AS _src_id, m.id AS _dst_id "
             "LIMIT 1000"
         )
         result = self._client.cypher(cypher, params=params)
@@ -174,8 +174,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
         cypher = (
             f"MATCH (n)-[r*1..{depth}]->(m) "
-            f"WHERE id(n) IN $ids{ignore_clause} "
-            f"RETURN n, r, m, id(n) AS _src_id, id(m) AS _dst_id "
+            f"WHERE n.id IN $ids{ignore_clause} "
+            f"RETURN n, r, m, n.id AS _src_id, m.id AS _dst_id "
             f"LIMIT {limit}"
         )
         result = self._client.cypher(cypher, params=params)
