@@ -76,19 +76,16 @@ class CoordinodeGraph(GraphStore):
         # the rel_props keys returned by _parse_schema().
         rel_types = list(structured.get("rel_props", {}).keys())
         if rel_types:
-            try:
-                rel_filter = "|".join(_cypher_ident(t) for t in rel_types)
-                rows = self._client.cypher(
-                    f"MATCH (a)-[r:{rel_filter}]->(b) "
-                    "RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
-                )
-                structured["relationships"] = [
-                    {"start": row["src"], "type": row["rel"], "end": row["dst"]}
-                    for row in rows
-                    if row.get("src") and row.get("rel") and row.get("dst")
-                ]
-            except Exception:  # noqa: BLE001
-                pass  # Graph may have no relationships yet; structured["relationships"] stays []
+            rel_filter = "|".join(_cypher_ident(t) for t in rel_types)
+            rows = self._client.cypher(
+                f"MATCH (a)-[r:{rel_filter}]->(b) "
+                "RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
+            )
+            structured["relationships"] = [
+                {"start": row["src"], "type": row["rel"], "end": row["dst"]}
+                for row in rows
+                if row.get("src") and row.get("rel") and row.get("dst")
+            ]
         self._structured_schema = structured
 
     def add_graph_documents(
@@ -222,12 +219,15 @@ def _stable_document_id(source: Any) -> str:
     content = getattr(source, "page_content", "") or ""
     metadata = getattr(source, "metadata", {}) or {}
     # Use canonical JSON encoding to avoid delimiter ambiguity and ensure
-    # determinism for nested/non-scalar metadata values.
+    # determinism for nested/non-scalar metadata values.  default=str converts
+    # non-JSON-serializable types (datetime, UUID, Path, …) to their string
+    # representation so the hash never raises TypeError.
     canonical = json.dumps(
         {"content": content, "metadata": metadata},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        default=str,
     )
     return hashlib.sha256(canonical.encode()).hexdigest()[:32]
 

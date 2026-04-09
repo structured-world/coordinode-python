@@ -203,13 +203,14 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
 
         rel_filter = "|".join(_cypher_ident(t) for t in active_types)
         node_ids = [n.id for n in graph_nodes]
+        safe_limit = int(limit)  # coerce to int to prevent Cypher injection via non-integer input
         params: dict[str, object] = {"ids": node_ids}
 
         cypher = (
             f"MATCH (n)-[r:{rel_filter}]->(m) "
             f"WHERE n.id IN $ids "
             f"RETURN n, r.__type__ AS _rel_type, m, n.id AS _src_id, m.id AS _dst_id "
-            f"LIMIT {limit}"
+            f"LIMIT {safe_limit}"
         )
         result = self._client.cypher(cypher, params=params)
 
