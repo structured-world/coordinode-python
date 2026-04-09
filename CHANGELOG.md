@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/structured-world/coordinode-python/compare/v0.4.0...v0.4.1) (2026-04-09)
+
+
+### Bug Fixes
+
+* **release:** pin build version via SETUPTOOLS_SCM_PRETEND_VERSION ([0194b34](https://github.com/structured-world/coordinode-python/commit/0194b34d36f26c31c47687958d25e268367c12c1))
+* **release:** pin build version via SETUPTOOLS_SCM_PRETEND_VERSION ([ea7d09a](https://github.com/structured-world/coordinode-python/commit/ea7d09a26735b6a9470d3912108edee5463b4272))
+
 ## [0.4.0](https://github.com/structured-world/coordinode-python/compare/v0.3.0...v0.4.0) (2026-04-09)
 
 
