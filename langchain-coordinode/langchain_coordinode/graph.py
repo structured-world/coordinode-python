@@ -72,7 +72,7 @@ class CoordinodeGraph(GraphStore):
         # Cypher — get_schema_text() only lists edge types without direction.
         try:
             rows = self._client.cypher(
-                "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a)[0] AS src, type(r) AS rel, labels(b)[0] AS dst"
+                "MATCH (a)-[r]->(b) RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
             )
             structured["relationships"] = [
                 {"start": row["src"], "type": row["rel"], "end": row["dst"]}
@@ -82,6 +82,88 @@ class CoordinodeGraph(GraphStore):
         except Exception:  # noqa: BLE001
             pass  # Graph may have no relationships yet; structured["relationships"] stays []
         self._structured_schema = structured
+
+    def add_graph_documents(
+        self,
+        graph_documents: list[Any],
+        include_source: bool = False,
+    ) -> None:
+        """Store nodes and relationships extracted from ``GraphDocument`` objects.
+
+        Nodes are upserted by ``id`` (used as the ``name`` property).
+        Relationships are created between existing nodes; if a relationship
+        between the same source and target already exists it is skipped.
+
+        Args:
+            graph_documents: List of ``langchain_community.graphs.graph_document.GraphDocument``.
+            include_source: If ``True``, also store the source ``Document`` as a
+                ``__Document__`` node linked to every extracted entity.
+        """
+        for doc in graph_documents:
+            # ── Upsert nodes ──────────────────────────────────────────────
+            for node in doc.nodes:
+                label = _cypher_ident(node.type or "Entity")
+                props = dict(node.properties or {})
+                props.setdefault("name", node.id)
+                self._client.cypher(
+                    f"MERGE (n:{label} {{name: $name}}) SET n += $props",
+                    params={"name": node.id, "props": props},
+                )
+
+            # ── Create relationships (idempotent: skip if already exists) ─
+            for rel in doc.relationships:
+                src_label = _cypher_ident(rel.source.type or "Entity")
+                dst_label = _cypher_ident(rel.target.type or "Entity")
+                rel_type = _cypher_ident(rel.type)
+                props = dict(rel.properties or {})
+                # CoordiNode does not yet support MERGE for edges; use CREATE
+                # guarded by NOT EXISTS to avoid duplicates on repeated calls.
+                try:
+                    self._client.cypher(
+                        f"MATCH (src:{src_label} {{name: $src}}) "
+                        f"MATCH (dst:{dst_label} {{name: $dst}}) "
+                        f"WHERE NOT (src)-[:{rel_type}]->(dst) "
+                        f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
+                        params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+                    )
+                except Exception:  # noqa: BLE001
+                    # WHERE NOT EXISTS guard may not be supported on all server
+                    # versions; fall back to unconditional CREATE
+                    self._client.cypher(
+                        f"MATCH (src:{src_label} {{name: $src}}) "
+                        f"MATCH (dst:{dst_label} {{name: $dst}}) "
+                        f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
+                        params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+                    )
+
+            # ── Optionally link source document ───────────────────────────
+            if include_source and doc.source:
+                src_id = getattr(doc.source, "id", None) or str(id(doc.source))
+                self._client.cypher(
+                    "MERGE (d:__Document__ {id: $id}) SET d.page_content = $text",
+                    params={"id": src_id, "text": doc.source.page_content or ""},
+                )
+                for node in doc.nodes:
+                    label = _cypher_ident(node.type or "Entity")
+                    try:
+                        self._client.cypher(
+                            f"MATCH (d:__Document__ {{id: $doc_id}}) "
+                            f"MATCH (n:{label} {{name: $name}}) "
+                            f"WHERE NOT (d)-[:MENTIONS]->(n) "
+                            f"CREATE (d)-[:MENTIONS]->(n)",
+                            params={"doc_id": src_id, "name": node.id},
+                        )
+                    except Exception:  # noqa: BLE001
+                        self._client.cypher(
+                            f"MATCH (d:__Document__ {{id: $doc_id}}) "
+                            f"MATCH (n:{label} {{name: $name}}) "
+                            f"CREATE (d)-[:MENTIONS]->(n)",
+                            params={"doc_id": src_id, "name": node.id},
+                        )
+
+        # Invalidate cached schema so next access reflects new data
+        self._schema = None
+        self._structured_schema = None
 
     def query(
         self,
@@ -114,6 +196,14 @@ class CoordinodeGraph(GraphStore):
 
 
 # ── Schema parser ─────────────────────────────────────────────────────────
+
+
+def _cypher_ident(name: str) -> str:
+    """Escape a label/type name for use as a Cypher identifier."""
+    # If already safe (alphanumeric + underscore, not starting with digit) keep as-is
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        return name
+    return f"`{name.replace('`', '``')}`"
 
 
 def _parse_schema(schema_text: str) -> dict[str, Any]:
