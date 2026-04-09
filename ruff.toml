@@ -3,7 +3,9 @@ target-version = "py311"
 
 exclude = [
     # Generated proto stubs — do not lint
-    "coordinode/_proto/",
+    "coordinode/coordinode/_proto/",
+    # Generated version files — do not lint
+    "_version.py",
 ]
 
 [lint]
