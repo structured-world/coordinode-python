@@ -48,10 +48,10 @@ fallback-version = "0.0.0"
 raw-options = {root = ".."}
 
 [tool.hatch.build.hooks.vcs]
-version-file = "_version.py"
+version-file = "coordinode/_version.py"
 
 [tool.hatch.build.targets.wheel]
-sources = {"." = "coordinode"}
+packages = ["coordinode"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
