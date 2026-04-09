@@ -3,7 +3,9 @@ target-version = "py311"
 
 exclude = [
     # Generated proto stubs — do not lint
-    "coordinode/_proto/",
+    "coordinode/coordinode/_proto/",
+    # Generated version files — do not lint
+    "**/_version.py",
 ]
 
 [lint]
@@ -11,3 +13,6 @@ select = ["E", "F", "I", "W", "UP"]
 ignore = [
     "E501",  # line length handled by formatter
 ]
+
+[lint.isort]
+known-first-party = ["coordinode", "langchain_coordinode", "llama_index_coordinode"]
