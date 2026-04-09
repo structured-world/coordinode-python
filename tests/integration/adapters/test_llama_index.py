@@ -4,7 +4,7 @@ Requires a running CoordiNode instance. Set COORDINODE_ADDR env var
 (default: localhost:7080).
 
 Run via:
-    COORDINODE_ADDR=localhost:17080 pytest tests/integration/adapters/test_llama_index.py -v
+    COORDINODE_ADDR=localhost:7080 pytest tests/integration/adapters/test_llama_index.py -v
 """
 
 import os
@@ -120,6 +120,15 @@ def test_get_rel_map(store, tag):
     result = store.get_rel_map([src], depth=1, limit=10)
     assert isinstance(result, list)
     assert len(result) >= 1
+
+
+def test_get_rel_map_depth_gt1_raises(store, tag):
+    """depth > 1 must raise NotImplementedError until multi-hop is supported."""
+    node = EntityNode(label="LIRelMapDepth", name=f"DepthNode-{tag}")
+    store.upsert_nodes([node])
+
+    with pytest.raises(NotImplementedError):
+        store.get_rel_map([node], depth=2, limit=10)
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────

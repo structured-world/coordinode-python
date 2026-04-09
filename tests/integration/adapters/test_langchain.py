@@ -4,7 +4,7 @@ Requires a running CoordiNode instance. Set COORDINODE_ADDR env var
 (default: localhost:7080).
 
 Run via:
-    COORDINODE_ADDR=localhost:17080 pytest tests/integration/adapters/test_langchain.py -v
+    COORDINODE_ADDR=localhost:7080 pytest tests/integration/adapters/test_langchain.py -v
 """
 
 import os
@@ -97,26 +97,46 @@ def test_add_graph_documents_creates_relationship(graph, unique_tag):
     graph.add_graph_documents([doc])
 
     # Verify the relationship was created, not just the source node.
+    # count(*) instead of count(r): CoordiNode returns 0 for relationship-variable counts
     result = graph.query(
-        "MATCH (a:LCPerson2 {name: $src})-[r:LC_RESEARCHES]->(b:LCConcept {name: $dst}) RETURN count(r) AS cnt",
+        "MATCH (a:LCPerson2 {name: $src})-[r:LC_RESEARCHES]->(b:LCConcept {name: $dst}) RETURN count(*) AS cnt",
         params={"src": f"Charlie-{unique_tag}", "dst": f"GraphRAG-{unique_tag}"},
     )
     assert result[0]["cnt"] >= 1, f"relationship not found: {result}"
 
 
 def test_add_graph_documents_idempotent(graph, unique_tag):
-    """Calling add_graph_documents twice must not raise."""
-    node = Node(id=f"Idempotent-{unique_tag}", type="LCIdempotent")
-    doc = GraphDocument(nodes=[node], relationships=[], source=Document(page_content="test"))
+    """Calling add_graph_documents twice must not raise.
+
+    Nodes are idempotent (MERGE).  Edges are NOT — CoordiNode does not yet
+    support MERGE for edges, so unconditional CREATE is used and duplicate
+    edges are expected after two ingests.
+    """
+    node_a = Node(id=f"Idempotent-{unique_tag}", type="LCIdempotent")
+    node_b = Node(id=f"IdempTarget-{unique_tag}", type="LCIdempotent")
+    rel = Relationship(source=node_a, target=node_b, type="LC_IDEMP_REL")
+    doc = GraphDocument(
+        nodes=[node_a, node_b],
+        relationships=[rel],
+        source=Document(page_content="test"),
+    )
 
     graph.add_graph_documents([doc])
     graph.add_graph_documents([doc])  # second call must not raise
 
+    # Nodes: MERGE keeps count at 1
     result = graph.query(
-        "MATCH (n:LCIdempotent {name: $name}) RETURN count(n) AS cnt",
+        "MATCH (n:LCIdempotent {name: $name}) RETURN count(*) AS cnt",
         params={"name": f"Idempotent-{unique_tag}"},
     )
     assert result[0]["cnt"] == 1
+
+    # Edges: unconditional CREATE → count >= 1 (may be > 1 due to CoordiNode limitation)
+    result = graph.query(
+        "MATCH (a:LCIdempotent {name: $src})-[r:LC_IDEMP_REL]->(b:LCIdempotent {name: $dst}) RETURN count(*) AS cnt",
+        params={"src": f"Idempotent-{unique_tag}", "dst": f"IdempTarget-{unique_tag}"},
+    )
+    assert result[0]["cnt"] >= 1
 
 
 def test_schema_refreshes_after_add(graph, unique_tag):

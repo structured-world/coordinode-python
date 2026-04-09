@@ -131,12 +131,15 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             rel_filter = "|".join(_cypher_ident(t) for t in relation_names)
             rel_pattern = f"[r:{rel_filter}]"
         else:
-            rel_pattern = "[r]"
+            # CoordiNode: wildcard [r] pattern returns no results.
+            # Callers must supply relation_names for the query to work.
+            raise NotImplementedError(
+                "CoordinodePropertyGraphStore.get_triplets() requires relation_names — "
+                "CoordiNode does not support untyped wildcard [r] patterns"
+            )
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         # CoordiNode: use r.__type__ instead of type(r) — type() returns null.
-        # Wildcard [r] pattern also returns no results; caller must supply
-        # relation_names for wildcard queries to work.
         cypher = (
             f"MATCH (n)-{rel_pattern}->(m) {where} "
             "RETURN n, r.__type__ AS rel_type, m, n.id AS _src_id, m.id AS _dst_id "
@@ -165,28 +168,41 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         limit: int = 30,
         ignore_rels: list[str] | None = None,
     ) -> list[list[LabelledNode]]:
-        """Get relationship map for a set of nodes up to ``depth`` hops."""
+        """Get relationship map for a set of nodes up to ``depth`` hops.
+
+        Note: only ``depth=1`` (single hop) is supported. ``depth > 1`` raises
+        ``NotImplementedError`` because CoordiNode does not yet serialise
+        variable-length path results.
+        """
+        if depth != 1:
+            raise NotImplementedError(
+                "CoordinodePropertyGraphStore.get_rel_map() currently supports depth=1 only; "
+                "variable-length path queries are not yet available in CoordiNode"
+            )
+
         if not graph_nodes:
             return []
 
+        # CoordiNode: wildcard [r] pattern returns no results.  Fetch all
+        # known edge types from the schema and build a typed pattern instead,
+        # e.g. [r:TYPE_A|TYPE_B|...].
+        schema_text = self._client.get_schema_text()
+        edge_types = _parse_edge_types_from_schema(schema_text)
+
+        ignored = set(ignore_rels) if ignore_rels else set()
+        active_types = [t for t in edge_types if t not in ignored]
+
+        if not active_types:
+            return []
+
+        rel_filter = "|".join(_cypher_ident(t) for t in active_types)
         node_ids = [n.id for n in graph_nodes]
-        ignored = list(ignore_rels) if ignore_rels else []
-
         params: dict[str, object] = {"ids": node_ids}
-        ignore_clause = ""
-        if ignored:
-            # Single-hop [r]: filter with r.__type__ NOT IN $ignored_rels.
-            ignore_clause = " AND NOT r.__type__ IN $ignored_rels"
-            params["ignored_rels"] = ignored
 
-        # CoordiNode does not support variable-length path [r*1..N] in RETURN
-        # position (result serialisation is undefined for path lists).  Use a
-        # single-hop pattern; multi-hop traversal is a future enhancement.
-        _ = depth  # depth parameter reserved; currently single-hop only
         cypher = (
-            f"MATCH (n)-[r]->(m) "
-            f"WHERE n.id IN $ids{ignore_clause} "
-            f"RETURN n, r, m, n.id AS _src_id, m.id AS _dst_id "
+            f"MATCH (n)-[r:{rel_filter}]->(m) "
+            f"WHERE n.id IN $ids "
+            f"RETURN n, r.__type__ AS _rel_type, m, n.id AS _src_id, m.id AS _dst_id "
             f"LIMIT {limit}"
         )
         result = self._client.cypher(cypher, params=params)
@@ -197,13 +213,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             dst_data = row.get("m", {})
             src_id = str(row.get("_src_id", ""))
             dst_id = str(row.get("_dst_id", ""))
-            # Single-hop [r] returns the relationship as a dict.
-            # CoordiNode: use __type__ key — type() returns null.
-            r_val = row.get("r", {})
-            if isinstance(r_val, dict):
-                rel_label = r_val.get("__type__") or r_val.get("type") or "RELATED"
-            else:
-                rel_label = "RELATED"
+            rel_label = str(row.get("_rel_type") or "RELATED")
             src = _node_result_to_labelled(src_id, src_data)
             dst = _node_result_to_labelled(dst_id, dst_data)
             rel = Relation(label=rel_label, source_id=src_id, target_id=dst_id)
@@ -357,3 +367,25 @@ def _node_label(node: LabelledNode) -> str:
     if isinstance(node, EntityNode):
         return node.label or "Entity"
     return "Node"
+
+
+def _parse_edge_types_from_schema(schema_text: str) -> list[str]:
+    """Extract edge type names from CoordiNode schema text.
+
+    Parses the "Edge types:" section produced by ``get_schema_text()``.
+    """
+    edge_types: list[str] = []
+    in_edges = False
+    for line in schema_text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("edge types"):
+            in_edges = True
+            continue
+        if in_edges:
+            if not stripped:
+                break
+            if stripped.startswith("-") or stripped.startswith("*"):
+                name = stripped.lstrip("-* ").split("(")[0].strip()
+                if name:
+                    edge_types.append(name)
+    return edge_types

@@ -91,14 +91,18 @@ class CoordinodeGraph(GraphStore):
     ) -> None:
         """Store nodes and relationships extracted from ``GraphDocument`` objects.
 
-        Nodes are upserted by ``id`` (used as the ``name`` property).
-        Relationships are created between existing nodes; if a relationship
-        between the same source and target already exists it is skipped.
+        Nodes are upserted by ``id`` (used as the ``name`` property) via
+        ``MERGE``, so repeated calls are safe for nodes.
+
+        Relationships are created with unconditional ``CREATE`` because
+        CoordiNode does not yet support ``MERGE`` for edge patterns.  Re-ingesting
+        the same ``GraphDocument`` will therefore produce duplicate edges.
 
         Args:
             graph_documents: List of ``langchain_community.graphs.graph_document.GraphDocument``.
             include_source: If ``True``, also store the source ``Document`` as a
-                ``__Document__`` node linked to every extracted entity.
+                ``__Document__`` node linked to every extracted entity via
+                ``MENTIONS`` edges (also unconditional ``CREATE``).
         """
         for doc in graph_documents:
             # ── Upsert nodes ──────────────────────────────────────────────
@@ -206,8 +210,8 @@ def _stable_document_id(source: Any) -> str:
 
 def _cypher_ident(name: str) -> str:
     """Escape a label/type name for use as a Cypher identifier."""
-    # If already safe (alphanumeric + underscore, not starting with digit) keep as-is
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+    # ASCII-only word characters: letter/digit/underscore, not starting with digit.
+    if re.match(r"^[A-Za-z_]\w*$", name, re.ASCII):
         return name
     return f"`{name.replace('`', '``')}`"
 
