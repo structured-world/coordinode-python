@@ -10,6 +10,6 @@
       "changelog-path": "CHANGELOG.md"
     }
   },
-  "versioning": "semver",
+  "versioning": "default",
   "initial-version": "0.3.0"
 }
