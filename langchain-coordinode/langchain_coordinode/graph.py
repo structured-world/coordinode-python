@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -104,7 +105,9 @@ class CoordinodeGraph(GraphStore):
             for node in doc.nodes:
                 label = _cypher_ident(node.type or "Entity")
                 props = dict(node.properties or {})
-                props.setdefault("name", node.id)
+                # Always enforce node.id as the merge key; incoming
+                # properties["name"] must not drift from the MERGE predicate.
+                props["name"] = node.id
                 self._client.cypher(
                     f"MERGE (n:{label} {{name: $name}}) SET n += $props",
                     params={"name": node.id, "props": props},
@@ -138,7 +141,7 @@ class CoordinodeGraph(GraphStore):
 
             # ── Optionally link source document ───────────────────────────
             if include_source and doc.source:
-                src_id = getattr(doc.source, "id", None) or str(id(doc.source))
+                src_id = getattr(doc.source, "id", None) or _stable_document_id(doc.source)
                 self._client.cypher(
                     "MERGE (d:__Document__ {id: $id}) SET d.page_content = $text",
                     params={"id": src_id, "text": doc.source.page_content or ""},
@@ -196,6 +199,19 @@ class CoordinodeGraph(GraphStore):
 
 
 # ── Schema parser ─────────────────────────────────────────────────────────
+
+
+def _stable_document_id(source: Any) -> str:
+    """Return a deterministic ID for a LangChain Document.
+
+    Combines ``page_content`` and sorted ``metadata`` items so the same
+    document produces the same node across different Python processes,
+    making ``include_source=True`` re-ingest truly idempotent.
+    """
+    content = getattr(source, "page_content", "") or ""
+    metadata = getattr(source, "metadata", {}) or {}
+    stable = content + "|" + "|".join(f"{k}={v}" for k, v in sorted(metadata.items()))
+    return hashlib.sha256(stable.encode()).hexdigest()[:32]
 
 
 def _cypher_ident(name: str) -> str:

@@ -93,12 +93,13 @@ def test_add_graph_documents_creates_relationship(graph, unique_tag):
 
     graph.add_graph_documents([doc])
 
-    # Verify both nodes exist
+    # Verify the relationship was created, not just the source node.
     result = graph.query(
-        "MATCH (n:LCPerson2 {name: $name}) RETURN n.name AS name",
-        params={"name": f"Charlie-{unique_tag}"},
+        "MATCH (a:LCPerson2 {name: $src})-[r:LC_RESEARCHES]->(b:LCConcept {name: $dst}) "
+        "RETURN count(r) AS cnt",
+        params={"src": f"Charlie-{unique_tag}", "dst": f"GraphRAG-{unique_tag}"},
     )
-    assert len(result) >= 1, f"source node not found: {result}"
+    assert result[0]["cnt"] >= 1, f"relationship not found: {result}"
 
 
 def test_add_graph_documents_idempotent(graph, unique_tag):
@@ -113,7 +114,7 @@ def test_add_graph_documents_idempotent(graph, unique_tag):
         "MATCH (n:LCIdempotent {name: $name}) RETURN count(n) AS cnt",
         params={"name": f"Idempotent-{unique_tag}"},
     )
-    assert result[0]["cnt"] >= 1
+    assert result[0]["cnt"] == 1
 
 
 def test_schema_refreshes_after_add(graph, unique_tag):

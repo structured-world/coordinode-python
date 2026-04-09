@@ -66,7 +66,7 @@ def test_upsert_nodes_idempotent(store, tag):
     store.upsert_nodes([node])  # second call must not raise
 
     found = store.get(properties={"name": f"Idem-{tag}"})
-    assert len(found) >= 1
+    assert len(found) == 1
 
 
 def test_get_by_id(store, tag):
@@ -116,6 +116,7 @@ def test_get_rel_map(store, tag):
 
     result = store.get_rel_map([src], depth=1, limit=10)
     assert isinstance(result, list)
+    assert len(result) >= 1
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
