@@ -134,9 +134,12 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             rel_pattern = "[r]"
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        # CoordiNode: use r.__type__ instead of type(r) — type() returns null.
+        # Wildcard [r] pattern also returns no results; caller must supply
+        # relation_names for wildcard queries to work.
         cypher = (
             f"MATCH (n)-{rel_pattern}->(m) {where} "
-            "RETURN n, type(r) AS rel_type, m, n.id AS _src_id, m.id AS _dst_id "
+            "RETURN n, r.__type__ AS rel_type, m, n.id AS _src_id, m.id AS _dst_id "
             "LIMIT 1000"
         )
         result = self._client.cypher(cypher, params=params)
@@ -144,7 +147,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         triplets: list[list[LabelledNode]] = []
         for row in result:
             src_data = row.get("n", {})
-            rel_type = row.get("rel_type", "RELATED")
+            rel_type = row.get("rel_type") or "RELATED"
             dst_data = row.get("m", {})
             src_id = str(row.get("_src_id", ""))
             dst_id = str(row.get("_dst_id", ""))
@@ -195,7 +198,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             rels = row.get("r", [])
             if isinstance(rels, list) and rels:
                 first_rel = rels[0]
-                rel_label = first_rel.get("type", "RELATED") if isinstance(first_rel, dict) else str(first_rel)
+                # CoordiNode: use __type__ key instead of "type" — type() returns null
+                rel_label = first_rel.get("__type__") or first_rel.get("type", "RELATED") if isinstance(first_rel, dict) else str(first_rel)
             else:
                 rel_label = "RELATED"
             src = _node_result_to_labelled(src_id, src_data)
@@ -217,9 +221,13 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         """Upsert relationships into the graph."""
         for rel in relations:
             props = rel.properties or {}
+            label = _cypher_ident(rel.label)
+            # CoordiNode does not yet support MERGE for edge patterns; use CREATE.
+            # Note: repeated calls will create duplicate edges until MERGE for
+            # edges is implemented server-side.
             cypher = (
-                f"MATCH (src {{id: $src_id}}), (dst {{id: $dst_id}}) "
-                f"MERGE (src)-[r:{_cypher_ident(rel.label)}]->(dst) SET r += $props"
+                f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
+                f"CREATE (src)-[r:{label}]->(dst) SET r += $props"
             )
             self._client.cypher(
                 cypher,
