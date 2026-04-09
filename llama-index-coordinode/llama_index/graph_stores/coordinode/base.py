@@ -164,7 +164,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     def get_rel_map(
         self,
         graph_nodes: list[LabelledNode],
-        depth: int = 2,
+        depth: int = 1,
         limit: int = 30,
         ignore_rels: list[str] | None = None,
     ) -> list[list[LabelledNode]]:
@@ -235,10 +235,12 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             props = rel.properties or {}
             label = _cypher_ident(rel.label)
             # CoordiNode does not yet support MERGE for edge patterns; use CREATE.
+            # A WHERE NOT (src)-[:TYPE]->(dst) guard was tested but returns 0
+            # rows silently in CoordiNode, making all CREATE statements no-ops.
+            # Until server-side MERGE or pattern predicates are supported,
+            # repeated calls will create duplicate edges.
             # SET r += $props is skipped when props is empty — SET r += {} is
             # not supported by all server versions.
-            # Note: repeated calls will create duplicate edges until MERGE for
-            # edges is implemented server-side.
             if props:
                 cypher = (
                     f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "

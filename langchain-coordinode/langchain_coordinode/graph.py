@@ -71,17 +71,23 @@ class CoordinodeGraph(GraphStore):
         structured = _parse_schema(text)
         # Augment with relationship triples (start_label, type, end_label) via
         # Cypher — get_schema_text() only lists edge types without direction.
-        try:
-            rows = self._client.cypher(
-                "MATCH (a)-[r]->(b) RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
-            )
-            structured["relationships"] = [
-                {"start": row["src"], "type": row["rel"], "end": row["dst"]}
-                for row in rows
-                if row.get("src") and row.get("rel") and row.get("dst")
-            ]
-        except Exception:  # noqa: BLE001
-            pass  # Graph may have no relationships yet; structured["relationships"] stays []
+        # CoordiNode: wildcard [r] returns no results; build typed pattern from
+        # the rel_props keys returned by _parse_schema().
+        rel_types = list(structured.get("rel_props", {}).keys())
+        if rel_types:
+            try:
+                rel_filter = "|".join(_cypher_ident(t) for t in rel_types)
+                rows = self._client.cypher(
+                    f"MATCH (a)-[r:{rel_filter}]->(b) "
+                    "RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
+                )
+                structured["relationships"] = [
+                    {"start": row["src"], "type": row["rel"], "end": row["dst"]}
+                    for row in rows
+                    if row.get("src") and row.get("rel") and row.get("dst")
+                ]
+            except Exception:  # noqa: BLE001
+                pass  # Graph may have no relationships yet; structured["relationships"] stays []
         self._structured_schema = structured
 
     def add_graph_documents(
@@ -199,8 +205,11 @@ def _stable_document_id(source: Any) -> str:
     """Return a deterministic ID for a LangChain Document.
 
     Combines ``page_content`` and sorted ``metadata`` items so the same
-    document produces the same node across different Python processes,
-    making ``include_source=True`` re-ingest truly idempotent.
+    document produces the same ``__Document__`` node ID across different
+    Python processes.  This makes document-node creation stable when
+    ``include_source=True`` is used, but does not make re-ingest fully
+    idempotent because ``MENTIONS`` edges are not deduplicated until edge
+    ``MERGE``/dedup support is added to CoordiNode.
     """
     content = getattr(source, "page_content", "") or ""
     metadata = getattr(source, "metadata", {}) or {}
