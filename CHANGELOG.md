@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.4](https://github.com/structured-world/coordinode-python/compare/v0.4.3...v0.4.4) (2026-04-09)
+
+
+### Bug Fixes
+
+* **adapters:** fix wildcard [r] in refresh_schema, depth default, docstrings ([64a2877](https://github.com/structured-world/coordinode-python/commit/64a2877b12dabb759f44fd5e40f7b49896a55f2e))
+* **adapters:** raise NotImplementedError for unsupported wildcard patterns ([19a3b34](https://github.com/structured-world/coordinode-python/commit/19a3b346efbb080da35b2db6b442dc3fbf82d669))
+* **adapters:** use unconditional CREATE for edges; fix get_rel_map ([f045c77](https://github.com/structured-world/coordinode-python/commit/f045c77e01a5d8ba20dcb87923ed68f4ce4337dc))
+* CoordiNode Cypher compatibility — add_graph_documents, __type__/__label__, MATCH+CREATE ([d59e27e](https://github.com/structured-world/coordinode-python/commit/d59e27e02a7bd0d97d97d950ffd5b3ad982b8817))
+* harden refresh_schema, _stable_document_id, get_rel_map limit ([828e8d9](https://github.com/structured-world/coordinode-python/commit/828e8d976c607d1f7745eec9beb6c5692e252913))
+* **langchain:** enforce node.id as merge key; stable document IDs ([13487c9](https://github.com/structured-world/coordinode-python/commit/13487c9ca3b72ffce1a7ba17b8c37e988a692a10))
+* **langchain:** implement add_graph_documents and use __label__/__type__ ([50fb1f1](https://github.com/structured-world/coordinode-python/commit/50fb1f1c23519e43eb6d55f1d8014400cb700471)), closes [#14](https://github.com/structured-world/coordinode-python/issues/14)
+* **llama-index:** use __type__ for rel type and MATCH+CREATE for edges ([c06a820](https://github.com/structured-world/coordinode-python/commit/c06a820448c9d4d1bd0c33e2d356b75be6abb542)), closes [#14](https://github.com/structured-world/coordinode-python/issues/14)
+
 ## [0.4.3](https://github.com/structured-world/coordinode-python/compare/v0.4.2...v0.4.3) (2026-04-09)
 
 
