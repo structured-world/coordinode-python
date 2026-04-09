@@ -6,6 +6,7 @@ TestToPropertyValue:   requires generated proto stubs (make proto).
 """
 
 import pytest
+
 from coordinode._types import from_property_value, to_property_value
 
 # Detect whether proto stubs have been generated.

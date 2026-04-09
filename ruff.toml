@@ -13,3 +13,6 @@ select = ["E", "F", "I", "W", "UP"]
 ignore = [
     "E501",  # line length handled by formatter
 ]
+
+[lint.isort]
+known-first-party = ["coordinode", "langchain_coordinode", "llama_index_coordinode"]
