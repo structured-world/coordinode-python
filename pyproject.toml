@@ -28,6 +28,9 @@ coordinode = { workspace = true }
 dev = [
     "build>=1.2",
     "grpcio-tools>=1.60",
+    "langchain-community>=0.3",
+    "langchain-core>=0.3",
+    "llama-index-core>=0.12",
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2",

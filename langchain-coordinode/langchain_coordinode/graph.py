@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -70,18 +72,106 @@ class CoordinodeGraph(GraphStore):
         structured = _parse_schema(text)
         # Augment with relationship triples (start_label, type, end_label) via
         # Cypher — get_schema_text() only lists edge types without direction.
-        try:
+        # CoordiNode: wildcard [r] returns no results; build typed pattern from
+        # the rel_props keys returned by _parse_schema().
+        rel_types = list(structured.get("rel_props", {}).keys())
+        if rel_types:
+            rel_filter = "|".join(_cypher_ident(t) for t in rel_types)
             rows = self._client.cypher(
-                "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a)[0] AS src, type(r) AS rel, labels(b)[0] AS dst"
+                f"MATCH (a)-[r:{rel_filter}]->(b) "
+                "RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
             )
             structured["relationships"] = [
                 {"start": row["src"], "type": row["rel"], "end": row["dst"]}
                 for row in rows
                 if row.get("src") and row.get("rel") and row.get("dst")
             ]
-        except Exception:  # noqa: BLE001
-            pass  # Graph may have no relationships yet; structured["relationships"] stays []
         self._structured_schema = structured
+
+    def add_graph_documents(
+        self,
+        graph_documents: list[Any],
+        include_source: bool = False,
+    ) -> None:
+        """Store nodes and relationships extracted from ``GraphDocument`` objects.
+
+        Nodes are upserted by ``id`` (used as the ``name`` property) via
+        ``MERGE``, so repeated calls are safe for nodes.
+
+        Relationships are created with unconditional ``CREATE`` because
+        CoordiNode does not yet support ``MERGE`` for edge patterns.  Re-ingesting
+        the same ``GraphDocument`` will therefore produce duplicate edges.
+
+        Args:
+            graph_documents: List of ``langchain_community.graphs.graph_document.GraphDocument``.
+            include_source: If ``True``, also store the source ``Document`` as a
+                ``__Document__`` node linked to every extracted entity via
+                ``MENTIONS`` edges (also unconditional ``CREATE``).
+        """
+        for doc in graph_documents:
+            for node in doc.nodes:
+                self._upsert_node(node)
+            for rel in doc.relationships:
+                self._create_edge(rel)
+            if include_source and doc.source:
+                self._link_document_to_entities(doc)
+
+        # Invalidate cached schema so next access reflects new data
+        self._schema = None
+        self._structured_schema = None
+
+    def _upsert_node(self, node: Any) -> None:
+        """Upsert a single node by ``id`` via MERGE."""
+        label = _cypher_ident(node.type or "Entity")
+        props = dict(node.properties or {})
+        # Always enforce node.id as the merge key; incoming
+        # properties["name"] must not drift from the MERGE predicate.
+        props["name"] = node.id
+        self._client.cypher(
+            f"MERGE (n:{label} {{name: $name}}) SET n += $props",
+            params={"name": node.id, "props": props},
+        )
+
+    def _create_edge(self, rel: Any) -> None:
+        """Create a relationship via unconditional CREATE.
+
+        CoordiNode does not support MERGE for edge patterns.  Re-ingesting the
+        same relationship will create a duplicate edge.  SET r += $props is
+        skipped when props is empty because SET r += {} is not supported by all
+        server versions.
+        """
+        src_label = _cypher_ident(rel.source.type or "Entity")
+        dst_label = _cypher_ident(rel.target.type or "Entity")
+        rel_type = _cypher_ident(rel.type)
+        props = dict(rel.properties or {})
+        if props:
+            self._client.cypher(
+                f"MATCH (src:{src_label} {{name: $src}}) "
+                f"MATCH (dst:{dst_label} {{name: $dst}}) "
+                f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
+                params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+            )
+        else:
+            self._client.cypher(
+                f"MATCH (src:{src_label} {{name: $src}}) "
+                f"MATCH (dst:{dst_label} {{name: $dst}}) "
+                f"CREATE (src)-[r:{rel_type}]->(dst)",
+                params={"src": rel.source.id, "dst": rel.target.id},
+            )
+
+    def _link_document_to_entities(self, doc: Any) -> None:
+        """Upsert a ``__Document__`` node and CREATE ``MENTIONS`` edges to all entities."""
+        src_id = getattr(doc.source, "id", None) or _stable_document_id(doc.source)
+        self._client.cypher(
+            "MERGE (d:__Document__ {id: $id}) SET d.page_content = $text",
+            params={"id": src_id, "text": doc.source.page_content or ""},
+        )
+        for node in doc.nodes:
+            label = _cypher_ident(node.type or "Entity")
+            self._client.cypher(
+                f"MATCH (d:__Document__ {{id: $doc_id}}) MATCH (n:{label} {{name: $name}}) CREATE (d)-[:MENTIONS]->(n)",
+                params={"doc_id": src_id, "name": node.id},
+            )
 
     def query(
         self,
@@ -114,6 +204,40 @@ class CoordinodeGraph(GraphStore):
 
 
 # ── Schema parser ─────────────────────────────────────────────────────────
+
+
+def _stable_document_id(source: Any) -> str:
+    """Return a deterministic ID for a LangChain Document.
+
+    Combines ``page_content`` and sorted ``metadata`` items so the same
+    document produces the same ``__Document__`` node ID across different
+    Python processes.  This makes document-node creation stable when
+    ``include_source=True`` is used, but does not make re-ingest fully
+    idempotent because ``MENTIONS`` edges are not deduplicated until edge
+    ``MERGE``/dedup support is added to CoordiNode.
+    """
+    content = getattr(source, "page_content", "") or ""
+    metadata = getattr(source, "metadata", {}) or {}
+    # Use canonical JSON encoding to avoid delimiter ambiguity and ensure
+    # determinism for nested/non-scalar metadata values.  default=str converts
+    # non-JSON-serializable types (datetime, UUID, Path, …) to their string
+    # representation so the hash never raises TypeError.
+    canonical = json.dumps(
+        {"content": content, "metadata": metadata},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
+def _cypher_ident(name: str) -> str:
+    """Escape a label/type name for use as a Cypher identifier."""
+    # ASCII-only word characters: letter/digit/underscore, not starting with digit.
+    if re.match(r"^[A-Za-z_]\w*$", name, re.ASCII):
+        return name
+    return f"`{name.replace('`', '``')}`"
 
 
 def _parse_schema(schema_text: str) -> dict[str, Any]:
