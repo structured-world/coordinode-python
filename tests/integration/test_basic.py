@@ -8,6 +8,8 @@ Run via:
 """
 
 import os
+import uuid
+
 import pytest
 
 from coordinode import CoordinodeClient
@@ -22,34 +24,47 @@ def client():
 
 
 def test_health(client):
-    h = client.health()
-    assert h.get("status") in ("ok", "serving", "SERVING")
+    # health() returns bool — True when server reports SERVING
+    assert client.health() is True
 
 
 def test_cypher_return_literal(client):
+    # cypher() returns List[Dict[str, Any]] — one row per result row
     result = client.cypher("RETURN 1 AS n")
-    assert result.columns == ["n"] or "n" in result.columns
-    assert len(result.rows) == 1
+    assert len(result) == 1
+    assert result[0]["n"] == 1
 
 
 def test_create_and_get_node(client):
+    # CREATE returns the node as an integer ID; RETURN n.prop verifies properties.
+    # Note: id(n) is not yet implemented in alpha — use RETURN n.name.
+    # UUID suffix prevents collisions when tests run in parallel or are retried.
+    name = f"sdk-test-node-{uuid.uuid4().hex[:8]}"
     result = client.cypher(
-        "CREATE (n:IntegrationTest {name: $name}) RETURN id(n) AS node_id",
-        params={"name": "sdk-test-node"},
+        "CREATE (n:IntegrationTest {name: $name}) RETURN n.name AS name",
+        params={"name": name},
     )
-    assert result.rows, "CREATE returned no rows"
-    node_id = str(result.rows[0][0])
-    assert node_id
+    assert result, "CREATE returned no rows"
+    assert result[0]["name"] == name
+
+    # Verify node is retrievable
+    found = client.cypher(
+        "MATCH (n:IntegrationTest {name: $name}) RETURN n.name AS name",
+        params={"name": name},
+    )
+    assert found, "MATCH returned no rows"
+    assert found[0]["name"] == name
 
     # Clean up
     client.cypher(
         "MATCH (n:IntegrationTest {name: $name}) DELETE n",
-        params={"name": "sdk-test-node"},
+        params={"name": name},
     )
 
 
 def test_vector_search(client):
-    # Insert a node with an embedding, then search for it
+    # Insert a node with an embedding, then search for it.
+    # VectorResult has .node (NodeResult) and .distance (float).
     vec = [0.1] * 16
     client.cypher(
         "CREATE (d:VecTestDoc {id: 'vs-test', embedding: $vec})",
@@ -62,6 +77,11 @@ def test_vector_search(client):
             vector=vec,
             top_k=1,
         )
+        # API must not raise — result is a list (possibly empty in alpha)
+        assert isinstance(results, list)
+        # When vector index is implemented, expect at least one result
         assert len(results) >= 1
+        assert hasattr(results[0], "distance")
+        assert hasattr(results[0], "node")
     finally:
         client.cypher("MATCH (d:VecTestDoc {id: 'vs-test'}) DELETE d")

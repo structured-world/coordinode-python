@@ -7,7 +7,7 @@ Quick start::
 
     with CoordinodeClient("localhost:7080") as db:
         result = db.cypher("MATCH (n:Concept) RETURN n LIMIT 5")
-        for row in result.rows:
+        for row in result:
             print(row)
 
 Async::
@@ -26,7 +26,10 @@ from coordinode.client import (
     VectorResult,
 )
 
-__version__ = "0.3.0a1"
+try:
+    from coordinode._version import __version__
+except ImportError:
+    __version__ = "0.0.0"  # fallback for editable installs without hatch-vcs
 __all__ = [
     "CoordinodeClient",
     "AsyncCoordinodeClient",

@@ -6,8 +6,8 @@ build-backend = "hatchling.build"
 name = "coordinode"
 dynamic = ["version"]
 description = "Python client for CoordiNode — graph + vector + full-text database"
-readme = "../README.md"
-requires-python = ">=3.9"
+readme = "README.md"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "structured.world", email = "dev@structured.world" }]
 keywords = ["graph", "vector", "database", "rag", "graphrag", "grpc"]
@@ -16,16 +16,16 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "grpcio>=1.60",
     "protobuf>=4.25",
+    "googleapis-common-protos>=1.62",
 ]
 
 [project.optional-dependencies]
@@ -44,9 +44,11 @@ Issues = "https://github.com/structured-world/coordinode-python/issues"
 [tool.hatch.version]
 source = "vcs"
 tag-pattern = "v(?P<version>.*)"
+fallback-version = "0.0.0"
+raw-options = {root = ".."}
 
 [tool.hatch.build.hooks.vcs]
-version-file = "coordinode/_version.py"
+version-file = "_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["coordinode"]

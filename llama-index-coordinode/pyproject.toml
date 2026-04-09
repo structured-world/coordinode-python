@@ -6,8 +6,8 @@ build-backend = "hatchling.build"
 name = "llama-index-graph-stores-coordinode"
 dynamic = ["version"]
 description = "LlamaIndex PropertyGraphStore backed by CoordiNode"
-readme = "../README.md"
-requires-python = ">=3.9"
+readme = "README.md"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "structured.world", email = "dev@structured.world" }]
 keywords = ["llama-index", "graph", "knowledge-graph", "rag", "coordinode"]
@@ -16,6 +16,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -30,6 +33,8 @@ Repository = "https://github.com/structured-world/coordinode-python"
 [tool.hatch.version]
 source = "vcs"
 tag-pattern = "v(?P<version>.*)"
+fallback-version = "0.0.0"
+raw-options = {root = ".."}
 
 [tool.hatch.build.hooks.vcs]
 version-file = "llama_index/graph_stores/coordinode/_version.py"

@@ -1,13 +1,14 @@
-.PHONY: proto proto-check install test test-unit test-integration lint clean
+.PHONY: proto proto-check install install-pip test test-unit test-integration lint clean
 
 PROTO_SRC  := proto
 PROTO_OUT  := coordinode/_proto
+PYTHON     ?= python3
 
 # Generate gRPC stubs from proto submodule into coordinode/_proto/
 proto:
 	@echo "==> Generating proto stubs..."
 	@mkdir -p $(PROTO_OUT)
-	python -m grpc_tools.protoc \
+	$(PYTHON) -m grpc_tools.protoc \
 		-I$(PROTO_SRC) \
 		--python_out=$(PROTO_OUT) \
 		--grpc_python_out=$(PROTO_OUT) \
@@ -15,20 +16,30 @@ proto:
 		$$(find $(PROTO_SRC) -name '*.proto')
 	@# Add __init__.py to every generated package directory
 	@find $(PROTO_OUT) -type d -exec touch {}/__init__.py \;
-	@# Fix relative imports in generated *_pb2_grpc.py files (grpc_tools generates absolute)
-	@find $(PROTO_OUT) -name '*_pb2_grpc.py' -exec sed -i '' \
-		's/^from coordinode\./from coordinode._proto.coordinode./g' {} \;
+	@# Fix absolute imports in all generated pb2 files (grpc_tools generates absolute paths)
+	@# sed -i.bak is portable: macOS needs empty-string backup arg, GNU sed uses -i alone;
+	@# using .bak suffix works on both, then we clean up the backup files.
+	@find $(PROTO_OUT) -name '*.py' -exec sed -i.bak \
+		's/from coordinode\.v1\./from coordinode._proto.coordinode.v1./g' {} \;
+	@find $(PROTO_OUT) -name '*.py.bak' -delete
 	@echo "==> Proto generation complete: $(PROTO_OUT)/"
 
 proto-check:
 	@test -f $(PROTO_OUT)/coordinode/v1/query/cypher_pb2.py || \
 		(echo "ERROR: Proto stubs not generated. Run: make proto" && exit 1)
 
-# Install all packages in editable mode for development
-install: proto
+# Install using uv (recommended for contributors).
+# uv sync runs first — it installs grpcio-tools which proto generation requires.
+install:
+	uv sync
+	$(MAKE) proto
+
+# Install using pip (alternative — works without uv)
+install-pip:
 	pip install -e "coordinode[dev]"
 	pip install -e langchain-coordinode/
 	pip install -e llama-index-coordinode/
+	$(MAKE) proto
 
 test: proto-check test-unit
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any
 
 from langchain_community.graphs.graph_store import GraphStore
 
@@ -39,12 +40,12 @@ class CoordinodeGraph(GraphStore):
         self,
         addr: str = "localhost:7080",
         *,
-        database: Optional[str] = None,
+        database: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._client = CoordinodeClient(addr, timeout=timeout)
-        self._schema: Optional[str] = None
-        self._structured_schema: Optional[Dict[str, Any]] = None
+        self._schema: str | None = None
+        self._structured_schema: dict[str, Any] | None = None
 
     # ── GraphStore interface ──────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ class CoordinodeGraph(GraphStore):
         return self._schema or ""
 
     @property
-    def structured_schema(self) -> Dict[str, Any]:
+    def structured_schema(self) -> dict[str, Any]:
         """Return structured schema dict (refreshed by `refresh_schema`)."""
         if self._structured_schema is None:
             self.refresh_schema()
@@ -66,14 +67,27 @@ class CoordinodeGraph(GraphStore):
         """Fetch current schema from CoordiNode."""
         text = self._client.get_schema_text()
         self._schema = text
-        # Parse schema text into structured form expected by LangChain
-        self._structured_schema = _parse_schema(text)
+        structured = _parse_schema(text)
+        # Augment with relationship triples (start_label, type, end_label) via
+        # Cypher — get_schema_text() only lists edge types without direction.
+        try:
+            rows = self._client.cypher(
+                "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a)[0] AS src, type(r) AS rel, labels(b)[0] AS dst"
+            )
+            structured["relationships"] = [
+                {"start": row["src"], "type": row["rel"], "end": row["dst"]}
+                for row in rows
+                if row.get("src") and row.get("rel") and row.get("dst")
+            ]
+        except Exception:  # noqa: BLE001
+            pass  # Graph may have no relationships yet; structured["relationships"] stays []
+        self._structured_schema = structured
 
     def query(
         self,
         query: str,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Run a Cypher query and return rows as dicts.
 
         Args:
@@ -83,12 +97,8 @@ class CoordinodeGraph(GraphStore):
         Returns:
             List of row dicts (column name → value).
         """
-        result = self._client.cypher(query, params=params or {})
-        rows: List[Dict[str, Any]] = []
-        columns = list(result.columns)
-        for row in result.rows:
-            rows.append(dict(zip(columns, row)))
-        return rows
+        # cypher() returns List[Dict[str, Any]] directly — column name → value.
+        return self._client.cypher(query, params=params or {})
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -96,7 +106,7 @@ class CoordinodeGraph(GraphStore):
         """Close the underlying gRPC connection."""
         self._client.close()
 
-    def __enter__(self) -> "CoordinodeGraph":
+    def __enter__(self) -> CoordinodeGraph:
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -105,7 +115,8 @@ class CoordinodeGraph(GraphStore):
 
 # ── Schema parser ─────────────────────────────────────────────────────────
 
-def _parse_schema(schema_text: str) -> Dict[str, Any]:
+
+def _parse_schema(schema_text: str) -> dict[str, Any]:
     """Convert CoordiNode schema text into LangChain's structured format.
 
     LangChain's ``GraphCypherQAChain`` expects::
@@ -116,16 +127,23 @@ def _parse_schema(schema_text: str) -> Dict[str, Any]:
             "relationships": [{"start": "A", "type": "REL", "end": "B"}, ...],
         }
 
-    CoordiNode's ``/schema`` endpoint returns a human-readable text; we do a
-    best-effort parse here. For reliable structured access use the gRPC
-    ``SchemaService`` directly.
-    """
-    node_props: Dict[str, List[Dict[str, str]]] = {}
-    rel_props: Dict[str, List[Dict[str, str]]] = {}
-    relationships: List[Dict[str, str]] = []
+    CoordiNode's schema text format (from ``get_schema_text()``)::
 
-    current_label: Optional[str] = None
-    current_type: Optional[str] = None
+        Node labels:
+          - Person (properties: name: STRING, age: INT64)
+          - Company
+
+        Edge types:
+          - KNOWS (properties: since: INT64)
+          - WORKS_FOR
+
+    We parse inline ``(properties: ...)`` lists on each bullet line.
+    For reliable structured access use the gRPC ``SchemaService`` directly.
+    """
+    node_props: dict[str, list[dict[str, str]]] = {}
+    rel_props: dict[str, list[dict[str, str]]] = {}
+    relationships: list[dict[str, str]] = []
+
     in_nodes = False
     in_rels = False
 
@@ -137,40 +155,28 @@ def _parse_schema(schema_text: str) -> Dict[str, Any]:
         if stripped.lower().startswith("node labels"):
             in_nodes, in_rels = True, False
             continue
-        if stripped.lower().startswith("relationship types"):
+        # Accept both "Edge types:" (current format) and "Relationship types:" (legacy)
+        if stripped.lower().startswith("edge types") or stripped.lower().startswith("relationship types"):
             in_nodes, in_rels = False, True
             continue
 
-        if in_nodes:
-            if stripped.startswith("-") or stripped.startswith("*"):
-                label = stripped.lstrip("-* ").split()[0].strip(":")
-                current_label = label
-                node_props.setdefault(label, [])
-            elif current_label and ":" in stripped:
-                parts = stripped.split(":", 1)
-                prop = parts[0].strip()
-                typ = parts[1].strip().upper()
-                node_props[current_label].append({"property": prop, "type": typ})
-
-        if in_rels:
-            if stripped.startswith("-") or stripped.startswith("*"):
-                rel = stripped.lstrip("-* ").split()[0].strip()
-                current_type = rel
-                rel_props.setdefault(rel, [])
-            elif current_type and "->" in stripped:
-                parts = stripped.split("->")
-                start = parts[0].strip().strip("(: )")
-                end = parts[-1].strip().strip("(: )")
-                relationships.append({
-                    "start": start,
-                    "type": current_type,
-                    "end": end,
-                })
-            elif current_type and ":" in stripped:
-                parts = stripped.split(":", 1)
-                prop = parts[0].strip()
-                typ = parts[1].strip().upper()
-                rel_props[current_type].append({"property": prop, "type": typ})
+        if (in_nodes or in_rels) and (stripped.startswith("-") or stripped.startswith("*")):
+            # Extract name (part before optional "(properties: ...)")
+            name = stripped.lstrip("-* ").split("(")[0].strip()
+            if not name:
+                continue
+            # Parse inline properties: "- Label (properties: prop1: TYPE, prop2: TYPE)"
+            props: list[dict[str, str]] = []
+            m = re.search(r"\(properties:\s*([^)]+)\)", stripped)
+            if m:
+                for prop_str in m.group(1).split(","):
+                    kv = prop_str.strip().split(":", 1)
+                    if len(kv) == 2:
+                        props.append({"property": kv[0].strip(), "type": kv[1].strip()})
+            if in_nodes:
+                node_props[name] = props
+            else:
+                rel_props[name] = props
 
     return {
         "node_props": node_props,

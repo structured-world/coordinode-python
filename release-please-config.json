@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "python",
+  "tag-separator": "",
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "_comment": "Single shared version for all three workspace packages (coordinode, langchain-coordinode, llama-index-graph-stores-coordinode). release.yml builds and publishes all three from one tag.",
+      "component": "sdk",
+      "changelog-path": "CHANGELOG.md"
+    }
+  },
+  "versioning": "semver",
+  "initial-version": "0.3.0"
+}

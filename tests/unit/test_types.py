@@ -1,12 +1,31 @@
-"""Unit tests for _types.py — PropertyValue conversion round-trips."""
+"""Unit tests for _types.py — PropertyValue conversion round-trips.
+
+TestFromPropertyValue: pure mock-based, runs without proto stubs.
+TestToPropertyValue:   requires generated proto stubs (make proto).
+                       Tests are skipped automatically when stubs are absent.
+"""
 
 import pytest
 
 from coordinode._types import from_property_value, to_property_value
 
+# Detect whether proto stubs have been generated.
+try:
+    from coordinode._proto.coordinode.v1.common.types_pb2 import PropertyValue  # noqa: F401
+
+    _HAS_PROTO = True
+except ImportError:
+    _HAS_PROTO = False
+
+_requires_proto = pytest.mark.skipif(
+    not _HAS_PROTO,
+    reason="Proto stubs not generated — run `make proto` first",
+)
+
 
 class _FakeVec:
     """Minimal PropertyValue.vector stub."""
+
     def __init__(self, values):
         self.values = list(values)
 
@@ -17,8 +36,8 @@ class _FakeList:
 
 
 class _FakeMap:
-    def __init__(self, fields):
-        self.fields = dict(fields)
+    def __init__(self, entries):
+        self.entries = dict(entries)
 
 
 class _FakePV:
@@ -53,7 +72,7 @@ class _FakePV:
         return self._value
 
     @property
-    def vector(self):
+    def vector_value(self):
         return self._value
 
     @property
@@ -67,6 +86,8 @@ class _FakePV:
 
 # ── to_property_value ───────────────────────────────────────────────────────
 
+
+@_requires_proto
 class TestToPropertyValue:
     def test_int(self):
         pv = to_property_value(42)
@@ -94,7 +115,7 @@ class TestToPropertyValue:
 
     def test_float_list_becomes_vector(self):
         pv = to_property_value([1.0, 2.0, 3.0])
-        assert list(pv.vector.values) == pytest.approx([1.0, 2.0, 3.0])
+        assert list(pv.vector_value.values) == pytest.approx([1.0, 2.0, 3.0])
 
     def test_mixed_list_becomes_list_value(self):
         pv = to_property_value(["a", "b"])
@@ -102,15 +123,21 @@ class TestToPropertyValue:
 
     def test_dict_becomes_map_value(self):
         pv = to_property_value({"x": 1, "y": 2})
-        assert "x" in pv.map_value.fields
-        assert "y" in pv.map_value.fields
+        assert "x" in pv.map_value.entries
+        assert "y" in pv.map_value.entries
 
-    def test_none_raises(self):
-        with pytest.raises((TypeError, AttributeError)):
-            to_property_value(None)
+    def test_none_produces_null(self):
+        # None → unset oneof (null semantics), not an error
+        pv = to_property_value(None)
+        assert pv.WhichOneof("value") is None
+
+    def test_unsupported_type_raises(self):
+        with pytest.raises(TypeError):
+            to_property_value(object())
 
 
 # ── from_property_value ─────────────────────────────────────────────────────
+
 
 class TestFromPropertyValue:
     def test_int_value(self):
@@ -135,7 +162,7 @@ class TestFromPropertyValue:
 
     def test_vector(self):
         vec = _FakeVec([0.1, 0.2])
-        pv = _FakePV("vector", vec)
+        pv = _FakePV("vector_value", vec)
         result = from_property_value(pv)
         assert result == pytest.approx([0.1, 0.2])
 

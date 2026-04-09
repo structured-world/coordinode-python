@@ -1,8 +1,9 @@
 name: Release
 
-# Triggered manually: create a tag v0.3.0 → GitHub Release → this workflow publishes to PyPI.
-# Tag format:  v{MAJOR}.{MINOR}.{PATCH}     → stable, publishes to PyPI
-#              v{MAJOR}.{MINOR}.{PATCH}a{N}  → pre-release, publishes to TestPyPI only
+# Triggered automatically by release-please (see release-please.yml):
+#   1. Merge release PR → release-please tags the commit → this workflow publishes to PyPI.
+# Tag format:  v{MAJOR}.{MINOR}.{PATCH}     → stable release
+#              v{MAJOR}.{MINOR}.{PATCH}a{N}  → pre-release (published to PyPI with --pre required)
 
 on:
   push:
@@ -26,65 +27,37 @@ jobs:
           - name: llama-index-graph-stores-coordinode
             path: llama-index-coordinode
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
           fetch-depth: 0   # hatch-vcs needs full history for tag detection
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: "3.11"
 
-      - name: Install protoc + build tools
-        run: |
-          sudo apt-get update && sudo apt-get install -y protobuf-compiler
-          pip install hatchling hatch-vcs grpcio-tools build
+      - name: Install build tools
+        run: uv sync
 
       - name: Generate proto stubs (coordinode only)
         if: matrix.package.name == 'coordinode'
-        run: make proto
+        run: uv run make proto
 
       - name: Build wheel + sdist
         working-directory: ${{ matrix.package.path }}
-        run: python -m build
+        run: uv run python -m build
 
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist-${{ matrix.package.name }}
           path: ${{ matrix.package.path }}/dist/
           retention-days: 1
 
-  publish-testpypi:
-    name: Publish to TestPyPI (pre-release)
-    runs-on: ubuntu-latest
-    needs: build
-    if: contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc')
-    environment: testpypi
-    permissions:
-      id-token: write
-    strategy:
-      matrix:
-        package:
-          - coordinode
-          - langchain-coordinode
-          - llama-index-graph-stores-coordinode
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist-${{ matrix.package }}
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/
-
   publish-pypi:
-    name: Publish to PyPI (stable)
+    name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: build
-    if: "!contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc')"
     environment: pypi
     permissions:
       id-token: write
@@ -95,12 +68,12 @@ jobs:
           - langchain-coordinode
           - llama-index-graph-stores-coordinode
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist-${{ matrix.package }}
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: dist/
 
@@ -111,13 +84,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist/
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
         with:
           prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
           generate_release_notes: true

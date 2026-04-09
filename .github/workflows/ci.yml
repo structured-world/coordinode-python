@@ -10,46 +10,40 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: "3.11"
 
-      - run: pip install ruff
-      - run: ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
-      - run: ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv sync
+      - run: uv run ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv run ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install packages
-        run: |
-          pip install grpcio-tools
-          pip install -e "coordinode[dev]"
-          pip install -e langchain-coordinode/
-          pip install -e llama-index-coordinode/
+      - name: Install dependencies
+        run: uv sync
 
       - name: Generate proto stubs
-        run: make proto
+        run: uv run make proto
 
       - name: Unit tests
-        run: pytest tests/unit/ -v
+        run: uv run pytest tests/unit/ -v
 
   test-integration:
     name: Integration tests
@@ -60,30 +54,36 @@ jobs:
         ports:
           - 7080:7080
           - 7084:7084
-        options: >-
-          --health-cmd "wget -qO- http://localhost:7084/health || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
         with:
           python-version: "3.11"
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Wait for coordinode
+        run: |
+          echo "Waiting for coordinode to be ready (HTTP :7084 + gRPC :7080)..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7084/health >/dev/null 2>&1 && \
+               (echo > /dev/tcp/localhost/7080) 2>/dev/null; then
+              echo "coordinode is ready (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i/30 — not ready yet, sleeping 5s..."
+            sleep 5
+          done
+          echo "Error: coordinode did not become healthy after 150s" >&2
+          exit 1
 
       - name: Install + generate proto
         run: |
-          pip install grpcio-tools
-          pip install -e "coordinode[dev]"
-          make proto
+          uv sync
+          uv run make proto
 
       - name: Integration tests
         env:
           COORDINODE_ADDR: "localhost:7080"
-        run: pytest tests/integration/ -v --timeout=30
+        run: uv run pytest tests/integration/ -v --timeout=30
