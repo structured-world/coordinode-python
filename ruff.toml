@@ -5,7 +5,7 @@ exclude = [
     # Generated proto stubs — do not lint
     "coordinode/coordinode/_proto/",
     # Generated version files — do not lint
-    "_version.py",
+    "**/_version.py",
 ]
 
 [lint]
