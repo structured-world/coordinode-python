@@ -1,7 +1,7 @@
 .PHONY: proto proto-check install install-pip test test-unit test-integration lint clean
 
 PROTO_SRC  := proto
-PROTO_OUT  := coordinode/_proto
+PROTO_OUT  := coordinode/coordinode/_proto
 PYTHON     ?= python3
 
 # Generate gRPC stubs from proto submodule into coordinode/_proto/
