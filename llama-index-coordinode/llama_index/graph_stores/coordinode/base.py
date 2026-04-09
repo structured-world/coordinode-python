@@ -172,16 +172,19 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         node_ids = [n.id for n in graph_nodes]
         ignored = list(ignore_rels) if ignore_rels else []
 
-        # Push ignore_rels filter into Cypher so LIMIT applies after filtering;
-        # a Python-side filter after LIMIT would silently truncate valid results.
         params: dict[str, object] = {"ids": node_ids}
         ignore_clause = ""
         if ignored:
-            ignore_clause = " AND NONE(rel IN r WHERE type(rel) IN $ignored_rels)"
+            # Single-hop [r]: filter with r.__type__ NOT IN $ignored_rels.
+            ignore_clause = " AND NOT r.__type__ IN $ignored_rels"
             params["ignored_rels"] = ignored
 
+        # CoordiNode does not support variable-length path [r*1..N] in RETURN
+        # position (result serialisation is undefined for path lists).  Use a
+        # single-hop pattern; multi-hop traversal is a future enhancement.
+        _ = depth  # depth parameter reserved; currently single-hop only
         cypher = (
-            f"MATCH (n)-[r*1..{depth}]->(m) "
+            f"MATCH (n)-[r]->(m) "
             f"WHERE n.id IN $ids{ignore_clause} "
             f"RETURN n, r, m, n.id AS _src_id, m.id AS _dst_id "
             f"LIMIT {limit}"
@@ -194,12 +197,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             dst_data = row.get("m", {})
             src_id = str(row.get("_src_id", ""))
             dst_id = str(row.get("_dst_id", ""))
-            # Variable-length path [r*1..N] returns a list of relationship dicts.
-            rels = row.get("r", [])
-            if isinstance(rels, list) and rels:
-                first_rel = rels[0]
-                # CoordiNode: use __type__ key instead of "type" — type() returns null
-                rel_label = first_rel.get("__type__") or first_rel.get("type", "RELATED") if isinstance(first_rel, dict) else str(first_rel)
+            # Single-hop [r] returns the relationship as a dict.
+            # CoordiNode: use __type__ key — type() returns null.
+            r_val = row.get("r", {})
+            if isinstance(r_val, dict):
+                rel_label = r_val.get("__type__") or r_val.get("type") or "RELATED"
             else:
                 rel_label = "RELATED"
             src = _node_result_to_labelled(src_id, src_data)
@@ -223,20 +225,25 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             props = rel.properties or {}
             label = _cypher_ident(rel.label)
             # CoordiNode does not yet support MERGE for edge patterns; use CREATE.
+            # SET r += $props is skipped when props is empty — SET r += {} is
+            # not supported by all server versions.
             # Note: repeated calls will create duplicate edges until MERGE for
             # edges is implemented server-side.
-            cypher = (
-                f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
-                f"CREATE (src)-[r:{label}]->(dst) SET r += $props"
-            )
-            self._client.cypher(
-                cypher,
-                params={
-                    "src_id": rel.source_id,
-                    "dst_id": rel.target_id,
-                    "props": props,
-                },
-            )
+            if props:
+                cypher = (
+                    f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
+                    f"CREATE (src)-[r:{label}]->(dst) SET r += $props"
+                )
+                self._client.cypher(
+                    cypher,
+                    params={"src_id": rel.source_id, "dst_id": rel.target_id, "props": props},
+                )
+            else:
+                cypher = f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) CREATE (src)-[r:{label}]->(dst)"
+                self._client.cypher(
+                    cypher,
+                    params={"src_id": rel.source_id, "dst_id": rel.target_id},
+                )
 
     def delete(
         self,

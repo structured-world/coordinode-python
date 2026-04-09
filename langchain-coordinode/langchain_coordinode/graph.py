@@ -113,30 +113,29 @@ class CoordinodeGraph(GraphStore):
                     params={"name": node.id, "props": props},
                 )
 
-            # ── Create relationships (idempotent: skip if already exists) ─
+            # ── Create relationships ──────────────────────────────────────
             for rel in doc.relationships:
                 src_label = _cypher_ident(rel.source.type or "Entity")
                 dst_label = _cypher_ident(rel.target.type or "Entity")
                 rel_type = _cypher_ident(rel.type)
                 props = dict(rel.properties or {})
-                # CoordiNode does not yet support MERGE for edges; use CREATE
-                # guarded by NOT EXISTS to avoid duplicates on repeated calls.
-                try:
+                # CoordiNode does not support MERGE for edges or WHERE NOT
+                # (pattern) guards — use unconditional CREATE.  SET r += $props
+                # is skipped when props is empty because SET r += {} is not
+                # supported by all server versions.
+                if props:
                     self._client.cypher(
                         f"MATCH (src:{src_label} {{name: $src}}) "
                         f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                        f"WHERE NOT (src)-[:{rel_type}]->(dst) "
                         f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
                         params={"src": rel.source.id, "dst": rel.target.id, "props": props},
                     )
-                except Exception:  # noqa: BLE001
-                    # WHERE NOT EXISTS guard may not be supported on all server
-                    # versions; fall back to unconditional CREATE
+                else:
                     self._client.cypher(
                         f"MATCH (src:{src_label} {{name: $src}}) "
                         f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                        f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
-                        params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+                        f"CREATE (src)-[r:{rel_type}]->(dst)",
+                        params={"src": rel.source.id, "dst": rel.target.id},
                     )
 
             # ── Optionally link source document ───────────────────────────
@@ -148,21 +147,12 @@ class CoordinodeGraph(GraphStore):
                 )
                 for node in doc.nodes:
                     label = _cypher_ident(node.type or "Entity")
-                    try:
-                        self._client.cypher(
-                            f"MATCH (d:__Document__ {{id: $doc_id}}) "
-                            f"MATCH (n:{label} {{name: $name}}) "
-                            f"WHERE NOT (d)-[:MENTIONS]->(n) "
-                            f"CREATE (d)-[:MENTIONS]->(n)",
-                            params={"doc_id": src_id, "name": node.id},
-                        )
-                    except Exception:  # noqa: BLE001
-                        self._client.cypher(
-                            f"MATCH (d:__Document__ {{id: $doc_id}}) "
-                            f"MATCH (n:{label} {{name: $name}}) "
-                            f"CREATE (d)-[:MENTIONS]->(n)",
-                            params={"doc_id": src_id, "name": node.id},
-                        )
+                    self._client.cypher(
+                        f"MATCH (d:__Document__ {{id: $doc_id}}) "
+                        f"MATCH (n:{label} {{name: $name}}) "
+                        f"CREATE (d)-[:MENTIONS]->(n)",
+                        params={"doc_id": src_id, "name": node.id},
+                    )
 
         # Invalidate cached schema so next access reflects new data
         self._schema = None

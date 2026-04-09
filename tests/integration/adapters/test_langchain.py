@@ -27,6 +27,7 @@ def graph():
 
 # ── Basic connectivity ────────────────────────────────────────────────────────
 
+
 def test_connect(graph):
     assert graph is not None
 
@@ -47,6 +48,7 @@ def test_refresh_schema_does_not_raise(graph):
 
 # ── Cypher query ──────────────────────────────────────────────────────────────
 
+
 def test_query_returns_list(graph):
     result = graph.query("RETURN 1 AS n")
     assert isinstance(result, list)
@@ -60,6 +62,7 @@ def test_query_count(graph):
 
 
 # ── add_graph_documents ───────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def unique_tag():
@@ -95,8 +98,7 @@ def test_add_graph_documents_creates_relationship(graph, unique_tag):
 
     # Verify the relationship was created, not just the source node.
     result = graph.query(
-        "MATCH (a:LCPerson2 {name: $src})-[r:LC_RESEARCHES]->(b:LCConcept {name: $dst}) "
-        "RETURN count(r) AS cnt",
+        "MATCH (a:LCPerson2 {name: $src})-[r:LC_RESEARCHES]->(b:LCConcept {name: $dst}) RETURN count(r) AS cnt",
         params={"src": f"Charlie-{unique_tag}", "dst": f"GraphRAG-{unique_tag}"},
     )
     assert result[0]["cnt"] >= 1, f"relationship not found: {result}"

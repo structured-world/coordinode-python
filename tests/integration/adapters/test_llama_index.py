@@ -30,6 +30,7 @@ def tag():
 
 # ── Basic connectivity ────────────────────────────────────────────────────────
 
+
 def test_connect(store):
     assert store is not None
 
@@ -46,6 +47,7 @@ def test_structured_query_literal(store):
 
 
 # ── Node operations ───────────────────────────────────────────────────────────
+
 
 def test_upsert_and_get_nodes(store, tag):
     nodes = [
@@ -79,6 +81,7 @@ def test_get_by_id(store, tag):
 
 
 # ── Relation operations ───────────────────────────────────────────────────────
+
 
 def test_upsert_and_get_triplets(store, tag):
     src = EntityNode(label="LIRelPerson", name=f"Src-{tag}")
@@ -120,6 +123,7 @@ def test_get_rel_map(store, tag):
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
+
 
 def test_delete_by_id(store, tag):
     node = EntityNode(label="LIDelete", name=f"Del-{tag}")
