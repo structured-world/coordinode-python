@@ -117,7 +117,13 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         properties: dict[str, Any] | None = None,
         ids: list[str] | None = None,
     ) -> list[list[LabelledNode]]:
-        """Retrieve triplets (subject, predicate, object) as node triples."""
+        """Retrieve triplets (subject, predicate, object) as node triples.
+
+        Note:
+            ``relation_names`` is **required**.  CoordiNode does not support
+            untyped wildcard ``[r]`` relationship patterns — they silently return
+            no rows.  Omitting ``relation_names`` raises ``NotImplementedError``.
+        """
         conditions: list[str] = []
         params: dict[str, Any] = {}
 
@@ -377,17 +383,21 @@ def _parse_edge_types_from_schema(schema_text: str) -> list[str]:
     Parses the "Edge types:" section produced by ``get_schema_text()``.
     """
     edge_types: list[str] = []
-    in_edges = False
-    for line in schema_text.splitlines():
+    lines = iter(schema_text.splitlines())
+
+    # Advance to the "Edge types:" header.
+    for line in lines:
+        if line.strip().lower().startswith("edge types"):
+            break
+
+    # Collect bullet items until the first blank line.
+    for line in lines:
         stripped = line.strip()
-        if stripped.lower().startswith("edge types"):
-            in_edges = True
-            continue
-        if in_edges:
-            if not stripped:
-                break
-            if stripped.startswith("-") or stripped.startswith("*"):
-                name = stripped.lstrip("-* ").split("(")[0].strip()
-                if name:
-                    edge_types.append(name)
+        if not stripped:
+            break
+        if stripped.startswith(("-", "*")):
+            name = stripped.lstrip("-* ").split("(")[0].strip()
+            if name:
+                edge_types.append(name)
+
     return edge_types

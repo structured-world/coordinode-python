@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -111,62 +112,69 @@ class CoordinodeGraph(GraphStore):
                 ``MENTIONS`` edges (also unconditional ``CREATE``).
         """
         for doc in graph_documents:
-            # ── Upsert nodes ──────────────────────────────────────────────
             for node in doc.nodes:
-                label = _cypher_ident(node.type or "Entity")
-                props = dict(node.properties or {})
-                # Always enforce node.id as the merge key; incoming
-                # properties["name"] must not drift from the MERGE predicate.
-                props["name"] = node.id
-                self._client.cypher(
-                    f"MERGE (n:{label} {{name: $name}}) SET n += $props",
-                    params={"name": node.id, "props": props},
-                )
-
-            # ── Create relationships ──────────────────────────────────────
+                self._upsert_node(node)
             for rel in doc.relationships:
-                src_label = _cypher_ident(rel.source.type or "Entity")
-                dst_label = _cypher_ident(rel.target.type or "Entity")
-                rel_type = _cypher_ident(rel.type)
-                props = dict(rel.properties or {})
-                # CoordiNode does not support MERGE for edges or WHERE NOT
-                # (pattern) guards — use unconditional CREATE.  SET r += $props
-                # is skipped when props is empty because SET r += {} is not
-                # supported by all server versions.
-                if props:
-                    self._client.cypher(
-                        f"MATCH (src:{src_label} {{name: $src}}) "
-                        f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                        f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
-                        params={"src": rel.source.id, "dst": rel.target.id, "props": props},
-                    )
-                else:
-                    self._client.cypher(
-                        f"MATCH (src:{src_label} {{name: $src}}) "
-                        f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                        f"CREATE (src)-[r:{rel_type}]->(dst)",
-                        params={"src": rel.source.id, "dst": rel.target.id},
-                    )
-
-            # ── Optionally link source document ───────────────────────────
+                self._create_edge(rel)
             if include_source and doc.source:
-                src_id = getattr(doc.source, "id", None) or _stable_document_id(doc.source)
-                self._client.cypher(
-                    "MERGE (d:__Document__ {id: $id}) SET d.page_content = $text",
-                    params={"id": src_id, "text": doc.source.page_content or ""},
-                )
-                for node in doc.nodes:
-                    label = _cypher_ident(node.type or "Entity")
-                    self._client.cypher(
-                        f"MATCH (d:__Document__ {{id: $doc_id}}) "
-                        f"MATCH (n:{label} {{name: $name}}) "
-                        f"CREATE (d)-[:MENTIONS]->(n)",
-                        params={"doc_id": src_id, "name": node.id},
-                    )
+                self._link_document_to_entities(doc)
 
         # Invalidate cached schema so next access reflects new data
         self._schema = None
         self._structured_schema = None
+
+    def _upsert_node(self, node: Any) -> None:
+        """Upsert a single node by ``id`` via MERGE."""
+        label = _cypher_ident(node.type or "Entity")
+        props = dict(node.properties or {})
+        # Always enforce node.id as the merge key; incoming
+        # properties["name"] must not drift from the MERGE predicate.
+        props["name"] = node.id
+        self._client.cypher(
+            f"MERGE (n:{label} {{name: $name}}) SET n += $props",
+            params={"name": node.id, "props": props},
+        )
+
+    def _create_edge(self, rel: Any) -> None:
+        """Create a relationship via unconditional CREATE.
+
+        CoordiNode does not support MERGE for edge patterns.  Re-ingesting the
+        same relationship will create a duplicate edge.  SET r += $props is
+        skipped when props is empty because SET r += {} is not supported by all
+        server versions.
+        """
+        src_label = _cypher_ident(rel.source.type or "Entity")
+        dst_label = _cypher_ident(rel.target.type or "Entity")
+        rel_type = _cypher_ident(rel.type)
+        props = dict(rel.properties or {})
+        if props:
+            self._client.cypher(
+                f"MATCH (src:{src_label} {{name: $src}}) "
+                f"MATCH (dst:{dst_label} {{name: $dst}}) "
+                f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
+                params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+            )
+        else:
+            self._client.cypher(
+                f"MATCH (src:{src_label} {{name: $src}}) "
+                f"MATCH (dst:{dst_label} {{name: $dst}}) "
+                f"CREATE (src)-[r:{rel_type}]->(dst)",
+                params={"src": rel.source.id, "dst": rel.target.id},
+            )
+
+    def _link_document_to_entities(self, doc: Any) -> None:
+        """Upsert a ``__Document__`` node and CREATE ``MENTIONS`` edges to all entities."""
+        src_id = getattr(doc.source, "id", None) or _stable_document_id(doc.source)
+        self._client.cypher(
+            "MERGE (d:__Document__ {id: $id}) SET d.page_content = $text",
+            params={"id": src_id, "text": doc.source.page_content or ""},
+        )
+        for node in doc.nodes:
+            label = _cypher_ident(node.type or "Entity")
+            self._client.cypher(
+                f"MATCH (d:__Document__ {{id: $doc_id}}) MATCH (n:{label} {{name: $name}}) CREATE (d)-[:MENTIONS]->(n)",
+                params={"doc_id": src_id, "name": node.id},
+            )
 
     def query(
         self,
@@ -213,8 +221,15 @@ def _stable_document_id(source: Any) -> str:
     """
     content = getattr(source, "page_content", "") or ""
     metadata = getattr(source, "metadata", {}) or {}
-    stable = content + "|" + "|".join(f"{k}={v}" for k, v in sorted(metadata.items()))
-    return hashlib.sha256(stable.encode()).hexdigest()[:32]
+    # Use canonical JSON encoding to avoid delimiter ambiguity and ensure
+    # determinism for nested/non-scalar metadata values.
+    canonical = json.dumps(
+        {"content": content, "metadata": metadata},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
 
 
 def _cypher_ident(name: str) -> str:
