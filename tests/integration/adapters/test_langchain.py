@@ -119,7 +119,7 @@ def test_add_graph_documents_idempotent(graph, unique_tag):
 def test_schema_refreshes_after_add(graph, unique_tag):
     """structured_schema is invalidated and re-fetched after add_graph_documents."""
     graph._schema = None  # force refresh
-    schema_before = graph.schema
+    graph.schema  # trigger initial fetch before mutation
 
     node = Node(id=f"SchemaNode-{unique_tag}", type="LCSchemaTest")
     doc = GraphDocument(nodes=[node], relationships=[], source=Document(page_content="test"))

@@ -12,7 +12,6 @@ import uuid
 
 import pytest
 from llama_index.core.graph_stores.types import EntityNode, Relation
-
 from llama_index.graph_stores.coordinode import CoordinodePropertyGraphStore
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
