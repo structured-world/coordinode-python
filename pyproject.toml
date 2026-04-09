@@ -4,7 +4,7 @@
 
 [project]
 name = "coordinode-workspace"
-version = "0.4.1"
+version = "0.4.2"
 requires-python = ">=3.11"
 dependencies = [
     "googleapis-common-protos>=1.74.0",

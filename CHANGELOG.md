@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/structured-world/coordinode-python/compare/v0.4.1...v0.4.2) (2026-04-09)
+
+
+### Bug Fixes
+
+* **coordinode:** fix empty wheel — use sources mapping instead of packages ([93aba40](https://github.com/structured-world/coordinode-python/commit/93aba40a069f645a3e47fc9dc32238d068c1b83e))
+* **coordinode:** use sources mapping to include package files in wheel ([9a1204a](https://github.com/structured-world/coordinode-python/commit/9a1204a74dfb5b7ded0eb070860eb652a5e19c8a))
+
 ## [0.4.1](https://github.com/structured-world/coordinode-python/compare/v0.4.0...v0.4.1) (2026-04-09)
 
 
