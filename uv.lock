@@ -369,6 +369,9 @@ dependencies = [
 dev = [
     { name = "build" },
     { name = "grpcio-tools" },
+    { name = "langchain-community" },
+    { name = "langchain-core" },
+    { name = "llama-index-core" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
@@ -382,6 +385,9 @@ requires-dist = [{ name = "googleapis-common-protos", specifier = ">=1.74.0" }]
 dev = [
     { name = "build", specifier = ">=1.2" },
     { name = "grpcio-tools", specifier = ">=1.60" },
+    { name = "langchain-community", specifier = ">=0.3" },
+    { name = "langchain-core", specifier = ">=0.3" },
+    { name = "llama-index-core", specifier = ">=0.12" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-timeout", specifier = ">=2" },
