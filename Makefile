@@ -54,7 +54,7 @@ lint:
 	ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
 
 clean:
-	rm -rf $(PROTO_OUT)/coordinode $(PROTO_OUT)/google
+	rm -rf $(PROTO_OUT)
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name dist -exec rm -rf {} + 2>/dev/null || true
