@@ -51,7 +51,7 @@ raw-options = {root = ".."}
 version-file = "_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["coordinode"]
+sources = {"." = "coordinode"}
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
