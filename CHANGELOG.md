@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/structured-world/coordinode-python/compare/v0.4.2...v0.4.3) (2026-04-09)
+
+
+### Bug Fixes
+
+* **coordinode:** move package into coordinode/ subdirectory for correct wheel build ([2a63dd0](https://github.com/structured-world/coordinode-python/commit/2a63dd0ac7e6cead2a2e9686a2d9c8ac4f118f8e))
+* **coordinode:** move package into coordinode/ subdirectory for correct wheel build ([9328532](https://github.com/structured-world/coordinode-python/commit/932853228928bd084e67641a165bfcaffb0d8535))
+
 ## [0.4.2](https://github.com/structured-world/coordinode-python/compare/v0.4.1...v0.4.2) (2026-04-09)
 
 
