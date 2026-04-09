@@ -45,7 +45,10 @@ jobs:
 
       - name: Build wheel + sdist
         working-directory: ${{ matrix.package.path }}
-        run: uv run python -m build
+        run: |
+          # Force hatch-vcs / setuptools_scm to use the tag version, not dirty-tree dev version
+          export SETUPTOOLS_SCM_PRETEND_VERSION="${GITHUB_REF_NAME#v}"
+          uv run python -m build
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
