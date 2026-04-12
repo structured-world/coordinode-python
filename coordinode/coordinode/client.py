@@ -95,9 +95,7 @@ class PropertyDefinitionInfo:
         self.unique: bool = proto_def.unique
 
     def __repr__(self) -> str:
-        return (
-            f"PropertyDefinition(name={self.name!r}, type={self.type}, required={self.required}, unique={self.unique})"
-        )
+        return f"PropertyDefinitionInfo(name={self.name!r}, type={self.type}, required={self.required}, unique={self.unique})"
 
 
 class LabelInfo:
@@ -109,7 +107,7 @@ class LabelInfo:
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
 
     def __repr__(self) -> str:
-        return f"LabelInfo(name={self.name!r}, properties={self.properties})"
+        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)})"
 
 
 class EdgeTypeInfo:
@@ -121,7 +119,7 @@ class EdgeTypeInfo:
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
 
     def __repr__(self) -> str:
-        return f"EdgeTypeInfo(name={self.name!r}, properties={self.properties})"
+        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)})"
 
 
 class TraverseResult:

@@ -228,14 +228,15 @@ def test_get_labels_returns_list(client):
 
 def test_get_labels_has_property_definitions(client):
     """LabelInfo.properties is a list (may be empty for schema-free labels)."""
-    client.cypher("MERGE (n:PropLabel {name: 'probe'})")
+    tag = uid()
+    client.cypher("CREATE (n:PropLabel {tag: $tag})", params={"tag": tag})
     try:
         labels = client.get_labels()
         found = next((lbl for lbl in labels if lbl.name == "PropLabel"), None)
         assert found is not None, "PropLabel not returned by get_labels()"
         assert isinstance(found.properties, list)
     finally:
-        client.cypher("MATCH (n:PropLabel {name: 'probe'}) DELETE n")
+        client.cypher("MATCH (n:PropLabel {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
 
 def test_get_edge_types_returns_list(client):
@@ -277,8 +278,9 @@ def test_traverse_returns_neighbours(client):
         client.cypher("MATCH (n:TraverseRPC {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
 
-@pytest.mark.skip(
-    reason="CoordiNode Traverse RPC does not yet support inbound direction — server returns empty result set"
+@pytest.mark.xfail(
+    strict=False,
+    reason="CoordiNode Traverse RPC does not yet support inbound direction — server returns empty result set",
 )
 def test_traverse_inbound_direction(client):
     """traverse() with direction='inbound' reaches nodes that point TO start_id."""
