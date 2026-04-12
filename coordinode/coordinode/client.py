@@ -396,6 +396,8 @@ class AsyncCoordinodeClient:
         key = direction.lower()
         if key not in _direction_map:
             raise ValueError(f"Invalid direction {direction!r}. Must be one of: 'outbound', 'inbound', 'both'.")
+        if max_depth < 1:
+            raise ValueError(f"max_depth must be >= 1, got {max_depth!r}.")
         direction_value = _direction_map[key]
 
         req = TraverseRequest(

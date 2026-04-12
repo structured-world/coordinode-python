@@ -234,6 +234,8 @@ def test_get_labels_has_property_definitions(client):
         labels = client.get_labels()
         found = next((lbl for lbl in labels if lbl.name == "PropLabel"), None)
         assert found is not None, "PropLabel not returned by get_labels()"
+        # Intentionally only check the type — CoordiNode is schema-free and may return
+        # an empty properties list even when the node was created with properties.
         assert isinstance(found.properties, list)
     finally:
         client.cypher("MATCH (n:PropLabel {tag: $tag}) DETACH DELETE n", params={"tag": tag})
@@ -279,7 +281,7 @@ def test_traverse_returns_neighbours(client):
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason="CoordiNode Traverse RPC does not yet support inbound direction — server returns empty result set",
 )
 def test_traverse_inbound_direction(client):
