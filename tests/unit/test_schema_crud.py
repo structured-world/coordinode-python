@@ -184,5 +184,5 @@ class TestTraverseResult:
         nodes = [_FakeNode(1, [])]
         result = TraverseResult(_FakeTraverseResponse(nodes=nodes))
         r = repr(result)
-        assert "1" in r  # 1 node
-        assert "0" in r  # 0 edges
+        assert "nodes=1" in r
+        assert "edges=0" in r
