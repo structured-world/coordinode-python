@@ -230,16 +230,17 @@ def test_get_labels_returns_list(client):
 def test_get_labels_has_property_definitions(client):
     """LabelInfo.properties is a list (may be empty for schema-free labels)."""
     tag = uid()
-    client.cypher("CREATE (n:PropLabel {tag: $tag})", params={"tag": tag})
+    label_name = f"PropLabel{uid()}"
+    client.cypher(f"CREATE (n:{label_name} {{tag: $tag}})", params={"tag": tag})
     try:
         labels = client.get_labels()
-        found = next((lbl for lbl in labels if lbl.name == "PropLabel"), None)
-        assert found is not None, "PropLabel not returned by get_labels()"
+        found = next((lbl for lbl in labels if lbl.name == label_name), None)
+        assert found is not None, f"{label_name} not returned by get_labels()"
         # Intentionally only check the type — CoordiNode is schema-free and may return
         # an empty properties list even when the node was created with properties.
         assert isinstance(found.properties, list)
     finally:
-        client.cypher("MATCH (n:PropLabel {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+        client.cypher(f"MATCH (n:{label_name} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
 
 
 def test_get_edge_types_returns_list(client):
