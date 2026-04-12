@@ -96,11 +96,9 @@ def test_upsert_and_get_triplets(store, tag):
     )
     store.upsert_relations([rel])
 
-    # CoordiNode does not support wildcard [r] patterns yet — must pass relation_names.
-    # See: get_triplets() implementation note.
+    # Wildcard [r] works — no need to specify relation_names.
     triplets = store.get_triplets(
         entity_names=[f"Src-{tag}"],
-        relation_names=["LI_RESEARCHES"],
     )
     assert isinstance(triplets, list)
     assert len(triplets) >= 1
