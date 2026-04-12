@@ -72,6 +72,11 @@ class CoordinodeGraph(GraphStore):
         structured = _parse_schema(text)
         # Augment with relationship triples (start_label, type, end_label) via
         # Cypher — get_schema_text() only lists edge types without direction.
+        # No LIMIT here intentionally: RETURN DISTINCT already collapses all edges
+        # to unique (src_label, rel_type, dst_label) combinations, so the result
+        # is bounded by the number of distinct relationship type triples, not by
+        # total edge count. Adding a LIMIT would silently drop relationship types
+        # that happen to appear beyond the limit, producing an incomplete schema.
         rows = self._client.cypher(
             "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels"
         )
