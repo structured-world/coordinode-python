@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/structured-world/coordinode-python/compare/v0.4.4...v0.5.0) (2026-04-12)
+
+
+### Features
+
+* **langchain:** add similarity_search() to CoordinodeGraph ([7c4d4c0](https://github.com/structured-world/coordinode-python/commit/7c4d4c0b88fc934b83a6bee85ed8db04c5b69b6c)), closes [#20](https://github.com/structured-world/coordinode-python/issues/20)
+* similarity_search() for LangChain + upsert_relations() idempotency test ([f0ad603](https://github.com/structured-world/coordinode-python/commit/f0ad60333ea294dc9b2eea263c3c096d5250280a))
+* use MERGE for edges, wildcard patterns, type()/labels() functions ([1101ac8](https://github.com/structured-world/coordinode-python/commit/1101ac8dd3d1a37f744ef275723c78a10b2f83d2))
+* use MERGE for edges, wildcard patterns, type()/labels() functions ([6d009a7](https://github.com/structured-world/coordinode-python/commit/6d009a714a90c3a915deb84d618a15ea35830a20)), closes [#24](https://github.com/structured-world/coordinode-python/issues/24)
+
+
+### Bug Fixes
+
+* **langchain:** align similarity_search() signature with Sequence protocol and issue spec ([ab3559e](https://github.com/structured-world/coordinode-python/commit/ab3559e84d6dfee411e1cac45aac22f251e71abb))
+* **langchain:** deduplicate relationship triples after _first_label normalization ([f0e1ff3](https://github.com/structured-world/coordinode-python/commit/f0e1ff3f954e83f11671fb385c058af514c72c6e))
+* **langchain:** guard empty query_vector via len() for Sequence compatibility ([951b487](https://github.com/structured-world/coordinode-python/commit/951b48739be1f242b8638e9e9302a7a049f6ec79))
+* **langchain:** sort similarity_search() results by distance + tighten test ([c9246ac](https://github.com/structured-world/coordinode-python/commit/c9246acc1ce7ea54fae40e02a58e34a1e44b5f28))
+* **langchain:** use min() in _first_label for deterministic label selection ([778e8c3](https://github.com/structured-world/coordinode-python/commit/778e8c336588b13465993312c50f48cf9b0f8e63))
+
+
+### Documentation
+
+* **langchain:** explain why refresh_schema uses no LIMIT on DISTINCT query ([ab1ea64](https://github.com/structured-world/coordinode-python/commit/ab1ea64b1934a3b42a439cb46b00abcefed7a003))
+
 ## [0.4.4](https://github.com/structured-world/coordinode-python/compare/v0.4.3...v0.4.4) (2026-04-09)
 
 
