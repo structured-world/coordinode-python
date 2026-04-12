@@ -81,14 +81,20 @@ class CoordinodeGraph(GraphStore):
             "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels"
         )
         if rows:
+            # Deduplicate after _first_label() normalization: RETURN DISTINCT operates on
+            # raw label lists, but _first_label(min()) can collapse different multi-label
+            # combinations to the same (start, type, end) triple (e.g. ['Employee','Person']
+            # and ['Person','Employee'] both min-normalize to 'Employee'). Use a set to
+            # ensure each relationship triple appears at most once.
+            triples: set[tuple[str, str, str]] = set()
+            for row in rows:
+                start = _first_label(row.get("src_labels"))
+                end = _first_label(row.get("dst_labels"))
+                rel = row.get("rel")
+                if start and rel and end:
+                    triples.add((start, rel, end))
             structured["relationships"] = [
-                {
-                    "start": _first_label(row.get("src_labels")),
-                    "type": row["rel"],
-                    "end": _first_label(row.get("dst_labels")),
-                }
-                for row in rows
-                if _first_label(row.get("src_labels")) and row.get("rel") and _first_label(row.get("dst_labels"))
+                {"start": start, "type": rel, "end": end} for start, rel, end in sorted(triples)
             ]
         self._structured_schema = structured
 

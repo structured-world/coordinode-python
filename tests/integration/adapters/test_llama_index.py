@@ -162,7 +162,11 @@ def test_vector_query_returns_results(store, tag):
     vector_query() without filters defaults to label="Chunk", so the seed node must use
     that label to be found by the underlying vector_search() call.
     """
-    vec = [float(i) / 16 for i in range(16)]
+    # Derive a unique embedding from the test tag so that no other :Chunk in the shared
+    # integration DB can have the same or closer vector, preventing flaky top-k results.
+    # tag is uuid4().hex[:8] → 8 hex chars → 4 bytes of entropy.
+    seed = list(bytes.fromhex(tag))
+    vec = [float(seed[i % len(seed)]) / 255.0 for i in range(16)]
     # Seeding is inside the try block so that the finally cleanup always runs even if
     # the CREATE succeeds but extracting seeded_internal_id raises (e.g., unexpected
     # response format). vector_query() defaults label to "Chunk" when no
@@ -183,7 +187,9 @@ def test_vector_query_returns_results(store, tag):
             params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
         )
         seeded_internal_id = str(seed_rows[0]["nid"])
-        query = VectorStoreQuery(query_embedding=vec, similarity_top_k=1)
+        # top_k=5: even if other :Chunk nodes exist with similar vectors, the unique
+        # tag-based embedding ensures ours is among the closest results.
+        query = VectorStoreQuery(query_embedding=vec, similarity_top_k=5)
         nodes, scores = store.vector_query(query)
 
         assert isinstance(nodes, list)
