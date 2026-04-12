@@ -165,10 +165,13 @@ def test_vector_query_returns_results(store, tag):
     vec = [float(i) / 16 for i in range(16)]
     # Seed a Chunk node with an embedding directly via Cypher.
     # vector_query() defaults label to "Chunk" when no MetadataFilters are provided.
-    store._client.cypher(
-        "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec})",
+    # Capture the internal CoordiNode node ID (returned as integer by RETURN n) so we
+    # can assert the specific seeded node is retrieved — not just any pre-existing Chunk.
+    seed_rows = store._client.cypher(
+        "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec}) RETURN n AS nid",
         params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
     )
+    seeded_internal_id = str(seed_rows[0]["nid"])
     try:
         query = VectorStoreQuery(query_embedding=vec, similarity_top_k=1)
         nodes, scores = store.vector_query(query)
@@ -176,6 +179,9 @@ def test_vector_query_returns_results(store, tag):
         assert isinstance(nodes, list)
         assert isinstance(scores, list)
         assert len(nodes) >= 1
+        # vector_search returns CoordiNode internal node IDs (ChunkNode.id_);
+        # verify our seeded node is the one found.
+        assert any(str(getattr(node, "id_", "")) == seeded_internal_id for node in nodes)
         assert len(scores) == len(nodes)
         assert scores[0] >= 0.0
     finally:

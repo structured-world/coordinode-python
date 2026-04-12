@@ -228,9 +228,14 @@ def _stable_document_id(source: Any) -> str:
 
 
 def _first_label(labels: Any) -> str | None:
-    """Extract the first label from a labels() result (list of strings)."""
+    """Extract a stable label from a labels() result (list of strings).
+
+    openCypher does not guarantee a stable ordering for labels(), so using
+    labels[0] would produce nondeterministic schema entries across calls.
+    We return the lexicographically smallest label as a deterministic rule.
+    """
     if isinstance(labels, list) and labels:
-        return str(labels[0])
+        return str(min(labels))
     if isinstance(labels, str):
         return labels
     return None
