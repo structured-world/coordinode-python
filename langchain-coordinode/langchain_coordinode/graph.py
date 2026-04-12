@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from langchain_community.graphs.graph_store import GraphStore
@@ -196,8 +197,8 @@ class CoordinodeGraph(GraphStore):
 
     def similarity_search(
         self,
-        query_vector: list[float],
-        k: int = 10,
+        query_vector: Sequence[float],
+        k: int = 5,
         label: str = "Chunk",
         property: str = "embedding",
     ) -> list[dict[str, Any]]:

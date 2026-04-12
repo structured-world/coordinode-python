@@ -164,7 +164,7 @@ def test_similarity_search_returns_results(graph, unique_tag):
         assert len(results) >= 1
         assert all("id" in r and "node" in r and "distance" in r for r in results)
         assert any(r["id"] == seeded_internal_id for r in results)
-        assert results[0]["distance"] >= 0.0
+        assert all(results[i]["distance"] <= results[i + 1]["distance"] for i in range(len(results) - 1))
     finally:
         graph.query("MATCH (n:LCSim {id: $id}) DELETE n", params={"id": f"lcsim-{unique_tag}"})
 

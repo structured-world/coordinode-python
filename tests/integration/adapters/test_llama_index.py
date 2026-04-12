@@ -82,9 +82,9 @@ def test_upsert_relations_idempotent(store, tag):
     store.upsert_relations([rel])
     store.upsert_relations([rel])  # second call must not duplicate
 
-    rows = store._client.cypher(
+    rows = store.structured_query(
         "MATCH (a {id: $src})-[r:LI_IDEMP_REL]->(b {id: $dst}) RETURN count(r) AS cnt",
-        params={"src": src.id, "dst": dst.id},
+        param_map={"src": src.id, "dst": dst.id},
     )
     assert rows[0]["cnt"] == 1, f"expected exactly 1 edge after double upsert, got: {rows}"
 
