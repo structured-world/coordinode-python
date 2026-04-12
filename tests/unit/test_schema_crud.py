@@ -127,6 +127,8 @@ class TestLabelInfo:
 
 
 class TestEdgeTypeInfo:
+    PROPERTY_TYPE_TIMESTAMP = 6
+
     def test_basic_fields(self):
         et = EdgeTypeInfo(_FakeEdgeType("KNOWS", version=1))
         assert et.name == "KNOWS"
@@ -134,7 +136,7 @@ class TestEdgeTypeInfo:
         assert et.properties == []
 
     def test_properties_are_wrapped(self):
-        props = [_FakePropDef("since", 6)]  # 6 = TIMESTAMP
+        props = [_FakePropDef("since", self.PROPERTY_TYPE_TIMESTAMP)]
         et = EdgeTypeInfo(_FakeEdgeType("FOLLOWS", properties=props))
         assert len(et.properties) == 1
         assert et.properties[0].name == "since"
