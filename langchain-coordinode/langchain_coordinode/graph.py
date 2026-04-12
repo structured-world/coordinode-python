@@ -194,6 +194,39 @@ class CoordinodeGraph(GraphStore):
         # cypher() returns List[Dict[str, Any]] directly — column name → value.
         return self._client.cypher(query, params=params or {})
 
+    def similarity_search(
+        self,
+        query_vector: list[float],
+        k: int = 10,
+        label: str = "Chunk",
+        property: str = "embedding",
+    ) -> list[dict[str, Any]]:
+        """Find nodes whose ``property`` vector is closest to ``query_vector``.
+
+        Wraps ``CoordinodeClient.vector_search()``.  The returned list contains
+        one dict per result with the keys ``node`` (node properties), ``id``
+        (internal integer node ID), and ``distance`` (cosine distance, lower =
+        more similar).
+
+        Args:
+            query_vector: Embedding vector to search for.
+            k: Maximum number of results to return.
+            label: Node label to search (default ``"Chunk"``).
+            property: Embedding property name (default ``"embedding"``).
+
+        Returns:
+            List of result dicts sorted by ascending distance.
+        """
+        if not query_vector:
+            return []
+        results = self._client.vector_search(
+            label=label,
+            property=property,
+            vector=query_vector,
+            top_k=k,
+        )
+        return [{"id": r.node.id, "node": r.node.properties, "distance": r.distance} for r in results]
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:

@@ -133,6 +133,44 @@ def test_add_graph_documents_idempotent(graph, unique_tag):
     assert result[0]["cnt"] == 1
 
 
+# ── similarity_search ─────────────────────────────────────────────────────────
+
+
+def test_similarity_search_returns_results(graph, unique_tag):
+    """similarity_search() returns node dicts with id, node, and distance keys.
+
+    Seeds a :LCSim node with a known embedding, then searches for the closest
+    vector. The seeded node must appear in the top-k results.
+    """
+    # Derive a unique embedding from the test tag (same technique as llama-index
+    # test) to avoid collisions with other :LCSim nodes in the shared DB.
+    seed = list(bytes.fromhex(unique_tag))
+    vec = [float(seed[i % len(seed)]) / 255.0 for i in range(16)]
+
+    try:
+        seed_rows = graph.query(
+            "CREATE (n:LCSim {id: $id, embedding: $vec}) RETURN n AS nid",
+            params={"id": f"lcsim-{unique_tag}", "vec": vec},
+        )
+        seeded_internal_id = seed_rows[0]["nid"]
+
+        results = graph.similarity_search(vec, k=5, label="LCSim", property="embedding")
+
+        assert isinstance(results, list)
+        assert len(results) >= 1
+        assert all("id" in r and "node" in r and "distance" in r for r in results)
+        assert any(r["id"] == seeded_internal_id for r in results)
+        assert results[0]["distance"] >= 0.0
+    finally:
+        graph.query("MATCH (n:LCSim {id: $id}) DELETE n", params={"id": f"lcsim-{unique_tag}"})
+
+
+def test_similarity_search_empty_vector_returns_empty(graph):
+    """similarity_search() with an empty vector list returns an empty list without error."""
+    results = graph.similarity_search([], k=5)
+    assert isinstance(results, list)
+
+
 def test_schema_refreshes_after_add(graph, unique_tag):
     """structured_schema is invalidated and re-fetched after add_graph_documents."""
     graph._schema = None  # force refresh
