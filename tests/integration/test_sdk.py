@@ -224,7 +224,7 @@ def test_get_labels_returns_list(client):
         names = [lbl.name for lbl in labels]
         assert label_name in names, f"{label_name} not in {names}"
     finally:
-        client.cypher(f"MATCH (n:{label_name} {{tag: $tag}}) DELETE n", params={"tag": tag})
+        client.cypher(f"MATCH (n:{label_name} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
 
 
 def test_get_labels_has_property_definitions(client):
