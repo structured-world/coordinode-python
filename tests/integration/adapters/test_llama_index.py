@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 from llama_index.core.graph_stores.types import EntityNode, Relation
+from llama_index.core.vector_stores.types import VectorStoreQuery
 from llama_index.graph_stores.coordinode import CoordinodePropertyGraphStore
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
@@ -96,11 +97,9 @@ def test_upsert_and_get_triplets(store, tag):
     )
     store.upsert_relations([rel])
 
-    # CoordiNode does not support wildcard [r] patterns yet — must pass relation_names.
-    # See: get_triplets() implementation note.
+    # Wildcard [r] works — no need to specify relation_names.
     triplets = store.get_triplets(
         entity_names=[f"Src-{tag}"],
-        relation_names=["LI_RESEARCHES"],
     )
     assert isinstance(triplets, list)
     assert len(triplets) >= 1
@@ -152,3 +151,61 @@ def test_delete_by_entity_name(store, tag):
 
     found = store.get(properties={"name": f"DelNamed-{tag}"})
     assert len(found) == 0
+
+
+# ── Vector query ──────────────────────────────────────────────────────────────
+
+
+def test_vector_query_returns_results(store, tag):
+    """vector_query() returns nodes and scores for an embedding that matches stored data.
+
+    vector_query() without filters defaults to label="Chunk", so the seed node must use
+    that label to be found by the underlying vector_search() call.
+    """
+    # Derive a unique embedding from the test tag so that no other :Chunk in the shared
+    # integration DB can have the same or closer vector, preventing flaky top-k results.
+    # tag is uuid4().hex[:8] → 8 hex chars → 4 bytes of entropy.
+    seed = list(bytes.fromhex(tag))
+    vec = [float(seed[i % len(seed)]) / 255.0 for i in range(16)]
+    # Seeding is inside the try block so that the finally cleanup always runs even if
+    # the CREATE succeeds but extracting seeded_internal_id raises (e.g., unexpected
+    # response format). vector_query() defaults label to "Chunk" when no
+    # MetadataFilters are provided.
+    try:
+        # In CoordiNode, `CREATE (n:...) RETURN n` returns the internal integer node ID,
+        # NOT a property map. This is CoordiNode-specific behaviour verified empirically:
+        #   seed_rows[0]["nid"]  →  90  (int)
+        # ChunkNode.id_ is set from vector_search's r.node.id (same internal integer),
+        # so comparing str(node.id_) == str(seed_rows[0]["nid"]) correctly identifies
+        # the specific seeded node.
+        #
+        # NOTE: vector_search returns Node(id=N, properties={}) — the properties dict is
+        # always EMPTY, so node.properties.get("id") would always be None and cannot be
+        # used for identification.
+        seed_rows = store._client.cypher(
+            "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec}) RETURN n AS nid",
+            params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
+        )
+        seeded_internal_id = str(seed_rows[0]["nid"])
+        # top_k=5: even if other :Chunk nodes exist with similar vectors, the unique
+        # tag-based embedding ensures ours is among the closest results.
+        query = VectorStoreQuery(query_embedding=vec, similarity_top_k=5)
+        nodes, scores = store.vector_query(query)
+
+        assert isinstance(nodes, list)
+        assert isinstance(scores, list)
+        assert len(nodes) >= 1
+        # ChunkNode.id_ == str(r.node.id) == internal CoordiNode node ID captured above.
+        assert any(str(getattr(node, "id_", "")) == seeded_internal_id for node in nodes)
+        assert len(scores) == len(nodes)
+        assert scores[0] >= 0.0
+    finally:
+        store._client.cypher("MATCH (n:Chunk {id: $id}) DELETE n", params={"id": f"vec-{tag}"})
+
+
+def test_vector_query_empty_embedding_returns_empty(store):
+    """vector_query() with no query_embedding returns empty lists without error."""
+    query = VectorStoreQuery(query_embedding=None, similarity_top_k=5)
+    nodes, scores = store.vector_query(query)
+    assert nodes == []
+    assert scores == []

@@ -117,13 +117,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         properties: dict[str, Any] | None = None,
         ids: list[str] | None = None,
     ) -> list[list[LabelledNode]]:
-        """Retrieve triplets (subject, predicate, object) as node triples.
-
-        Note:
-            ``relation_names`` is **required**.  CoordiNode does not support
-            untyped wildcard ``[r]`` relationship patterns — they silently return
-            no rows.  Omitting ``relation_names`` raises ``NotImplementedError``.
-        """
+        """Retrieve triplets (subject, predicate, object) as node triples."""
         conditions: list[str] = []
         params: dict[str, Any] = {}
 
@@ -133,22 +127,15 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             conditions.append("(n.name IN $entity_names OR m.name IN $entity_names)")
             params["entity_names"] = entity_names
         if relation_names:
-            # Escape each type name to prevent Cypher injection
             rel_filter = "|".join(_cypher_ident(t) for t in relation_names)
             rel_pattern = f"[r:{rel_filter}]"
         else:
-            # CoordiNode: wildcard [r] pattern returns no results.
-            # Callers must supply relation_names for the query to work.
-            raise NotImplementedError(
-                "CoordinodePropertyGraphStore.get_triplets() requires relation_names — "
-                "CoordiNode does not support untyped wildcard [r] patterns"
-            )
+            rel_pattern = "[r]"
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        # CoordiNode: use r.__type__ instead of type(r) — type() returns null.
         cypher = (
             f"MATCH (n)-{rel_pattern}->(m) {where} "
-            "RETURN n, r.__type__ AS rel_type, m, n.id AS _src_id, m.id AS _dst_id "
+            "RETURN n, type(r) AS rel_type, m, n.id AS _src_id, m.id AS _dst_id "
             "LIMIT 1000"
         )
         result = self._client.cypher(cypher, params=params)
@@ -189,27 +176,23 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         if not graph_nodes:
             return []
 
-        # CoordiNode: wildcard [r] pattern returns no results.  Fetch all
-        # known edge types from the schema and build a typed pattern instead,
-        # e.g. [r:TYPE_A|TYPE_B|...].
-        schema_text = self._client.get_schema_text()
-        edge_types = _parse_edge_types_from_schema(schema_text)
-
         ignored = set(ignore_rels) if ignore_rels else set()
-        active_types = [t for t in edge_types if t not in ignored]
-
-        if not active_types:
-            return []
-
-        rel_filter = "|".join(_cypher_ident(t) for t in active_types)
         node_ids = [n.id for n in graph_nodes]
-        safe_limit = int(limit)  # coerce to int to prevent Cypher injection via non-integer input
+        safe_limit = int(limit)
         params: dict[str, object] = {"ids": node_ids}
 
+        # Push ignore_rels filter into the WHERE clause so LIMIT applies only
+        # to non-ignored edges and callers receive up to `limit` visible results.
+        if ignored:
+            params["ignored"] = list(ignored)
+            ignore_clause = "AND type(r) NOT IN $ignored "
+        else:
+            ignore_clause = ""
+
         cypher = (
-            f"MATCH (n)-[r:{rel_filter}]->(m) "
-            f"WHERE n.id IN $ids "
-            f"RETURN n, r.__type__ AS _rel_type, m, n.id AS _src_id, m.id AS _dst_id "
+            "MATCH (n)-[r]->(m) "
+            f"WHERE n.id IN $ids {ignore_clause}"
+            f"RETURN n, type(r) AS _rel_type, m, n.id AS _src_id, m.id AS _dst_id "
             f"LIMIT {safe_limit}"
         )
         result = self._client.cypher(cypher, params=params)
@@ -237,28 +220,21 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             self._client.cypher(cypher, params={"id": node.id, "props": props})
 
     def upsert_relations(self, relations: list[Relation]) -> None:
-        """Upsert relationships into the graph."""
+        """Upsert relationships into the graph (idempotent via MERGE)."""
         for rel in relations:
             props = rel.properties or {}
             label = _cypher_ident(rel.label)
-            # CoordiNode does not yet support MERGE for edge patterns; use CREATE.
-            # A WHERE NOT (src)-[:TYPE]->(dst) guard was tested but returns 0
-            # rows silently in CoordiNode, making all CREATE statements no-ops.
-            # Until server-side MERGE or pattern predicates are supported,
-            # repeated calls will create duplicate edges.
-            # SET r += $props is skipped when props is empty — SET r += {} is
-            # not supported by all server versions.
             if props:
                 cypher = (
                     f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
-                    f"CREATE (src)-[r:{label}]->(dst) SET r += $props"
+                    f"MERGE (src)-[r:{label}]->(dst) SET r += $props"
                 )
                 self._client.cypher(
                     cypher,
                     params={"src_id": rel.source_id, "dst_id": rel.target_id, "props": props},
                 )
             else:
-                cypher = f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) CREATE (src)-[r:{label}]->(dst)"
+                cypher = f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) MERGE (src)-[r:{label}]->(dst)"
                 self._client.cypher(
                     cypher,
                     params={"src_id": rel.source_id, "dst_id": rel.target_id},
@@ -376,29 +352,3 @@ def _node_label(node: LabelledNode) -> str:
     if isinstance(node, EntityNode):
         return node.label or "Entity"
     return "Node"
-
-
-def _parse_edge_types_from_schema(schema_text: str) -> list[str]:
-    """Extract edge type names from CoordiNode schema text.
-
-    Parses the "Edge types:" section produced by ``get_schema_text()``.
-    """
-    edge_types: list[str] = []
-    lines = iter(schema_text.splitlines())
-
-    # Advance to the "Edge types:" header.
-    for line in lines:
-        if line.strip().lower().startswith("edge types"):
-            break
-
-    # Collect bullet items until the first blank line.
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            break
-        if stripped.startswith(("-", "*")):
-            name = stripped.lstrip("-* ").split("(")[0].strip()
-            if name:
-                edge_types.append(name)
-
-    return edge_types

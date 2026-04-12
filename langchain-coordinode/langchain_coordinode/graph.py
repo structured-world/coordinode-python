@@ -72,19 +72,29 @@ class CoordinodeGraph(GraphStore):
         structured = _parse_schema(text)
         # Augment with relationship triples (start_label, type, end_label) via
         # Cypher — get_schema_text() only lists edge types without direction.
-        # CoordiNode: wildcard [r] returns no results; build typed pattern from
-        # the rel_props keys returned by _parse_schema().
-        rel_types = list(structured.get("rel_props", {}).keys())
-        if rel_types:
-            rel_filter = "|".join(_cypher_ident(t) for t in rel_types)
-            rows = self._client.cypher(
-                f"MATCH (a)-[r:{rel_filter}]->(b) "
-                "RETURN DISTINCT a.__label__ AS src, r.__type__ AS rel, b.__label__ AS dst"
-            )
+        # No LIMIT here intentionally: RETURN DISTINCT already collapses all edges
+        # to unique (src_label, rel_type, dst_label) combinations, so the result
+        # is bounded by the number of distinct relationship type triples, not by
+        # total edge count. Adding a LIMIT would silently drop relationship types
+        # that happen to appear beyond the limit, producing an incomplete schema.
+        rows = self._client.cypher(
+            "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels"
+        )
+        if rows:
+            # Deduplicate after _first_label() normalization: RETURN DISTINCT operates on
+            # raw label lists, but _first_label(min()) can collapse different multi-label
+            # combinations to the same (start, type, end) triple (e.g. ['Employee','Person']
+            # and ['Person','Employee'] both min-normalize to 'Employee'). Use a set to
+            # ensure each relationship triple appears at most once.
+            triples: set[tuple[str, str, str]] = set()
+            for row in rows:
+                start = _first_label(row.get("src_labels"))
+                end = _first_label(row.get("dst_labels"))
+                rel = row.get("rel")
+                if start and rel and end:
+                    triples.add((start, rel, end))
             structured["relationships"] = [
-                {"start": row["src"], "type": row["rel"], "end": row["dst"]}
-                for row in rows
-                if row.get("src") and row.get("rel") and row.get("dst")
+                {"start": start, "type": rel, "end": end} for start, rel, end in sorted(triples)
             ]
         self._structured_schema = structured
 
@@ -95,18 +105,14 @@ class CoordinodeGraph(GraphStore):
     ) -> None:
         """Store nodes and relationships extracted from ``GraphDocument`` objects.
 
-        Nodes are upserted by ``id`` (used as the ``name`` property) via
-        ``MERGE``, so repeated calls are safe for nodes.
-
-        Relationships are created with unconditional ``CREATE`` because
-        CoordiNode does not yet support ``MERGE`` for edge patterns.  Re-ingesting
-        the same ``GraphDocument`` will therefore produce duplicate edges.
+        Both nodes and relationships are upserted via ``MERGE``, so repeated
+        calls with the same data are idempotent.
 
         Args:
             graph_documents: List of ``langchain_community.graphs.graph_document.GraphDocument``.
             include_source: If ``True``, also store the source ``Document`` as a
                 ``__Document__`` node linked to every extracted entity via
-                ``MENTIONS`` edges (also unconditional ``CREATE``).
+                ``MENTIONS`` edges.
         """
         for doc in graph_documents:
             for node in doc.nodes:
@@ -133,12 +139,10 @@ class CoordinodeGraph(GraphStore):
         )
 
     def _create_edge(self, rel: Any) -> None:
-        """Create a relationship via unconditional CREATE.
+        """Upsert a relationship via MERGE (idempotent).
 
-        CoordiNode does not support MERGE for edge patterns.  Re-ingesting the
-        same relationship will create a duplicate edge.  SET r += $props is
-        skipped when props is empty because SET r += {} is not supported by all
-        server versions.
+        SET r += $props is skipped when props is empty because
+        SET r += {} is not supported by all server versions.
         """
         src_label = _cypher_ident(rel.source.type or "Entity")
         dst_label = _cypher_ident(rel.target.type or "Entity")
@@ -148,19 +152,19 @@ class CoordinodeGraph(GraphStore):
             self._client.cypher(
                 f"MATCH (src:{src_label} {{name: $src}}) "
                 f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                f"CREATE (src)-[r:{rel_type}]->(dst) SET r += $props",
+                f"MERGE (src)-[r:{rel_type}]->(dst) SET r += $props",
                 params={"src": rel.source.id, "dst": rel.target.id, "props": props},
             )
         else:
             self._client.cypher(
                 f"MATCH (src:{src_label} {{name: $src}}) "
                 f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                f"CREATE (src)-[r:{rel_type}]->(dst)",
+                f"MERGE (src)-[r:{rel_type}]->(dst)",
                 params={"src": rel.source.id, "dst": rel.target.id},
             )
 
     def _link_document_to_entities(self, doc: Any) -> None:
-        """Upsert a ``__Document__`` node and CREATE ``MENTIONS`` edges to all entities."""
+        """Upsert a ``__Document__`` node and MERGE ``MENTIONS`` edges to all entities."""
         src_id = getattr(doc.source, "id", None) or _stable_document_id(doc.source)
         self._client.cypher(
             "MERGE (d:__Document__ {id: $id}) SET d.page_content = $text",
@@ -169,7 +173,7 @@ class CoordinodeGraph(GraphStore):
         for node in doc.nodes:
             label = _cypher_ident(node.type or "Entity")
             self._client.cypher(
-                f"MATCH (d:__Document__ {{id: $doc_id}}) MATCH (n:{label} {{name: $name}}) CREATE (d)-[:MENTIONS]->(n)",
+                f"MATCH (d:__Document__ {{id: $doc_id}}) MATCH (n:{label} {{name: $name}}) MERGE (d)-[:MENTIONS]->(n)",
                 params={"doc_id": src_id, "name": node.id},
             )
 
@@ -211,10 +215,7 @@ def _stable_document_id(source: Any) -> str:
 
     Combines ``page_content`` and sorted ``metadata`` items so the same
     document produces the same ``__Document__`` node ID across different
-    Python processes.  This makes document-node creation stable when
-    ``include_source=True`` is used, but does not make re-ingest fully
-    idempotent because ``MENTIONS`` edges are not deduplicated until edge
-    ``MERGE``/dedup support is added to CoordiNode.
+    Python processes.
     """
     content = getattr(source, "page_content", "") or ""
     metadata = getattr(source, "metadata", {}) or {}
@@ -230,6 +231,20 @@ def _stable_document_id(source: Any) -> str:
         default=str,
     )
     return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
+def _first_label(labels: Any) -> str | None:
+    """Extract a stable label from a labels() result (list of strings).
+
+    openCypher does not guarantee a stable ordering for labels(), so using
+    labels[0] would produce nondeterministic schema entries across calls.
+    We return the lexicographically smallest label as a deterministic rule.
+    """
+    if isinstance(labels, list) and labels:
+        return str(min(labels))
+    if isinstance(labels, str):
+        return labels
+    return None
 
 
 def _cypher_ident(name: str) -> str:
