@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 from llama_index.core.graph_stores.types import EntityNode, Relation
+from llama_index.core.vector_stores.types import VectorStoreQuery
 from llama_index.graph_stores.coordinode import CoordinodePropertyGraphStore
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
@@ -150,3 +151,40 @@ def test_delete_by_entity_name(store, tag):
 
     found = store.get(properties={"name": f"DelNamed-{tag}"})
     assert len(found) == 0
+
+
+# ── Vector query ──────────────────────────────────────────────────────────────
+
+
+def test_vector_query_returns_results(store, tag):
+    """vector_query() returns nodes and scores for an embedding that matches stored data.
+
+    vector_query() without filters defaults to label="Chunk", so the seed node must use
+    that label to be found by the underlying vector_search() call.
+    """
+    vec = [float(i) / 16 for i in range(16)]
+    # Seed a Chunk node with an embedding directly via Cypher.
+    # vector_query() defaults label to "Chunk" when no MetadataFilters are provided.
+    store._client.cypher(
+        "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec})",
+        params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
+    )
+    try:
+        query = VectorStoreQuery(query_embedding=vec, similarity_top_k=1)
+        nodes, scores = store.vector_query(query)
+
+        assert isinstance(nodes, list)
+        assert isinstance(scores, list)
+        assert len(nodes) >= 1
+        assert len(scores) == len(nodes)
+        assert scores[0] >= 0.0
+    finally:
+        store._client.cypher("MATCH (n:Chunk {id: $id}) DELETE n", params={"id": f"vec-{tag}"})
+
+
+def test_vector_query_empty_embedding_returns_empty(store):
+    """vector_query() with no query_embedding returns empty lists without error."""
+    query = VectorStoreQuery(query_embedding=None, similarity_top_k=5)
+    nodes, scores = store.vector_query(query)
+    assert nodes == []
+    assert scores == []
