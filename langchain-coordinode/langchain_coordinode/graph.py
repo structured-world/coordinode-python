@@ -217,7 +217,10 @@ class CoordinodeGraph(GraphStore):
         Returns:
             List of result dicts sorted by ascending distance.
         """
-        if not query_vector:
+        # Use len() instead of truthiness check: numpy.ndarray (and other Sequence
+        # types) raise ValueError("The truth value of an array is ambiguous") when
+        # used in a boolean context. len() == 0 works for all sequence types.
+        if len(query_vector) == 0:
             return []
         results = sorted(
             self._client.vector_search(

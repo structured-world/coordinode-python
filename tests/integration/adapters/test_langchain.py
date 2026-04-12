@@ -152,6 +152,10 @@ def test_similarity_search_returns_results(graph, unique_tag):
             "CREATE (n:LCSim {id: $id, embedding: $vec}) RETURN n AS nid",
             params={"id": f"lcsim-{unique_tag}", "vec": vec},
         )
+        # graph.query() wraps CoordinodeClient.cypher() which returns raw dict values.
+        # CoordiNode: CREATE ... RETURN n yields the internal integer node ID directly
+        # (NOT a node object). similarity_search() also returns {"id": r.node.id, ...}
+        # where r.node.id is the same integer. Direct equality comparison is correct.
         seeded_internal_id = seed_rows[0]["nid"]
 
         results = graph.similarity_search(vec, k=5, label="LCSim", property="embedding")
