@@ -163,16 +163,18 @@ def test_vector_query_returns_results(store, tag):
     that label to be found by the underlying vector_search() call.
     """
     vec = [float(i) / 16 for i in range(16)]
-    # Seed a Chunk node with an embedding directly via Cypher.
-    # vector_query() defaults label to "Chunk" when no MetadataFilters are provided.
-    # Capture the internal CoordiNode node ID (returned as integer by RETURN n) so we
-    # can assert the specific seeded node is retrieved — not just any pre-existing Chunk.
-    seed_rows = store._client.cypher(
-        "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec}) RETURN n AS nid",
-        params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
-    )
-    seeded_internal_id = str(seed_rows[0]["nid"])
+    # Seeding is inside the try block so that the finally cleanup always runs even if
+    # the CREATE succeeds but extracting seeded_internal_id raises (e.g., unexpected
+    # response format). vector_query() defaults label to "Chunk" when no
+    # MetadataFilters are provided.
     try:
+        # Capture the internal CoordiNode node ID (returned as integer by RETURN n) so
+        # we can assert the specific seeded node is retrieved — not just any Chunk.
+        seed_rows = store._client.cypher(
+            "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec}) RETURN n AS nid",
+            params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
+        )
+        seeded_internal_id = str(seed_rows[0]["nid"])
         query = VectorStoreQuery(query_embedding=vec, similarity_top_k=1)
         nodes, scores = store.vector_query(query)
 
