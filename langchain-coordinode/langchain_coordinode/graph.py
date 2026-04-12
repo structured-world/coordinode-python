@@ -219,11 +219,14 @@ class CoordinodeGraph(GraphStore):
         """
         if not query_vector:
             return []
-        results = self._client.vector_search(
-            label=label,
-            property=property,
-            vector=query_vector,
-            top_k=k,
+        results = sorted(
+            self._client.vector_search(
+                label=label,
+                property=property,
+                vector=query_vector,
+                top_k=k,
+            ),
+            key=lambda r: r.distance,
         )
         return [{"id": r.node.id, "node": r.node.properties, "distance": r.distance} for r in results]
 

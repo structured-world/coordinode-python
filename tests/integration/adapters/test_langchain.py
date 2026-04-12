@@ -168,7 +168,7 @@ def test_similarity_search_returns_results(graph, unique_tag):
 def test_similarity_search_empty_vector_returns_empty(graph):
     """similarity_search() with an empty vector list returns an empty list without error."""
     results = graph.similarity_search([], k=5)
-    assert isinstance(results, list)
+    assert results == []
 
 
 def test_schema_refreshes_after_add(graph, unique_tag):
