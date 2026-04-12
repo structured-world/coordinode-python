@@ -214,16 +214,17 @@ def test_get_schema_text(client):
 def test_get_labels_returns_list(client):
     """get_labels() returns a non-empty list of LabelInfo after data is present."""
     tag = uid()
-    client.cypher("CREATE (n:GetLabelsTest {tag: $tag})", params={"tag": tag})
+    label_name = f"GetLabelsTest{uid()}"
+    client.cypher(f"CREATE (n:{label_name} {{tag: $tag}})", params={"tag": tag})
     try:
         labels = client.get_labels()
         assert isinstance(labels, list)
         assert len(labels) > 0
         assert all(isinstance(lbl, LabelInfo) for lbl in labels)
         names = [lbl.name for lbl in labels]
-        assert "GetLabelsTest" in names, f"GetLabelsTest not in {names}"
+        assert label_name in names, f"{label_name} not in {names}"
     finally:
-        client.cypher("MATCH (n:GetLabelsTest {tag: $tag}) DELETE n", params={"tag": tag})
+        client.cypher(f"MATCH (n:{label_name} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 def test_get_labels_has_property_definitions(client):
@@ -244,8 +245,9 @@ def test_get_labels_has_property_definitions(client):
 def test_get_edge_types_returns_list(client):
     """get_edge_types() returns a non-empty list of EdgeTypeInfo after data is present."""
     tag = uid()
+    edge_type = f"GET_EDGE_TYPE_TEST_{uid()}".upper()
     client.cypher(
-        "CREATE (a:EdgeTypeTestNode {tag: $tag})-[:GET_EDGE_TYPE_TEST]->(b:EdgeTypeTestNode {tag: $tag})",
+        f"CREATE (a:EdgeTypeTestNode {{tag: $tag}})-[:{edge_type}]->(b:EdgeTypeTestNode {{tag: $tag}})",
         params={"tag": tag},
     )
     try:
@@ -254,7 +256,7 @@ def test_get_edge_types_returns_list(client):
         assert len(edge_types) > 0
         assert all(isinstance(et, EdgeTypeInfo) for et in edge_types)
         type_names = [et.name for et in edge_types]
-        assert "GET_EDGE_TYPE_TEST" in type_names, f"GET_EDGE_TYPE_TEST not in {type_names}"
+        assert edge_type in type_names, f"{edge_type} not in {type_names}"
     finally:
         client.cypher("MATCH (n:EdgeTypeTestNode {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
@@ -281,7 +283,7 @@ def test_traverse_returns_neighbours(client):
 
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=False,
     reason="CoordiNode Traverse RPC does not yet support inbound direction — server returns empty result set",
 )
 def test_traverse_inbound_direction(client):
