@@ -14,7 +14,6 @@ from coordinode.client import (
     TraverseResult,
 )
 
-
 # ── Fake proto stubs ─────────────────────────────────────────────────────────
 
 

@@ -96,8 +96,7 @@ class PropertyDefinitionInfo:
 
     def __repr__(self) -> str:
         return (
-            f"PropertyDefinition(name={self.name!r}, type={self.type},"
-            f" required={self.required}, unique={self.unique})"
+            f"PropertyDefinition(name={self.name!r}, type={self.type}, required={self.required}, unique={self.unique})"
         )
 
 
@@ -107,9 +106,7 @@ class LabelInfo:
     def __init__(self, proto_label: Any) -> None:
         self.name: str = proto_label.name
         self.version: int = proto_label.version
-        self.properties: list[PropertyDefinitionInfo] = [
-            PropertyDefinitionInfo(p) for p in proto_label.properties
-        ]
+        self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
 
     def __repr__(self) -> str:
         return f"LabelInfo(name={self.name!r}, properties={self.properties})"
@@ -121,9 +118,7 @@ class EdgeTypeInfo:
     def __init__(self, proto_edge_type: Any) -> None:
         self.name: str = proto_edge_type.name
         self.version: int = proto_edge_type.version
-        self.properties: list[PropertyDefinitionInfo] = [
-            PropertyDefinitionInfo(p) for p in proto_edge_type.properties
-        ]
+        self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
 
     def __repr__(self) -> str:
         return f"EdgeTypeInfo(name={self.name!r}, properties={self.properties})"
@@ -400,9 +395,10 @@ class AsyncCoordinodeClient:
             "inbound": TraversalDirection.TRAVERSAL_DIRECTION_INBOUND,
             "both": TraversalDirection.TRAVERSAL_DIRECTION_BOTH,
         }
-        direction_value = _direction_map.get(
-            direction.lower(), TraversalDirection.TRAVERSAL_DIRECTION_OUTBOUND
-        )
+        key = direction.lower()
+        if key not in _direction_map:
+            raise ValueError(f"Invalid direction {direction!r}. Must be one of: 'outbound', 'inbound', 'both'.")
+        direction_value = _direction_map[key]
 
         req = TraverseRequest(
             start_node_id=start_node_id,
