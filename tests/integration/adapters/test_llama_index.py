@@ -72,6 +72,23 @@ def test_upsert_nodes_idempotent(store, tag):
     assert len(found) == 1
 
 
+def test_upsert_relations_idempotent(store, tag):
+    """Upserting the same relation twice must produce exactly one edge (MERGE idempotent)."""
+    src = EntityNode(label="LIIdempRel", name=f"IdempSrc-{tag}")
+    dst = EntityNode(label="LIIdempRel", name=f"IdempDst-{tag}")
+    store.upsert_nodes([src, dst])
+
+    rel = Relation(label="LI_IDEMP_REL", source_id=src.id, target_id=dst.id)
+    store.upsert_relations([rel])
+    store.upsert_relations([rel])  # second call must not duplicate
+
+    rows = store.structured_query(
+        "MATCH (a {id: $src})-[r:LI_IDEMP_REL]->(b {id: $dst}) RETURN count(r) AS cnt",
+        param_map={"src": src.id, "dst": dst.id},
+    )
+    assert rows[0]["cnt"] == 1, f"expected exactly 1 edge after double upsert, got: {rows}"
+
+
 def test_get_by_id(store, tag):
     node = EntityNode(label="LIGetById", name=f"ById-{tag}")
     node_id = node.id
