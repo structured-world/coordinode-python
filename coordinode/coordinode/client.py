@@ -85,6 +85,61 @@ class VectorResult:
         return f"VectorResult(distance={self.distance:.4f}, node={self.node})"
 
 
+class PropertyDefinitionInfo:
+    """A property definition from the schema (name, type, required, unique)."""
+
+    def __init__(self, proto_def: Any) -> None:
+        self.name: str = proto_def.name
+        self.type: int = proto_def.type
+        self.required: bool = proto_def.required
+        self.unique: bool = proto_def.unique
+
+    def __repr__(self) -> str:
+        return (
+            f"PropertyDefinition(name={self.name!r}, type={self.type},"
+            f" required={self.required}, unique={self.unique})"
+        )
+
+
+class LabelInfo:
+    """A node label returned from the schema registry."""
+
+    def __init__(self, proto_label: Any) -> None:
+        self.name: str = proto_label.name
+        self.version: int = proto_label.version
+        self.properties: list[PropertyDefinitionInfo] = [
+            PropertyDefinitionInfo(p) for p in proto_label.properties
+        ]
+
+    def __repr__(self) -> str:
+        return f"LabelInfo(name={self.name!r}, properties={self.properties})"
+
+
+class EdgeTypeInfo:
+    """An edge type returned from the schema registry."""
+
+    def __init__(self, proto_edge_type: Any) -> None:
+        self.name: str = proto_edge_type.name
+        self.version: int = proto_edge_type.version
+        self.properties: list[PropertyDefinitionInfo] = [
+            PropertyDefinitionInfo(p) for p in proto_edge_type.properties
+        ]
+
+    def __repr__(self) -> str:
+        return f"EdgeTypeInfo(name={self.name!r}, properties={self.properties})"
+
+
+class TraverseResult:
+    """Result of a graph traversal: reached nodes and traversed edges."""
+
+    def __init__(self, proto_response: Any) -> None:
+        self.nodes: list[NodeResult] = [NodeResult(n) for n in proto_response.nodes]
+        self.edges: list[EdgeResult] = [EdgeResult(e) for e in proto_response.edges]
+
+    def __repr__(self) -> str:
+        return f"TraverseResult(nodes={len(self.nodes)}, edges={len(self.edges)})"
+
+
 # ── Async client ─────────────────────────────────────────────────────────────
 
 
@@ -303,6 +358,61 @@ class AsyncCoordinodeClient:
 
         return "\n".join(lines)
 
+    async def get_labels(self) -> list[LabelInfo]:
+        """Return all node labels defined in the schema."""
+        from coordinode._proto.coordinode.v1.graph.schema_pb2 import ListLabelsRequest  # type: ignore[import]
+
+        resp = await self._schema_stub.ListLabels(ListLabelsRequest(), timeout=self._timeout)
+        return [LabelInfo(label) for label in resp.labels]
+
+    async def get_edge_types(self) -> list[EdgeTypeInfo]:
+        """Return all edge types defined in the schema."""
+        from coordinode._proto.coordinode.v1.graph.schema_pb2 import ListEdgeTypesRequest  # type: ignore[import]
+
+        resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
+        return [EdgeTypeInfo(et) for et in resp.edge_types]
+
+    async def traverse(
+        self,
+        start_node_id: int,
+        edge_type: str,
+        direction: str = "outbound",
+        max_depth: int = 1,
+    ) -> TraverseResult:
+        """Traverse the graph from *start_node_id* following *edge_type* edges.
+
+        Args:
+            start_node_id: ID of the node to start from.
+            edge_type: Edge type label to follow (e.g. ``"KNOWS"``).
+            direction: ``"outbound"`` (default), ``"inbound"``, or ``"both"``.
+            max_depth: Maximum hop count (default 1).
+
+        Returns:
+            :class:`TraverseResult` with ``nodes`` and ``edges`` lists.
+        """
+        from coordinode._proto.coordinode.v1.graph.graph_pb2 import (  # type: ignore[import]
+            TraversalDirection,
+            TraverseRequest,
+        )
+
+        _direction_map = {
+            "outbound": TraversalDirection.TRAVERSAL_DIRECTION_OUTBOUND,
+            "inbound": TraversalDirection.TRAVERSAL_DIRECTION_INBOUND,
+            "both": TraversalDirection.TRAVERSAL_DIRECTION_BOTH,
+        }
+        direction_value = _direction_map.get(
+            direction.lower(), TraversalDirection.TRAVERSAL_DIRECTION_OUTBOUND
+        )
+
+        req = TraverseRequest(
+            start_node_id=start_node_id,
+            edge_type=edge_type,
+            direction=direction_value,
+            max_depth=max_depth,
+        )
+        resp = await self._graph_stub.Traverse(req, timeout=self._timeout)
+        return TraverseResult(resp)
+
     async def health(self) -> bool:
         from coordinode._proto.coordinode.v1.health.health_pb2 import (  # type: ignore[import]
             HealthCheckRequest,
@@ -421,6 +531,24 @@ class CoordinodeClient:
 
     def get_schema_text(self) -> str:
         return self._run(self._async.get_schema_text())
+
+    def get_labels(self) -> list[LabelInfo]:
+        """Return all node labels defined in the schema."""
+        return self._run(self._async.get_labels())
+
+    def get_edge_types(self) -> list[EdgeTypeInfo]:
+        """Return all edge types defined in the schema."""
+        return self._run(self._async.get_edge_types())
+
+    def traverse(
+        self,
+        start_node_id: int,
+        edge_type: str,
+        direction: str = "outbound",
+        max_depth: int = 1,
+    ) -> TraverseResult:
+        """Traverse the graph from *start_node_id* following *edge_type* edges."""
+        return self._run(self._async.traverse(start_node_id, edge_type, direction, max_depth))
 
     def health(self) -> bool:
         return self._run(self._async.health())

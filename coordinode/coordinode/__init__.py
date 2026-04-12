@@ -22,7 +22,11 @@ from coordinode.client import (
     AsyncCoordinodeClient,
     CoordinodeClient,
     EdgeResult,
+    EdgeTypeInfo,
+    LabelInfo,
     NodeResult,
+    PropertyDefinitionInfo,
+    TraverseResult,
     VectorResult,
 )
 
@@ -36,4 +40,8 @@ __all__ = [
     "NodeResult",
     "EdgeResult",
     "VectorResult",
+    "LabelInfo",
+    "EdgeTypeInfo",
+    "PropertyDefinitionInfo",
+    "TraverseResult",
 ]
