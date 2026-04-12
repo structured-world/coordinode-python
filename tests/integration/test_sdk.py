@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from coordinode import AsyncCoordinodeClient, CoordinodeClient
+from coordinode import AsyncCoordinodeClient, CoordinodeClient, LabelInfo, EdgeTypeInfo, TraverseResult
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
 
@@ -206,6 +206,98 @@ def test_get_schema_text(client):
         assert "SCHEMA_EDGE" in schema, f"edge type missing from schema text: {schema!r}"
     finally:
         client.cypher("MATCH (n:SchemaTestLabel {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+
+
+# ── get_labels / get_edge_types / traverse ────────────────────────────────────
+
+
+def test_get_labels_returns_list(client):
+    """get_labels() returns a non-empty list of LabelInfo after data is present."""
+    tag = uid()
+    client.cypher("CREATE (n:GetLabelsTest {tag: $tag})", params={"tag": tag})
+    try:
+        labels = client.get_labels()
+        assert isinstance(labels, list)
+        assert len(labels) > 0
+        assert all(isinstance(l, LabelInfo) for l in labels)
+        names = [l.name for l in labels]
+        assert "GetLabelsTest" in names, f"GetLabelsTest not in {names}"
+    finally:
+        client.cypher("MATCH (n:GetLabelsTest {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_get_labels_has_property_definitions(client):
+    """LabelInfo.properties is a list (may be empty for schema-free labels)."""
+    client.cypher("MERGE (n:PropLabel {name: 'probe'})")
+    try:
+        labels = client.get_labels()
+        found = next((l for l in labels if l.name == "PropLabel"), None)
+        assert found is not None, "PropLabel not returned by get_labels()"
+        assert isinstance(found.properties, list)
+    finally:
+        client.cypher("MATCH (n:PropLabel {name: 'probe'}) DELETE n")
+
+
+def test_get_edge_types_returns_list(client):
+    """get_edge_types() returns a non-empty list of EdgeTypeInfo after data is present."""
+    tag = uid()
+    client.cypher(
+        "CREATE (a:EdgeTypeTestNode {tag: $tag})-[:GET_EDGE_TYPE_TEST]->(b:EdgeTypeTestNode {tag: $tag})",
+        params={"tag": tag},
+    )
+    try:
+        edge_types = client.get_edge_types()
+        assert isinstance(edge_types, list)
+        assert len(edge_types) > 0
+        assert all(isinstance(et, EdgeTypeInfo) for et in edge_types)
+        type_names = [et.name for et in edge_types]
+        assert "GET_EDGE_TYPE_TEST" in type_names, f"GET_EDGE_TYPE_TEST not in {type_names}"
+    finally:
+        client.cypher("MATCH (n:EdgeTypeTestNode {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+
+
+def test_traverse_returns_neighbours(client):
+    """traverse() returns adjacent nodes reachable via the given edge type."""
+    tag = uid()
+    client.cypher(
+        "CREATE (a:TraverseRPC {tag: $tag, role: 'hub'})"
+        "-[:TRAVERSE_TEST]->(b:TraverseRPC {tag: $tag, role: 'leaf1'})",
+        params={"tag": tag},
+    )
+    rows = client.cypher(
+        "MATCH (a:TraverseRPC {tag: $tag, role: 'hub'}) RETURN a AS node_id",
+        params={"tag": tag},
+    )
+    try:
+        assert len(rows) >= 1, "hub node not found"
+        start_id = rows[0]["node_id"]
+        result = client.traverse(start_id, "TRAVERSE_TEST", direction="outbound", max_depth=1)
+        assert isinstance(result, TraverseResult)
+        assert len(result.nodes) >= 1, "traverse() returned no neighbour nodes"
+    finally:
+        client.cypher("MATCH (n:TraverseRPC {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+
+
+def test_traverse_inbound_direction(client):
+    """traverse() with direction='inbound' reaches nodes that point TO start_id."""
+    tag = uid()
+    client.cypher(
+        "CREATE (src:TraverseIn {tag: $tag})-[:INBOUND_TEST]->(dst:TraverseIn {tag: $tag})",
+        params={"tag": tag},
+    )
+    # Get dst node id — traverse INBOUND from dst should reach src.
+    rows = client.cypher(
+        "MATCH (src:TraverseIn {tag: $tag})-[:INBOUND_TEST]->(dst:TraverseIn {tag: $tag}) RETURN dst AS node_id",
+        params={"tag": tag},
+    )
+    try:
+        assert len(rows) >= 1
+        dst_id = rows[0]["node_id"]
+        result = client.traverse(dst_id, "INBOUND_TEST", direction="inbound", max_depth=1)
+        assert isinstance(result, TraverseResult)
+        assert len(result.nodes) >= 1, "inbound traverse returned no nodes"
+    finally:
+        client.cypher("MATCH (n:TraverseIn {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
 
 # ── Hybrid search ─────────────────────────────────────────────────────────────
