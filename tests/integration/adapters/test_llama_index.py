@@ -168,8 +168,16 @@ def test_vector_query_returns_results(store, tag):
     # response format). vector_query() defaults label to "Chunk" when no
     # MetadataFilters are provided.
     try:
-        # Capture the internal CoordiNode node ID (returned as integer by RETURN n) so
-        # we can assert the specific seeded node is retrieved — not just any Chunk.
+        # In CoordiNode, `CREATE (n:...) RETURN n` returns the internal integer node ID,
+        # NOT a property map. This is CoordiNode-specific behaviour verified empirically:
+        #   seed_rows[0]["nid"]  →  90  (int)
+        # ChunkNode.id_ is set from vector_search's r.node.id (same internal integer),
+        # so comparing str(node.id_) == str(seed_rows[0]["nid"]) correctly identifies
+        # the specific seeded node.
+        #
+        # NOTE: vector_search returns Node(id=N, properties={}) — the properties dict is
+        # always EMPTY, so node.properties.get("id") would always be None and cannot be
+        # used for identification.
         seed_rows = store._client.cypher(
             "CREATE (n:Chunk {id: $id, text: $text, embedding: $vec}) RETURN n AS nid",
             params={"id": f"vec-{tag}", "text": "test chunk", "vec": vec},
@@ -181,8 +189,7 @@ def test_vector_query_returns_results(store, tag):
         assert isinstance(nodes, list)
         assert isinstance(scores, list)
         assert len(nodes) >= 1
-        # vector_search returns CoordiNode internal node IDs (ChunkNode.id_);
-        # verify our seeded node is the one found.
+        # ChunkNode.id_ == str(r.node.id) == internal CoordiNode node ID captured above.
         assert any(str(getattr(node, "id_", "")) == seeded_internal_id for node in nodes)
         assert len(scores) == len(nodes)
         assert scores[0] >= 0.0
