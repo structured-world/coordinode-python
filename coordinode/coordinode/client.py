@@ -368,6 +368,46 @@ class AsyncCoordinodeClient:
         resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
         return [EdgeTypeInfo(et) for et in resp.edge_types]
 
+    @staticmethod
+    def _build_property_definitions(
+        properties: list[dict[str, Any]] | None,
+        PropertyType: Any,
+        PropertyDefinition: Any,
+    ) -> list[Any]:
+        """Convert property dicts to proto PropertyDefinition objects.
+
+        Shared by :meth:`create_label` and :meth:`create_edge_type` to avoid
+        duplicating the type-map and validation logic.
+        """
+        type_map = {
+            "int64": PropertyType.PROPERTY_TYPE_INT64,
+            "float64": PropertyType.PROPERTY_TYPE_FLOAT64,
+            "string": PropertyType.PROPERTY_TYPE_STRING,
+            "bool": PropertyType.PROPERTY_TYPE_BOOL,
+            "bytes": PropertyType.PROPERTY_TYPE_BYTES,
+            "timestamp": PropertyType.PROPERTY_TYPE_TIMESTAMP,
+            "vector": PropertyType.PROPERTY_TYPE_VECTOR,
+            "list": PropertyType.PROPERTY_TYPE_LIST,
+            "map": PropertyType.PROPERTY_TYPE_MAP,
+        }
+        result = []
+        for p in properties or []:
+            type_str = str(p.get("type", "string")).lower()
+            if type_str not in type_map:
+                raise ValueError(
+                    f"Unknown property type {type_str!r} for property {p['name']!r}. "
+                    f"Expected one of: {sorted(type_map)}"
+                )
+            result.append(
+                PropertyDefinition(
+                    name=p["name"],
+                    type=type_map[type_str],
+                    required=bool(p.get("required", False)),
+                    unique=bool(p.get("unique", False)),
+                )
+            )
+        return result
+
     async def create_label(
         self,
         name: str,
@@ -395,17 +435,6 @@ class AsyncCoordinodeClient:
             SchemaMode,
         )
 
-        _type_map = {
-            "int64": PropertyType.PROPERTY_TYPE_INT64,
-            "float64": PropertyType.PROPERTY_TYPE_FLOAT64,
-            "string": PropertyType.PROPERTY_TYPE_STRING,
-            "bool": PropertyType.PROPERTY_TYPE_BOOL,
-            "bytes": PropertyType.PROPERTY_TYPE_BYTES,
-            "timestamp": PropertyType.PROPERTY_TYPE_TIMESTAMP,
-            "vector": PropertyType.PROPERTY_TYPE_VECTOR,
-            "list": PropertyType.PROPERTY_TYPE_LIST,
-            "map": PropertyType.PROPERTY_TYPE_MAP,
-        }
         _mode_map = {
             "strict": SchemaMode.SCHEMA_MODE_STRICT,
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
@@ -414,18 +443,7 @@ class AsyncCoordinodeClient:
         if schema_mode not in _mode_map:
             raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
 
-        proto_props = []
-        for p in properties or []:
-            type_str = str(p.get("type", "string")).lower()
-            proto_props.append(
-                PropertyDefinition(
-                    name=p["name"],
-                    type=_type_map.get(type_str, PropertyType.PROPERTY_TYPE_STRING),
-                    required=bool(p.get("required", False)),
-                    unique=bool(p.get("unique", False)),
-                )
-            )
-
+        proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateLabelRequest(
             name=name,
             properties=proto_props,
@@ -453,30 +471,7 @@ class AsyncCoordinodeClient:
             PropertyType,
         )
 
-        _type_map = {
-            "int64": PropertyType.PROPERTY_TYPE_INT64,
-            "float64": PropertyType.PROPERTY_TYPE_FLOAT64,
-            "string": PropertyType.PROPERTY_TYPE_STRING,
-            "bool": PropertyType.PROPERTY_TYPE_BOOL,
-            "bytes": PropertyType.PROPERTY_TYPE_BYTES,
-            "timestamp": PropertyType.PROPERTY_TYPE_TIMESTAMP,
-            "vector": PropertyType.PROPERTY_TYPE_VECTOR,
-            "list": PropertyType.PROPERTY_TYPE_LIST,
-            "map": PropertyType.PROPERTY_TYPE_MAP,
-        }
-
-        proto_props = []
-        for p in properties or []:
-            type_str = str(p.get("type", "string")).lower()
-            proto_props.append(
-                PropertyDefinition(
-                    name=p["name"],
-                    type=_type_map.get(type_str, PropertyType.PROPERTY_TYPE_STRING),
-                    required=bool(p.get("required", False)),
-                    unique=bool(p.get("unique", False)),
-                )
-            )
-
+        proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateEdgeTypeRequest(name=name, properties=proto_props)
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)

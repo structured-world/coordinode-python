@@ -272,9 +272,12 @@ def _stable_document_id(source: Any) -> str:
 def _first_label(labels: Any) -> str | None:
     """Extract a stable label from a labels() result (list of strings).
 
-    CoordiNode nodes have exactly one label, so labels() always returns a
-    single-element list. min() gives a deterministic result for robustness.
-    TODO: replace with labels(n)[0] in Cypher once subscript-on-function
+    In practice this application creates nodes with a single label, but the
+    underlying CoordiNode API accepts ``list[str]`` so multi-label nodes are
+    possible. ``min()`` gives a deterministic result regardless of how many
+    labels are present.
+
+    TODO: replace with ``labels(n)[0]`` in Cypher once subscript-on-function
     lands in the published Docker image.
     """
     if isinstance(labels, list) and labels:
