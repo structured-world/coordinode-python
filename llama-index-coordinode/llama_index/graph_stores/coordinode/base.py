@@ -273,6 +273,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         if query.query_embedding is None:
             return [], []
 
+        if not hasattr(self._client, "vector_search"):
+            # Injected clients (e.g. bare coordinode-embedded LocalClient) may
+            # not implement vector_search — return empty rather than AttributeError.
+            return [], []
+
         results = self._client.vector_search(
             label=query.filters.filters[0].value if query.filters else "Chunk",
             property="embedding",
@@ -297,18 +302,26 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def get_schema(self, refresh: bool = False) -> str:
-        """Return schema as text."""
-        return self._client.get_schema_text()
+        """Return schema as text.
+
+        Returns an empty string if the injected client does not expose
+        ``get_schema_text()`` (e.g. a bare ``coordinode-embedded``
+        ``LocalClient`` that only implements ``cypher()`` / ``close()``).
+        """
+        if hasattr(self._client, "get_schema_text"):
+            return self._client.get_schema_text()
+        return ""
 
     def get_schema_str(self, refresh: bool = False) -> str:
         return self.get_schema(refresh=refresh)
 
     def close(self) -> None:
-        """Close the underlying gRPC connection.
+        """Close the underlying client connection.
 
         Only closes the client if it was created internally (i.e. ``client`` was
         not passed to ``__init__``).  Externally-injected clients are owned by
-        the caller and must be closed by them.
+        the caller and must be closed by them.  The underlying transport may be
+        gRPC or an embedded in-process client.
         """
         if self._owns_client:
             self._client.close()

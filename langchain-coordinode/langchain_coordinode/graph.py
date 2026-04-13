@@ -79,8 +79,13 @@ class CoordinodeGraph(GraphStore):
         (available since ``coordinode`` 0.6.0) over the legacy text-parsing
         path.  Injected clients (e.g. ``_EmbeddedAdapter`` in Colab notebooks)
         that do not expose those methods fall back to ``_parse_schema()``.
+        Injected clients that only expose ``cypher()`` / ``close()`` (e.g.
+        a bare ``coordinode-embedded`` ``LocalClient``) return an empty schema.
         """
-        self._schema = self._client.get_schema_text()
+        if hasattr(self._client, "get_schema_text"):
+            self._schema = self._client.get_schema_text()
+        else:
+            self._schema = ""
 
         if hasattr(self._client, "get_labels") and hasattr(self._client, "get_edge_types"):
             node_props: dict[str, list[dict[str, str]]] = {}
@@ -242,6 +247,10 @@ class CoordinodeGraph(GraphStore):
         # used in a boolean context. len() == 0 works for all sequence types.
         if len(query_vector) == 0:
             return []
+        if not hasattr(self._client, "vector_search"):
+            # Injected clients (e.g. bare coordinode-embedded LocalClient) may
+            # not implement vector_search — return empty rather than AttributeError.
+            return []
         results = sorted(
             self._client.vector_search(
                 label=label,
@@ -256,11 +265,12 @@ class CoordinodeGraph(GraphStore):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
-        """Close the underlying gRPC connection.
+        """Close the underlying client connection.
 
         Only closes the client if it was created internally (i.e. ``client`` was
         not passed to ``__init__``).  Externally-injected clients are owned by
-        the caller and must be closed by them.
+        the caller and must be closed by them.  The underlying transport may be
+        gRPC or an embedded in-process client.
         """
         if self._owns_client:
             self._client.close()

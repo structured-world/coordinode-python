@@ -461,8 +461,9 @@ def test_create_label_appears_in_get_labels(client):
     """
     name = f"CreateLabelVisible{uid()}"
     tag = uid()
-    # Declare both properties used in the workaround node so the strict label
-    # does not reject the CREATE (server now enforces strict schema).
+    # Declare both properties used in the workaround node.  Note: schema_mode
+    # is accepted by the server but not yet enforced in the current image;
+    # the properties are declared here for forward compatibility.
     client.create_label(
         name,
         properties=[

@@ -22,4 +22,4 @@ langchain-coordinode/langchain_coordinode/_version.py
 llama-index-coordinode/llama_index/graph_stores/coordinode/_version.py
 GAPS.md
 CLAUDE.md
-.ipynb_checkpoints/
+**/.ipynb_checkpoints/

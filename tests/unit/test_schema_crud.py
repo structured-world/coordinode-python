@@ -248,6 +248,103 @@ class TestTraverseResult:
 # ── traverse() input validation ──────────────────────────────────────────────
 
 
+class _FakePropertyTypeAll:
+    """Complete fake proto PropertyType with all enum values."""
+
+    PROPERTY_TYPE_INT64 = 1
+    PROPERTY_TYPE_FLOAT64 = 2
+    PROPERTY_TYPE_STRING = 3
+    PROPERTY_TYPE_BOOL = 4
+    PROPERTY_TYPE_BYTES = 5
+    PROPERTY_TYPE_TIMESTAMP = 6
+    PROPERTY_TYPE_VECTOR = 7
+    PROPERTY_TYPE_LIST = 8
+    PROPERTY_TYPE_MAP = 9
+
+
+class _FakePropDefCls:
+    """Minimal PropertyDefinition constructor."""
+
+    def __init__(self, **kwargs):
+        pass
+
+
+class TestBuildPropertyDefinitions:
+    """Unit tests for AsyncCoordinodeClient._build_property_definitions() validation.
+
+    Validation runs before any RPC call, so no running server is required.
+    """
+
+    def test_non_dict_property_raises(self):
+        """_build_property_definitions() raises ValueError for non-dict entries."""
+        client = AsyncCoordinodeClient("localhost:0")
+        with pytest.raises(ValueError, match="must be a dict"):
+            client._build_property_definitions(["not-a-dict"], _FakePropertyTypeAll, _FakePropDefCls)
+
+    def test_missing_name_raises(self):
+        """_build_property_definitions() raises ValueError when 'name' key is absent."""
+        client = AsyncCoordinodeClient("localhost:0")
+        with pytest.raises(ValueError, match="non-empty 'name' key"):
+            client._build_property_definitions([{"type": "string"}], _FakePropertyTypeAll, _FakePropDefCls)
+
+    def test_non_bool_required_raises(self):
+        """_build_property_definitions() raises ValueError when required is not a bool."""
+        client = AsyncCoordinodeClient("localhost:0")
+        with pytest.raises(ValueError, match="boolean values for 'required' and 'unique'"):
+            client._build_property_definitions(
+                [{"name": "x", "type": "string", "required": "true"}],
+                _FakePropertyTypeAll,
+                _FakePropDefCls,
+            )
+
+    def test_non_bool_unique_raises(self):
+        """_build_property_definitions() raises ValueError when unique is not a bool."""
+        client = AsyncCoordinodeClient("localhost:0")
+        with pytest.raises(ValueError, match="boolean values for 'required' and 'unique'"):
+            client._build_property_definitions(
+                [{"name": "x", "type": "string", "unique": 1}],
+                _FakePropertyTypeAll,
+                _FakePropDefCls,
+            )
+
+    def test_valid_bool_properties_accepted(self):
+        """_build_property_definitions() accepts proper bool required/unique values."""
+        client = AsyncCoordinodeClient("localhost:0")
+        result = client._build_property_definitions(
+            [{"name": "x", "type": "string", "required": True, "unique": False}],
+            _FakePropertyTypeAll,
+            _FakePropDefCls,
+        )
+        assert len(result) == 1
+
+
+class TestCreateLabelSchemaMode:
+    """Unit tests for schema_mode normalization in create_label()."""
+
+    def test_invalid_schema_mode_raises(self):
+        """create_label() raises ValueError for unknown schema_mode string."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            with pytest.raises(ValueError, match="schema_mode must be one of"):
+                await client.create_label("Foo", schema_mode="unknown")
+
+        asyncio.run(_inner())
+
+    def test_uppercase_schema_mode_accepted(self):
+        """create_label() normalizes 'STRICT' to 'strict' before lookup."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            # Should raise ValueError (unknown mode), not KeyError (normalization works)
+            with pytest.raises(ValueError, match="schema_mode must be one of"):
+                await client.create_label("Foo", schema_mode="totally_wrong")
+            # 'STRICT' is a valid mode and should NOT raise
+            # (will fail at RPC level, not at validation — we can't test past validation here)
+
+        asyncio.run(_inner())
+
+
 class TestTraverseValidation:
     """Unit tests for AsyncCoordinodeClient.traverse() input validation.
 

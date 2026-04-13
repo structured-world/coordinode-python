@@ -418,20 +418,29 @@ class AsyncCoordinodeClient:
         }
         result = []
         for idx, p in enumerate(properties or []):
-            name = p.get("name") if isinstance(p, dict) else None
+            if not isinstance(p, dict):
+                raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
+            name = p.get("name")
             if not isinstance(name, str) or not name:
-                raise ValueError(f"Property at index {idx} must be a dict with a non-empty 'name' key; got {p!r}")
+                raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
             type_str = str(p.get("type", "string")).lower()
             if type_str not in type_map:
                 raise ValueError(
                     f"Unknown property type {type_str!r} for property {name!r}. Expected one of: {sorted(type_map)}"
                 )
+            required = p.get("required", False)
+            unique = p.get("unique", False)
+            if not isinstance(required, bool) or not isinstance(unique, bool):
+                raise ValueError(
+                    f"Property {name!r} must use boolean values for 'required' and 'unique'; got "
+                    f"required={required!r}, unique={unique!r}"
+                )
             result.append(
                 property_definition_cls(
-                    name=p["name"],
+                    name=name,
                     type=type_map[type_str],
-                    required=bool(p.get("required", False)),
-                    unique=bool(p.get("unique", False)),
+                    required=required,
+                    unique=unique,
                 )
             )
         return result
@@ -468,14 +477,15 @@ class AsyncCoordinodeClient:
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
             "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
         }
-        if schema_mode not in _mode_map:
+        schema_mode_normalized = schema_mode.strip().lower()
+        if schema_mode_normalized not in _mode_map:
             raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
 
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateLabelRequest(
             name=name,
             properties=proto_props,
-            schema_mode=_mode_map[schema_mode],
+            schema_mode=_mode_map[schema_mode_normalized],
         )
         label = await self._schema_stub.CreateLabel(req, timeout=self._timeout)
         return LabelInfo(label)
