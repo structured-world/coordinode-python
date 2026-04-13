@@ -385,12 +385,16 @@ class AsyncCoordinodeClient:
         """
         # Validate pure string/int inputs before importing proto stubs — ensures ValueError
         # is raised even when proto stubs have not been generated yet.
+        # Type guards come first so that wrong types raise ValueError, not AttributeError/TypeError.
+        if not isinstance(direction, str):
+            raise ValueError(f"direction must be a str, got {type(direction).__name__!r}.")
         _valid_directions = {"outbound", "inbound", "both"}
         key = direction.lower()
         if key not in _valid_directions:
             raise ValueError(f"Invalid direction {direction!r}. Must be one of: 'outbound', 'inbound', 'both'.")
-        if max_depth < 1:
-            raise ValueError(f"max_depth must be >= 1, got {max_depth!r}.")
+        # bool is a subclass of int in Python, so `isinstance(True, int)` is True — exclude it.
+        if not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 1:
+            raise ValueError(f"max_depth must be an integer >= 1, got {max_depth!r}.")
 
         from coordinode._proto.coordinode.v1.graph.graph_pb2 import (  # type: ignore[import]
             TraversalDirection,

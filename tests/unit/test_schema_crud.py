@@ -221,7 +221,37 @@ class TestTraverseValidation:
 
         async def _inner() -> None:
             client = AsyncCoordinodeClient("localhost:0")
-            with pytest.raises(ValueError, match="max_depth must be >= 1"):
+            with pytest.raises(ValueError, match="max_depth must be"):
                 await client.traverse(1, "KNOWS", max_depth=0)
+
+        asyncio.run(_inner())
+
+    def test_direction_none_raises_value_error(self):
+        """traverse() raises ValueError (not AttributeError) when direction is None."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            with pytest.raises(ValueError, match="direction must be a str"):
+                await client.traverse(1, "KNOWS", direction=None)  # type: ignore[arg-type]
+
+        asyncio.run(_inner())
+
+    def test_max_depth_string_raises_value_error(self):
+        """traverse() raises ValueError (not TypeError) when max_depth is a string."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            with pytest.raises(ValueError, match="max_depth must be an integer"):
+                await client.traverse(1, "KNOWS", max_depth="2")  # type: ignore[arg-type]
+
+        asyncio.run(_inner())
+
+    def test_max_depth_bool_raises_value_error(self):
+        """traverse() raises ValueError for bool max_depth (bool is a subclass of int in Python)."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            with pytest.raises(ValueError, match="max_depth must be an integer"):
+                await client.traverse(1, "KNOWS", max_depth=True)  # type: ignore[arg-type]
 
         asyncio.run(_inner())
