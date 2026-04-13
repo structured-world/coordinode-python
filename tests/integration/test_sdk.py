@@ -296,9 +296,13 @@ def test_traverse_returns_neighbours(client):
 
 @pytest.mark.xfail(
     strict=False,
+    raises=AssertionError,
     # strict=False: XPASS is good news (server gained inbound support), not an error.
     # strict=True would break CI exactly when the server improves, which is undesirable.
     # The XPASS report in pytest output is the signal to remove this marker.
+    # raises=AssertionError: narrows xfail to the known failure mode (empty result set →
+    # assertion fails). Unexpected errors (gRPC RpcError, wrong enum, etc.) are NOT covered
+    # and will still propagate as CI failures.
     reason="CoordiNode Traverse RPC does not yet support inbound direction — server returns empty result set",
 )
 def test_traverse_inbound_direction(client):
