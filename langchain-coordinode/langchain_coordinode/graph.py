@@ -92,12 +92,12 @@ class CoordinodeGraph(GraphStore):
         Injected clients that only expose ``cypher()`` / ``close()`` (e.g.
         a bare ``coordinode-embedded`` ``LocalClient``) return an empty schema.
         """
-        if hasattr(self._client, "get_schema_text"):
-            self._schema = self._client.get_schema_text()
-        else:
-            self._schema = ""
+        get_schema_text = getattr(self._client, "get_schema_text", None)
+        self._schema = get_schema_text() if callable(get_schema_text) else ""
 
-        if hasattr(self._client, "get_labels") and hasattr(self._client, "get_edge_types"):
+        if callable(getattr(self._client, "get_labels", None)) and callable(
+            getattr(self._client, "get_edge_types", None)
+        ):
             try:
                 node_props: dict[str, list[dict[str, str]]] = {}
                 for label in self._client.get_labels():
@@ -279,7 +279,7 @@ class CoordinodeGraph(GraphStore):
         # used in a boolean context. len() == 0 works for all sequence types.
         if len(query_vector) == 0:
             return []
-        if not hasattr(self._client, "vector_search"):
+        if not callable(getattr(self._client, "vector_search", None)):
             # Injected clients (e.g. bare coordinode-embedded LocalClient) may
             # not implement vector_search — return empty rather than AttributeError.
             return []

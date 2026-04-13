@@ -285,9 +285,10 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         if query.query_embedding is None:
             return [], []
 
-        if not hasattr(self._client, "vector_search"):
+        if not self.supports_vector_queries:
             # Injected clients (e.g. bare coordinode-embedded LocalClient) may
             # not implement vector_search — return empty rather than AttributeError.
+            # supports_vector_queries is set in __init__ via callable(getattr(...)).
             return [], []
 
         results = self._client.vector_search(
@@ -320,8 +321,9 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         ``get_schema_text()`` (e.g. a bare ``coordinode-embedded``
         ``LocalClient`` that only implements ``cypher()`` / ``close()``).
         """
-        if hasattr(self._client, "get_schema_text"):
-            return self._client.get_schema_text()
+        get_schema_text = getattr(self._client, "get_schema_text", None)
+        if callable(get_schema_text):
+            return get_schema_text()
         return ""
 
     def get_schema_str(self, refresh: bool = False) -> str:
