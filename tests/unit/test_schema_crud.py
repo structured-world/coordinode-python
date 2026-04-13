@@ -332,15 +332,20 @@ class TestCreateLabelSchemaMode:
         asyncio.run(_inner())
 
     def test_uppercase_schema_mode_accepted(self):
-        """create_label() normalizes 'STRICT' to 'strict' before lookup."""
+        """create_label() normalizes ' STRICT ' (with spaces and uppercase) to 'strict' before RPC."""
+        from unittest.mock import AsyncMock
 
         async def _inner() -> None:
             client = AsyncCoordinodeClient("localhost:0")
-            # Should raise ValueError (unknown mode), not KeyError (normalization works)
-            with pytest.raises(ValueError, match="schema_mode must be one of"):
-                await client.create_label("Foo", schema_mode="totally_wrong")
-            # 'STRICT' is a valid mode and should NOT raise
-            # (will fail at RPC level, not at validation — we can't test past validation here)
+            # Patch the schema stub so the RPC call doesn't reach a real server.
+            client._schema_stub = type(
+                "FakeStub",
+                (),
+                {"CreateLabel": AsyncMock(return_value=_FakeLabel("Foo"))},
+            )()
+            # ' STRICT ' must normalise cleanly (strip + lower) and NOT raise ValueError.
+            info = await client.create_label("Foo", schema_mode=" STRICT ")
+            assert info.name == "Foo"
 
         asyncio.run(_inner())
 

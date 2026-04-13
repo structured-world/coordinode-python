@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import uuid
 
+import grpc
 import pytest
 
 from coordinode import (
@@ -555,6 +556,7 @@ def test_vector_search_returns_results(client):
 _fts = pytest.mark.xfail(
     reason="TextService requires CoordiNode >=0.3.8 with FTS support",
     strict=False,
+    raises=(AssertionError, grpc.RpcError),
 )
 
 

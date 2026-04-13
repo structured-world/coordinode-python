@@ -477,6 +477,8 @@ class AsyncCoordinodeClient:
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
             "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
         }
+        if not isinstance(schema_mode, str):
+            raise ValueError(f"schema_mode must be a str, got {type(schema_mode).__name__!r}")
         schema_mode_normalized = schema_mode.strip().lower()
         if schema_mode_normalized not in _mode_map:
             raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
@@ -583,7 +585,8 @@ class AsyncCoordinodeClient:
             query: Full-text query string. Supports boolean operators (``AND``,
                 ``OR``, ``NOT``), phrase search (``"exact phrase"``), prefix
                 wildcards (``term*``), and per-term boosting (``term^N``).
-            limit: Maximum results to return (default 10, capped at 1000).
+            limit: Maximum results to return (default 10). The server may apply
+                its own upper bound; pass a reasonable value (e.g. ≤ 1000).
             fuzzy: If ``True``, apply Levenshtein-1 fuzzy matching to individual
                 terms. Increases recall at the cost of precision.
             language: Tokenization/stemming language (e.g. ``"english"``,
@@ -622,7 +625,8 @@ class AsyncCoordinodeClient:
             text_query: Full-text query string (same syntax as :meth:`text_search`).
             vector: Query embedding vector. Must match the dimensionality stored
                 in *vector_property*.
-            limit: Maximum fused results to return (default 10, capped at 1000).
+            limit: Maximum fused results to return (default 10). The server may
+                apply its own upper bound; pass a reasonable value (e.g. ≤ 1000).
             text_weight: Weight for the BM25 component (default 0.5).
             vector_weight: Weight for the cosine component (default 0.5).
             vector_property: Node property containing the embedding (default

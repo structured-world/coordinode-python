@@ -99,7 +99,12 @@ class CoordinodeGraph(GraphStore):
                 rel_props[et.name] = [
                     {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")} for p in et.properties
                 ]
-            structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
+            if node_props or rel_props:
+                structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
+            else:
+                # Both APIs returned empty (e.g. schema-free graph or stub adapter) —
+                # fall back to text parsing so we don't lose what get_schema_text() returned.
+                structured = _parse_schema(self._schema)
         else:
             structured = _parse_schema(self._schema)
 
