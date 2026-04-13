@@ -266,7 +266,7 @@ class _FakePropDefCls:
     """Minimal PropertyDefinition constructor."""
 
     def __init__(self, **kwargs):
-        pass
+        pass  # Stub: kwargs intentionally ignored — only used to verify call succeeds
 
 
 class TestBuildPropertyDefinitions:

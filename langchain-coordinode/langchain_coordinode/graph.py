@@ -51,6 +51,8 @@ class CoordinodeGraph(GraphStore):
         # coordinode-embedded) instead of creating a gRPC connection.  The object
         # must expose a ``.cypher(query, params)`` method and, optionally,
         # ``.get_schema_text()`` and ``.vector_search()``.
+        if client is not None and not callable(getattr(client, "cypher", None)):
+            raise TypeError("client must provide a callable cypher(query, params) method")
         self._owns_client = client is None
         self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
         self._schema: str | None = None
@@ -291,6 +293,10 @@ class CoordinodeGraph(GraphStore):
 
 # Maps PropertyType protobuf enum integers to LangChain-compatible type strings.
 # Values mirror coordinode.v1.graph.PropertyType (schema.proto).
+# A static dict is intentional: importing generated proto modules here would create
+# a hard dependency on coordinode's internal proto layout inside langchain-coordinode.
+# This package already receives integer enum values via LabelInfo/EdgeTypeInfo from
+# the coordinode SDK, so a local lookup table is the correct decoupling boundary.
 _PROPERTY_TYPE_NAME: dict[int, str] = {
     0: "UNSPECIFIED",
     1: "INT64",

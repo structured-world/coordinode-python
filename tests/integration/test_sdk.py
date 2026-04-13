@@ -556,6 +556,11 @@ def test_vector_search_returns_results(client):
 _fts = pytest.mark.xfail(
     reason="TextService requires CoordiNode >=0.3.8 with FTS support",
     strict=False,
+    # AssertionError is the actual observed failure mode on servers without FTS:
+    # text_search() returns [] (empty result set), triggering `assert len(...) >= 1`.
+    # grpc.RpcError covers servers that raise UNIMPLEMENTED. Both are expected until
+    # the server is upgraded; removing AssertionError would cause those tests to
+    # error-out (unexpected failure) rather than xfail.
     raises=(AssertionError, grpc.RpcError),
 )
 

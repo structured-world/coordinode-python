@@ -72,6 +72,8 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     ) -> None:
         # ``client`` allows passing a pre-built client (e.g. LocalClient from
         # coordinode-embedded) instead of creating a gRPC connection.
+        if client is not None and not callable(getattr(client, "cypher", None)):
+            raise TypeError("client must provide a callable cypher() method")
         self._owns_client = client is None
         self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
 
