@@ -453,7 +453,15 @@ def test_create_label_appears_in_get_labels(client):
     """
     name = f"CreateLabelVisible{uid()}"
     tag = uid()
-    client.create_label(name, properties=[{"name": "x", "type": "int64"}])
+    # Declare both properties used in the workaround node so the strict label
+    # does not reject the CREATE (server now enforces strict schema).
+    client.create_label(
+        name,
+        properties=[
+            {"name": "x", "type": "int64"},
+            {"name": "tag", "type": "string"},
+        ],
+    )
     # Workaround: create a node so the label appears in ListLabels.
     client.cypher(f"CREATE (n:{name} {{x: 1, tag: $tag}})", params={"tag": tag})
     try:
