@@ -9,11 +9,11 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from langchain_community.graphs.graph_store import GraphStore
 
 from coordinode import CoordinodeClient
+
+logger = logging.getLogger(__name__)
 
 
 class CoordinodeGraph(GraphStore):
@@ -438,7 +438,9 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
                 continue
             # Parse inline properties: "- Label (properties: prop1: TYPE, prop2: TYPE)"
             props: list[dict[str, str]] = []
-            m = re.search(r"\(properties:\s*([^)]+)\)", stripped)
+            # [^)\n]+ matches property list characters without crossing line or ')'.
+            # Each character in the class is a simple literal — no backtracking risk.
+            m = re.search(r"\(properties:\s*([^)\n]+)\)", stripped)
             if m:
                 for prop_str in m.group(1).split(","):
                     kv = prop_str.strip().split(":", 1)
