@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/structured-world/coordinode-python/compare/v0.6.0...v0.7.0) (2026-04-13)
+
+
+### Features
+
+* add coordinode-embedded in-process Python package ([e1c2e3c](https://github.com/structured-world/coordinode-python/commit/e1c2e3c288cc7bc5b51467375b318dc6b59f9803))
+
 ## [0.6.0](https://github.com/structured-world/coordinode-python/compare/v0.5.0...v0.6.0) (2026-04-13)
 
 
