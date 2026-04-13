@@ -642,7 +642,7 @@ class AsyncCoordinodeClient:
         req = HybridTextVectorSearchRequest(
             label=label,
             text_query=text_query,
-            vector=list(vector),
+            vector=[float(v) for v in vector],
             limit=limit,
             text_weight=text_weight,
             vector_weight=vector_weight,

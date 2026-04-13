@@ -81,6 +81,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
             raise TypeError("client must provide a callable cypher() method")
         self._owns_client = client is None
         self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
+        # Advertise vector capability based on what the actual client exposes.
+        # Injected clients (e.g. bare coordinode-embedded LocalClient) may not
+        # implement vector_search(); claiming True unconditionally would mislead
+        # LlamaIndex into passing vector queries that silently return no results.
+        self.supports_vector_queries = callable(getattr(self._client, "vector_search", None))
 
     # ── Node operations ───────────────────────────────────────────────────
 

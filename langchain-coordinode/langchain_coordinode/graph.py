@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Sequence
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from langchain_community.graphs.graph_store import GraphStore
 
@@ -119,6 +122,15 @@ class CoordinodeGraph(GraphStore):
                 # or another gRPC error if the schema service is not available in the
                 # deployed version.  Fall back to text-based schema parsing to avoid
                 # surfacing an unhandled exception to the caller.
+                # We catch broad Exception (rather than grpc.RpcError specifically)
+                # because langchain-coordinode does not take a hard grpc dependency —
+                # clients may be non-gRPC (e.g. coordinode-embedded LocalClient).
+                # The exception is logged at DEBUG so it remains observable without
+                # cluttering production output.
+                logger.debug(
+                    "get_labels()/get_edge_types() failed — falling back to _parse_schema()",
+                    exc_info=True,
+                )
                 structured = _parse_schema(self._schema)
         else:
             structured = _parse_schema(self._schema)
