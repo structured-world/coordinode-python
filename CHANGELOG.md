@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/structured-world/coordinode-python/compare/v0.5.0...v0.6.0) (2026-04-13)
+
+
+### Features
+
+* **client:** add get_labels, get_edge_types, traverse ([a1c75ee](https://github.com/structured-world/coordinode-python/commit/a1c75ee3fe1361710a6d7a8e0518a3ecee166ed6))
+* **client:** add get_labels(), get_edge_types(), traverse() — R-SDK3 ([4163364](https://github.com/structured-world/coordinode-python/commit/4163364d13e9ebbfebced5fe9714a51c08df5c28))
+
+
+### Bug Fixes
+
+* **client:** add type guards for direction and max_depth in traverse() ([ae37106](https://github.com/structured-world/coordinode-python/commit/ae3710676fd5564876b806a2e63805d3698556b4))
+* **client:** correct schema type string representations ([1e59f71](https://github.com/structured-world/coordinode-python/commit/1e59f7159c99277921c023745f2f9da70347f33c))
+* **client:** validate direction in traverse(), fix lint, guard test cleanup ([80a73c6](https://github.com/structured-world/coordinode-python/commit/80a73c6c547a0b819b90c13244d3b821f81ec10e))
+* **client:** validate max_depth &gt;= 1 in traverse(); xfail strict=True ([4990122](https://github.com/structured-world/coordinode-python/commit/4990122eea80f0f85198d63296153fa4106428f3))
+
 ## [0.5.0](https://github.com/structured-world/coordinode-python/compare/v0.4.4...v0.5.0) (2026-04-12)
 
 
