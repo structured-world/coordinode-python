@@ -35,19 +35,21 @@ class _FakePropDef:
 class _FakeLabel:
     """Matches proto Label shape."""
 
-    def __init__(self, name: str, version: int = 1, properties=None) -> None:
+    def __init__(self, name: str, version: int = 1, properties=None, schema_mode: int = 0) -> None:
         self.name = name
         self.version = version
         self.properties = properties or []
+        self.schema_mode = schema_mode
 
 
 class _FakeEdgeType:
     """Matches proto EdgeType shape."""
 
-    def __init__(self, name: str, version: int = 1, properties=None) -> None:
+    def __init__(self, name: str, version: int = 1, properties=None, schema_mode: int = 0) -> None:
         self.name = name
         self.version = version
         self.properties = properties or []
+        self.schema_mode = schema_mode
 
 
 class _FakeNode:
@@ -127,6 +129,36 @@ class TestLabelInfo:
         label = LabelInfo(_FakeLabel("Draft", version=0))
         assert label.version == 0
 
+    def test_schema_mode_defaults_to_zero(self):
+        label = LabelInfo(_FakeLabel("Person"))
+        assert label.schema_mode == 0
+
+    def test_schema_mode_strict(self):
+        label = LabelInfo(_FakeLabel("Person", schema_mode=1))
+        assert label.schema_mode == 1
+
+    def test_schema_mode_validated(self):
+        label = LabelInfo(_FakeLabel("Person", schema_mode=2))
+        assert label.schema_mode == 2
+
+    def test_schema_mode_flexible(self):
+        label = LabelInfo(_FakeLabel("Person", schema_mode=3))
+        assert label.schema_mode == 3
+
+    def test_schema_mode_in_repr(self):
+        label = LabelInfo(_FakeLabel("Person", schema_mode=1))
+        assert "schema_mode" in repr(label)
+
+    def test_schema_mode_missing_from_proto_defaults_zero(self):
+        # Proto objects without schema_mode attribute (older server) → 0.
+        class _OldLabel:
+            name = "Legacy"
+            version = 1
+            properties = []
+
+        label = LabelInfo(_OldLabel())
+        assert label.schema_mode == 0
+
 
 # ── EdgeTypeInfo ─────────────────────────────────────────────────────────────
 
@@ -149,6 +181,23 @@ class TestEdgeTypeInfo:
     def test_repr_contains_name(self):
         et = EdgeTypeInfo(_FakeEdgeType("RATED"))
         assert "RATED" in repr(et)
+
+    def test_schema_mode_defaults_to_zero(self):
+        et = EdgeTypeInfo(_FakeEdgeType("KNOWS"))
+        assert et.schema_mode == 0
+
+    def test_schema_mode_propagated(self):
+        et = EdgeTypeInfo(_FakeEdgeType("KNOWS", schema_mode=2))
+        assert et.schema_mode == 2
+
+    def test_schema_mode_missing_from_proto_defaults_zero(self):
+        class _OldEdgeType:
+            name = "LEGACY"
+            version = 1
+            properties = []
+
+        et = EdgeTypeInfo(_OldEdgeType())
+        assert et.schema_mode == 0
 
 
 # ── TraverseResult ───────────────────────────────────────────────────────────

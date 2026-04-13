@@ -426,6 +426,91 @@ async def test_async_create_node():
         await c.cypher("MATCH (n:AsyncTest {tag: $tag}) DELETE n", params={"tag": tag})
 
 
+# ── create_label / create_edge_type ──────────────────────────────────────────
+
+
+def test_create_label_returns_label_info(client):
+    """create_label() registers a label and returns LabelInfo."""
+    name = f"CreateLabelTest{uid()}"
+    info = client.create_label(
+        name,
+        properties=[
+            {"name": "title", "type": "string", "required": True},
+            {"name": "score", "type": "float64"},
+        ],
+    )
+    assert isinstance(info, LabelInfo)
+    assert info.name == name
+
+
+def test_create_label_appears_in_get_labels(client):
+    """Label created via create_label() appears in get_labels() once a node exists.
+
+    Known limitation: ListLabels currently returns only labels that have at least
+    one node in the graph. Ideally it should also include schema-only labels
+    registered via create_label() (analogous to Neo4j returning schema-constrained
+    labels even without data). Tracked as a server-side gap.
+    """
+    name = f"CreateLabelVisible{uid()}"
+    tag = uid()
+    client.create_label(name, properties=[{"name": "x", "type": "int64"}])
+    # Workaround: create a node so the label appears in ListLabels.
+    client.cypher(f"CREATE (n:{name} {{x: 1, tag: $tag}})", params={"tag": tag})
+    try:
+        labels = client.get_labels()
+        names = [lbl.name for lbl in labels]
+        assert name in names, f"{name} not in {names}"
+    finally:
+        client.cypher(f"MATCH (n:{name} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+def test_create_label_schema_mode_flexible(client):
+    """create_label() with schema_mode='flexible' is accepted by the server."""
+    name = f"FlexLabel{uid()}"
+    info = client.create_label(name, schema_mode="flexible")
+    assert isinstance(info, LabelInfo)
+    assert info.name == name
+
+
+def test_create_label_invalid_schema_mode_raises(client):
+    """create_label() with unknown schema_mode raises ValueError locally."""
+    with pytest.raises(ValueError, match="schema_mode"):
+        client.create_label(f"Bad{uid()}", schema_mode="unknown")
+
+
+def test_create_edge_type_returns_edge_type_info(client):
+    """create_edge_type() registers an edge type and returns EdgeTypeInfo."""
+    name = f"CREATE_ET_{uid()}".upper()
+    info = client.create_edge_type(
+        name,
+        properties=[{"name": "since", "type": "timestamp"}],
+    )
+    assert isinstance(info, EdgeTypeInfo)
+    assert info.name == name
+
+
+def test_create_edge_type_appears_in_get_edge_types(client):
+    """Edge type created via create_edge_type() appears in get_edge_types() once an edge exists.
+
+    Same known limitation as test_create_label_appears_in_get_labels: ListEdgeTypes
+    currently requires at least one edge of that type to exist in the graph.
+    """
+    name = f"VISIBLE_ET_{uid()}".upper()
+    tag = uid()
+    client.create_edge_type(name)
+    # Workaround: create an edge so the type appears in ListEdgeTypes.
+    client.cypher(
+        f"CREATE (a:VisibleEtNode {{tag: $tag}})-[:{name}]->(b:VisibleEtNode {{tag: $tag}})",
+        params={"tag": tag},
+    )
+    try:
+        edge_types = client.get_edge_types()
+        names = [et.name for et in edge_types]
+        assert name in names, f"{name} not in {names}"
+    finally:
+        client.cypher("MATCH (n:VisibleEtNode {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+
+
 # ── Vector search ─────────────────────────────────────────────────────────────
 
 

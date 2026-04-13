@@ -71,22 +71,13 @@ class CoordinodeGraph(GraphStore):
         text = self._client.get_schema_text()
         self._schema = text
         structured = _parse_schema(text)
-        # Augment with relationship triples (start_label, type, end_label) via
-        # Cypher — get_schema_text() only lists edge types without direction.
-        # No LIMIT here intentionally: RETURN DISTINCT already collapses all edges
-        # to unique (src_label, rel_type, dst_label) combinations, so the result
-        # is bounded by the number of distinct relationship type triples, not by
-        # total edge count. Adding a LIMIT would silently drop relationship types
-        # that happen to appear beyond the limit, producing an incomplete schema.
+        # Augment with relationship triples (start_label, type, end_label).
+        # No LIMIT: RETURN DISTINCT bounds result by unique triples, not edge count.
+        # TODO: simplify to labels(a)[0] once subscript-on-function is in published image.
         rows = self._client.cypher(
             "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels"
         )
         if rows:
-            # Deduplicate after _first_label() normalization: RETURN DISTINCT operates on
-            # raw label lists, but _first_label(min()) can collapse different multi-label
-            # combinations to the same (start, type, end) triple (e.g. ['Employee','Person']
-            # and ['Person','Employee'] both min-normalize to 'Employee'). Use a set to
-            # ensure each relationship triple appears at most once.
             triples: set[tuple[str, str, str]] = set()
             for row in rows:
                 start = _first_label(row.get("src_labels"))
@@ -276,9 +267,10 @@ def _stable_document_id(source: Any) -> str:
 def _first_label(labels: Any) -> str | None:
     """Extract a stable label from a labels() result (list of strings).
 
-    openCypher does not guarantee a stable ordering for labels(), so using
-    labels[0] would produce nondeterministic schema entries across calls.
-    We return the lexicographically smallest label as a deterministic rule.
+    CoordiNode nodes have exactly one label, so labels() always returns a
+    single-element list. min() gives a deterministic result for robustness.
+    TODO: replace with labels(n)[0] in Cypher once subscript-on-function
+    lands in the published Docker image.
     """
     if isinstance(labels, list) and labels:
         return str(min(labels))

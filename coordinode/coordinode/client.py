@@ -105,9 +105,11 @@ class LabelInfo:
         self.name: str = proto_label.name
         self.version: int = proto_label.version
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
+        # schema_mode: 0=unspecified/strict, 1=strict, 2=validated, 3=flexible
+        self.schema_mode: int = getattr(proto_label, "schema_mode", 0)
 
     def __repr__(self) -> str:
-        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)})"
+        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
 
 
 class EdgeTypeInfo:
@@ -117,9 +119,10 @@ class EdgeTypeInfo:
         self.name: str = proto_edge_type.name
         self.version: int = proto_edge_type.version
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
+        self.schema_mode: int = getattr(proto_edge_type, "schema_mode", 0)
 
     def __repr__(self) -> str:
-        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)})"
+        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
 
 
 class TraverseResult:
@@ -365,6 +368,119 @@ class AsyncCoordinodeClient:
         resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
         return [EdgeTypeInfo(et) for et in resp.edge_types]
 
+    async def create_label(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
+    ) -> LabelInfo:
+        """Create a node label in the schema registry.
+
+        Args:
+            name: Label name (e.g. ``"Person"``).
+            properties: Optional list of property dicts with keys
+                ``name`` (str), ``type`` (str), ``required`` (bool),
+                ``unique`` (bool).  Type strings: ``"string"``,
+                ``"int64"``, ``"float64"``, ``"bool"``, ``"bytes"``,
+                ``"timestamp"``, ``"vector"``.
+            schema_mode: ``"strict"`` (default — reject undeclared props),
+                ``"validated"`` (allow extra props without interning),
+                ``"flexible"`` (no enforcement).
+        """
+        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
+            CreateLabelRequest,
+            PropertyDefinition,
+            PropertyType,
+            SchemaMode,
+        )
+
+        _type_map = {
+            "int64": PropertyType.PROPERTY_TYPE_INT64,
+            "float64": PropertyType.PROPERTY_TYPE_FLOAT64,
+            "string": PropertyType.PROPERTY_TYPE_STRING,
+            "bool": PropertyType.PROPERTY_TYPE_BOOL,
+            "bytes": PropertyType.PROPERTY_TYPE_BYTES,
+            "timestamp": PropertyType.PROPERTY_TYPE_TIMESTAMP,
+            "vector": PropertyType.PROPERTY_TYPE_VECTOR,
+            "list": PropertyType.PROPERTY_TYPE_LIST,
+            "map": PropertyType.PROPERTY_TYPE_MAP,
+        }
+        _mode_map = {
+            "strict": SchemaMode.SCHEMA_MODE_STRICT,
+            "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
+            "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
+        }
+        if schema_mode not in _mode_map:
+            raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+
+        proto_props = []
+        for p in properties or []:
+            type_str = str(p.get("type", "string")).lower()
+            proto_props.append(
+                PropertyDefinition(
+                    name=p["name"],
+                    type=_type_map.get(type_str, PropertyType.PROPERTY_TYPE_STRING),
+                    required=bool(p.get("required", False)),
+                    unique=bool(p.get("unique", False)),
+                )
+            )
+
+        req = CreateLabelRequest(
+            name=name,
+            properties=proto_props,
+            schema_mode=_mode_map[schema_mode],
+        )
+        label = await self._schema_stub.CreateLabel(req, timeout=self._timeout)
+        return LabelInfo(label)
+
+    async def create_edge_type(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+    ) -> EdgeTypeInfo:
+        """Create an edge type in the schema registry.
+
+        Args:
+            name: Edge type name (e.g. ``"KNOWS"``).
+            properties: Optional list of property dicts with keys
+                ``name`` (str), ``type`` (str), ``required`` (bool),
+                ``unique`` (bool). Same type strings as :meth:`create_label`.
+        """
+        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
+            CreateEdgeTypeRequest,
+            PropertyDefinition,
+            PropertyType,
+        )
+
+        _type_map = {
+            "int64": PropertyType.PROPERTY_TYPE_INT64,
+            "float64": PropertyType.PROPERTY_TYPE_FLOAT64,
+            "string": PropertyType.PROPERTY_TYPE_STRING,
+            "bool": PropertyType.PROPERTY_TYPE_BOOL,
+            "bytes": PropertyType.PROPERTY_TYPE_BYTES,
+            "timestamp": PropertyType.PROPERTY_TYPE_TIMESTAMP,
+            "vector": PropertyType.PROPERTY_TYPE_VECTOR,
+            "list": PropertyType.PROPERTY_TYPE_LIST,
+            "map": PropertyType.PROPERTY_TYPE_MAP,
+        }
+
+        proto_props = []
+        for p in properties or []:
+            type_str = str(p.get("type", "string")).lower()
+            proto_props.append(
+                PropertyDefinition(
+                    name=p["name"],
+                    type=_type_map.get(type_str, PropertyType.PROPERTY_TYPE_STRING),
+                    required=bool(p.get("required", False)),
+                    unique=bool(p.get("unique", False)),
+                )
+            )
+
+        req = CreateEdgeTypeRequest(name=name, properties=proto_props)
+        et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
+        return EdgeTypeInfo(et)
+
     async def traverse(
         self,
         start_node_id: int,
@@ -543,6 +659,24 @@ class CoordinodeClient:
     def get_edge_types(self) -> list[EdgeTypeInfo]:
         """Return all edge types defined in the schema."""
         return self._run(self._async.get_edge_types())
+
+    def create_label(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
+    ) -> LabelInfo:
+        """Create a node label in the schema registry."""
+        return self._run(self._async.create_label(name, properties, schema_mode=schema_mode))
+
+    def create_edge_type(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+    ) -> EdgeTypeInfo:
+        """Create an edge type in the schema registry."""
+        return self._run(self._async.create_edge_type(name, properties))
 
     def traverse(
         self,
