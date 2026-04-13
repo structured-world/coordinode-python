@@ -371,8 +371,8 @@ class AsyncCoordinodeClient:
     @staticmethod
     def _build_property_definitions(
         properties: list[dict[str, Any]] | None,
-        PropertyType: Any,
-        PropertyDefinition: Any,
+        property_type_cls: Any,
+        property_definition_cls: Any,
     ) -> list[Any]:
         """Convert property dicts to proto PropertyDefinition objects.
 
@@ -380,15 +380,15 @@ class AsyncCoordinodeClient:
         duplicating the type-map and validation logic.
         """
         type_map = {
-            "int64": PropertyType.PROPERTY_TYPE_INT64,
-            "float64": PropertyType.PROPERTY_TYPE_FLOAT64,
-            "string": PropertyType.PROPERTY_TYPE_STRING,
-            "bool": PropertyType.PROPERTY_TYPE_BOOL,
-            "bytes": PropertyType.PROPERTY_TYPE_BYTES,
-            "timestamp": PropertyType.PROPERTY_TYPE_TIMESTAMP,
-            "vector": PropertyType.PROPERTY_TYPE_VECTOR,
-            "list": PropertyType.PROPERTY_TYPE_LIST,
-            "map": PropertyType.PROPERTY_TYPE_MAP,
+            "int64": property_type_cls.PROPERTY_TYPE_INT64,
+            "float64": property_type_cls.PROPERTY_TYPE_FLOAT64,
+            "string": property_type_cls.PROPERTY_TYPE_STRING,
+            "bool": property_type_cls.PROPERTY_TYPE_BOOL,
+            "bytes": property_type_cls.PROPERTY_TYPE_BYTES,
+            "timestamp": property_type_cls.PROPERTY_TYPE_TIMESTAMP,
+            "vector": property_type_cls.PROPERTY_TYPE_VECTOR,
+            "list": property_type_cls.PROPERTY_TYPE_LIST,
+            "map": property_type_cls.PROPERTY_TYPE_MAP,
         }
         result = []
         for idx, p in enumerate(properties or []):
@@ -401,7 +401,7 @@ class AsyncCoordinodeClient:
                     f"Unknown property type {type_str!r} for property {name!r}. Expected one of: {sorted(type_map)}"
                 )
             result.append(
-                PropertyDefinition(
+                property_definition_cls(
                     name=p["name"],
                     type=type_map[type_str],
                     required=bool(p.get("required", False)),
