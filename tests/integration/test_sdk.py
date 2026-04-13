@@ -553,6 +553,14 @@ def test_vector_search_returns_results(client):
 # FTS tests require a CoordiNode server with TextService implemented (>=0.3.8).
 # They are marked xfail so the suite stays green against older servers; once
 # upgraded, the tests turn into expected passes automatically.
+#
+# Note: create_label() is intentionally NOT called before text_search().
+# FTS indexing in CoordiNode is automatic for all nodes whose label was written
+# via CREATE/MERGE — no explicit label registration is required.  On schema-strict
+# servers a caller may choose to pre-register a label, but the SDK's text_search()
+# and hybrid_text_vector_search() work on schema-free graphs too.  These tests
+# exercise the common schema-free path; calling create_label() here would test a
+# different (schema-strict) code path and is covered by test_create_label_*.
 _fts = pytest.mark.xfail(
     reason="TextService requires CoordiNode >=0.3.8 with FTS support",
     strict=False,

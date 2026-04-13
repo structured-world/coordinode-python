@@ -37,6 +37,11 @@ class CoordinodeGraph(GraphStore):
         addr: CoordiNode gRPC address, e.g. ``"localhost:7080"``.
         database: Database name (reserved for future multi-db support).
         timeout: Per-request gRPC deadline in seconds.
+        client: Optional pre-built client object (e.g. ``LocalClient`` from
+            ``coordinode-embedded``) to use instead of creating a gRPC connection.
+            Must expose a callable ``cypher(query, params)`` method.  When
+            provided, ``addr`` and ``timeout`` are ignored.  The caller is
+            responsible for closing the client.
     """
 
     def __init__(
@@ -90,22 +95,30 @@ class CoordinodeGraph(GraphStore):
             self._schema = ""
 
         if hasattr(self._client, "get_labels") and hasattr(self._client, "get_edge_types"):
-            node_props: dict[str, list[dict[str, str]]] = {}
-            for label in self._client.get_labels():
-                node_props[label.name] = [
-                    {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
-                    for p in label.properties
-                ]
-            rel_props: dict[str, list[dict[str, str]]] = {}
-            for et in self._client.get_edge_types():
-                rel_props[et.name] = [
-                    {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")} for p in et.properties
-                ]
-            if node_props or rel_props:
-                structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
-            else:
-                # Both APIs returned empty (e.g. schema-free graph or stub adapter) —
-                # fall back to text parsing so we don't lose what get_schema_text() returned.
+            try:
+                node_props: dict[str, list[dict[str, str]]] = {}
+                for label in self._client.get_labels():
+                    node_props[label.name] = [
+                        {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
+                        for p in label.properties
+                    ]
+                rel_props: dict[str, list[dict[str, str]]] = {}
+                for et in self._client.get_edge_types():
+                    rel_props[et.name] = [
+                        {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
+                        for p in et.properties
+                    ]
+                if node_props or rel_props:
+                    structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
+                else:
+                    # Both APIs returned empty (e.g. schema-free graph or stub adapter) —
+                    # fall back to text parsing so we don't lose what get_schema_text() returned.
+                    structured = _parse_schema(self._schema)
+            except Exception:
+                # Server may expose get_labels/get_edge_types but raise UNIMPLEMENTED
+                # or another gRPC error if the schema service is not available in the
+                # deployed version.  Fall back to text-based schema parsing to avoid
+                # surfacing an unhandled exception to the caller.
                 structured = _parse_schema(self._schema)
         else:
             structured = _parse_schema(self._schema)

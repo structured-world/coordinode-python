@@ -58,6 +58,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     Args:
         addr: CoordiNode gRPC address, e.g. ``"localhost:7080"``.
         timeout: Per-request gRPC deadline in seconds.
+        client: Optional pre-built client object (e.g. ``LocalClient`` from
+            ``coordinode-embedded``) to use instead of creating a gRPC connection.
+            Must expose a callable ``cypher(query, params)`` method.  When
+            provided, ``addr`` and ``timeout`` are ignored.  The caller is
+            responsible for closing the client.
     """
 
     supports_structured_queries: bool = True
