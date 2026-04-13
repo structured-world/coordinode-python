@@ -103,7 +103,7 @@ jobs:
         run: git -C coordinode-rs describe --tags --exact-match HEAD || true
 
       - name: Build wheels
-        uses: PyO3/maturin-action@b03994fa3b4aa2d8c697185e0e66d1fa2041bfe2  # v1.47.0
+        uses: PyO3/maturin-action@32307a466a178317e8c2ae343b38e73896a047be  # v1.47.0
         with:
           command: build
           args: >-
