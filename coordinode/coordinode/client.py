@@ -105,7 +105,7 @@ class LabelInfo:
         self.name: str = proto_label.name
         self.version: int = proto_label.version
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
-        # schema_mode: 0=unspecified/strict, 1=strict, 2=validated, 3=flexible
+        # schema_mode: 0=unspecified, 1=strict, 2=validated, 3=flexible
         self.schema_mode: int = getattr(proto_label, "schema_mode", 0)
 
     def __repr__(self) -> str:
@@ -391,12 +391,14 @@ class AsyncCoordinodeClient:
             "map": PropertyType.PROPERTY_TYPE_MAP,
         }
         result = []
-        for p in properties or []:
+        for idx, p in enumerate(properties or []):
+            name = p.get("name") if isinstance(p, dict) else None
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"Property at index {idx} must be a dict with a non-empty 'name' key; got {p!r}")
             type_str = str(p.get("type", "string")).lower()
             if type_str not in type_map:
                 raise ValueError(
-                    f"Unknown property type {type_str!r} for property {p['name']!r}. "
-                    f"Expected one of: {sorted(type_map)}"
+                    f"Unknown property type {type_str!r} for property {name!r}. Expected one of: {sorted(type_map)}"
                 )
             result.append(
                 PropertyDefinition(
@@ -423,7 +425,7 @@ class AsyncCoordinodeClient:
                 ``name`` (str), ``type`` (str), ``required`` (bool),
                 ``unique`` (bool).  Type strings: ``"string"``,
                 ``"int64"``, ``"float64"``, ``"bool"``, ``"bytes"``,
-                ``"timestamp"``, ``"vector"``.
+                ``"timestamp"``, ``"vector"``, ``"list"``, ``"map"``.
             schema_mode: ``"strict"`` (default — reject undeclared props),
                 ``"validated"`` (allow extra props without interning),
                 ``"flexible"`` (no enforcement).

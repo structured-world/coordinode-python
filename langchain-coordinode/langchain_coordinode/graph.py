@@ -285,8 +285,10 @@ def _first_label(labels: Any) -> str | None:
     possible. ``min()`` gives a deterministic result regardless of how many
     labels are present.
 
-    TODO: replace with ``labels(n)[0]`` in Cypher once subscript-on-function
-    lands in the published Docker image.
+    Note: once subscript-on-function support lands in the published Docker
+    image (tracked in G010 / GAPS.md), this Python helper could be replaced
+    by an inline Cypher expression — but keep the deterministic ``min()``
+    rule rather than index 0, since label ordering is not guaranteed stable.
     """
     if isinstance(labels, list) and labels:
         return str(min(labels))
