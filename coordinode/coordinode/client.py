@@ -85,6 +85,31 @@ class VectorResult:
         return f"VectorResult(distance={self.distance:.4f}, node={self.node})"
 
 
+class TextResult:
+    """A single full-text search result with BM25 score and optional snippet."""
+
+    def __init__(self, proto_result: Any) -> None:
+        self.node_id: int = proto_result.node_id
+        self.score: float = proto_result.score
+        # HTML snippet with <b>…</b> highlights. Empty when unavailable.
+        self.snippet: str = proto_result.snippet
+
+    def __repr__(self) -> str:
+        return f"TextResult(node_id={self.node_id}, score={self.score:.4f}, snippet={self.snippet!r})"
+
+
+class HybridResult:
+    """A single result from hybrid text + vector search (RRF-ranked)."""
+
+    def __init__(self, proto_result: Any) -> None:
+        self.node_id: int = proto_result.node_id
+        # Combined RRF score: text_weight/(60+rank_text) + vector_weight/(60+rank_vec).
+        self.score: float = proto_result.score
+
+    def __repr__(self) -> str:
+        return f"HybridResult(node_id={self.node_id}, score={self.score:.6f})"
+
+
 class PropertyDefinitionInfo:
     """A property definition from the schema (name, type, required, unique)."""
 
@@ -194,6 +219,7 @@ class AsyncCoordinodeClient:
         self._channel = _make_async_channel(self._host, self._port, self._tls)
         self._cypher_stub = _cypher_stub(self._channel)
         self._vector_stub = _vector_stub(self._channel)
+        self._text_stub = _text_stub(self._channel)
         self._graph_stub = _graph_stub(self._channel)
         self._schema_stub = _schema_stub(self._channel)
         self._health_stub = _health_stub(self._channel)
@@ -530,6 +556,87 @@ class AsyncCoordinodeClient:
         resp = await self._graph_stub.Traverse(req, timeout=self._timeout)
         return TraverseResult(resp)
 
+    async def text_search(
+        self,
+        label: str,
+        query: str,
+        *,
+        limit: int = 10,
+        fuzzy: bool = False,
+        language: str = "",
+    ) -> list[TextResult]:
+        """Run a full-text BM25 search over all indexed text properties for *label*.
+
+        Args:
+            label: Node label to search (e.g. ``"Article"``). Must have at least
+                one text index registered; returns ``[]`` otherwise.
+            query: Full-text query string. Supports boolean operators (``AND``,
+                ``OR``, ``NOT``), phrase search (``"exact phrase"``), prefix
+                wildcards (``term*``), and per-term boosting (``term^N``).
+            limit: Maximum results to return (default 10, capped at 1000).
+            fuzzy: If ``True``, apply Levenshtein-1 fuzzy matching to individual
+                terms. Increases recall at the cost of precision.
+            language: Tokenization/stemming language (e.g. ``"english"``,
+                ``"russian"``). Empty string uses the index's default language.
+
+        Returns:
+            List of :class:`TextResult` ordered by BM25 score descending.
+        """
+        from coordinode._proto.coordinode.v1.query.text_pb2 import TextSearchRequest  # type: ignore[import]
+
+        req = TextSearchRequest(label=label, query=query, limit=limit, fuzzy=fuzzy, language=language)
+        resp = await self._text_stub.TextSearch(req, timeout=self._timeout)
+        return [TextResult(r) for r in resp.results]
+
+    async def hybrid_text_vector_search(
+        self,
+        label: str,
+        text_query: str,
+        vector: Sequence[float],
+        *,
+        limit: int = 10,
+        text_weight: float = 0.5,
+        vector_weight: float = 0.5,
+        vector_property: str = "embedding",
+    ) -> list[HybridResult]:
+        """Fuse BM25 text search and cosine vector search using Reciprocal Rank Fusion (RRF).
+
+        Runs text and vector searches independently, then combines their ranked
+        lists::
+
+            rrf_score(node) = text_weight / (60 + rank_text)
+                            + vector_weight / (60 + rank_vec)
+
+        Args:
+            label: Node label to search (e.g. ``"Article"``).
+            text_query: Full-text query string (same syntax as :meth:`text_search`).
+            vector: Query embedding vector. Must match the dimensionality stored
+                in *vector_property*.
+            limit: Maximum fused results to return (default 10, capped at 1000).
+            text_weight: Weight for the BM25 component (default 0.5).
+            vector_weight: Weight for the cosine component (default 0.5).
+            vector_property: Node property containing the embedding (default
+                ``"embedding"``).
+
+        Returns:
+            List of :class:`HybridResult` ordered by RRF score descending.
+        """
+        from coordinode._proto.coordinode.v1.query.text_pb2 import (  # type: ignore[import]
+            HybridTextVectorSearchRequest,
+        )
+
+        req = HybridTextVectorSearchRequest(
+            label=label,
+            text_query=text_query,
+            vector=list(vector),
+            limit=limit,
+            text_weight=text_weight,
+            vector_weight=vector_weight,
+            vector_property=vector_property,
+        )
+        resp = await self._text_stub.HybridTextVectorSearch(req, timeout=self._timeout)
+        return [HybridResult(r) for r in resp.results]
+
     async def health(self) -> bool:
         from coordinode._proto.coordinode.v1.health.health_pb2 import (  # type: ignore[import]
             HealthCheckRequest,
@@ -685,6 +792,42 @@ class CoordinodeClient:
         """Traverse the graph from *start_node_id* following *edge_type* edges."""
         return self._run(self._async.traverse(start_node_id, edge_type, direction, max_depth))
 
+    def text_search(
+        self,
+        label: str,
+        query: str,
+        *,
+        limit: int = 10,
+        fuzzy: bool = False,
+        language: str = "",
+    ) -> list[TextResult]:
+        """Run a full-text BM25 search over all indexed text properties for *label*."""
+        return self._run(self._async.text_search(label, query, limit=limit, fuzzy=fuzzy, language=language))
+
+    def hybrid_text_vector_search(
+        self,
+        label: str,
+        text_query: str,
+        vector: Sequence[float],
+        *,
+        limit: int = 10,
+        text_weight: float = 0.5,
+        vector_weight: float = 0.5,
+        vector_property: str = "embedding",
+    ) -> list[HybridResult]:
+        """Fuse BM25 text search and cosine vector search using RRF ranking."""
+        return self._run(
+            self._async.hybrid_text_vector_search(
+                label,
+                text_query,
+                vector,
+                limit=limit,
+                text_weight=text_weight,
+                vector_weight=vector_weight,
+                vector_property=vector_property,
+            )
+        )
+
     def health(self) -> bool:
         return self._run(self._async.health())
 
@@ -702,6 +845,12 @@ def _vector_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.query.vector_pb2_grpc import VectorServiceStub  # type: ignore[import]
 
     return VectorServiceStub(channel)
+
+
+def _text_stub(channel: Any) -> Any:
+    from coordinode._proto.coordinode.v1.query.text_pb2_grpc import TextServiceStub  # type: ignore[import]
+
+    return TextServiceStub(channel)
 
 
 def _graph_stub(channel: Any) -> Any:

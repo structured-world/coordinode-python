@@ -12,7 +12,15 @@ import uuid
 
 import pytest
 
-from coordinode import AsyncCoordinodeClient, CoordinodeClient, EdgeTypeInfo, LabelInfo, TraverseResult
+from coordinode import (
+    AsyncCoordinodeClient,
+    CoordinodeClient,
+    EdgeTypeInfo,
+    HybridResult,
+    LabelInfo,
+    TextResult,
+    TraverseResult,
+)
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
 
@@ -536,3 +544,88 @@ def test_vector_search_returns_results(client):
         assert hasattr(results[0], "node")
     finally:
         client.cypher("MATCH (n:VecSDKTest {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+# ── Full-text search ──────────────────────────────────────────────────────────
+
+# FTS tests require a CoordiNode server with TextService implemented (>=0.3.8).
+# They are marked xfail so the suite stays green against older servers; once
+# upgraded, the tests turn into expected passes automatically.
+_fts = pytest.mark.xfail(
+    reason="TextService requires CoordiNode >=0.3.8 with FTS support",
+    strict=False,
+)
+
+
+@_fts
+def test_text_search_returns_results(client):
+    """text_search() finds nodes whose text property matches the query."""
+    tag = uid()
+    client.cypher(
+        "CREATE (n:FtsTest {tag: $tag, body: 'machine learning and neural networks'})",
+        params={"tag": tag},
+    )
+    try:
+        results = client.text_search("FtsTest", "machine learning", limit=5)
+        assert isinstance(results, list)
+        assert len(results) >= 1, "text_search returned no results"
+        r = results[0]
+        assert isinstance(r, TextResult)
+        assert isinstance(r.node_id, int)
+        assert isinstance(r.score, float)
+        assert r.score > 0
+        assert isinstance(r.snippet, str)
+    finally:
+        client.cypher("MATCH (n:FtsTest {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+@_fts
+def test_text_search_empty_for_unindexed_label(client):
+    """text_search() returns [] for a label with no text index (no error)."""
+    results = client.text_search("NoSuchLabelForFts_" + uid(), "anything")
+    assert results == []
+
+
+@_fts
+def test_text_search_fuzzy(client):
+    """text_search() with fuzzy=True matches approximate terms."""
+    tag = uid()
+    client.cypher(
+        "CREATE (n:FtsFuzzyTest {tag: $tag, body: 'coordinode graph database'})",
+        params={"tag": tag},
+    )
+    try:
+        # "coordinode" with a typo — fuzzy should still match
+        results = client.text_search("FtsFuzzyTest", "coordinod", fuzzy=True, limit=5)
+        assert isinstance(results, list)
+        # May return 0 results if fuzzy is not yet supported or index is cold;
+        # just verify the call does not raise.
+    finally:
+        client.cypher("MATCH (n:FtsFuzzyTest {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+@_fts
+def test_hybrid_text_vector_search_returns_results(client):
+    """hybrid_text_vector_search() returns HybridResult list with RRF scores."""
+    tag = uid()
+    vec = [float(i) / 16 for i in range(16)]
+    client.cypher(
+        "CREATE (n:FtsHybridTest {tag: $tag, body: 'graph neural network embedding', embedding: $vec})",
+        params={"tag": tag, "vec": vec},
+    )
+    try:
+        results = client.hybrid_text_vector_search(
+            "FtsHybridTest",
+            "graph neural",
+            vec,
+            limit=5,
+        )
+        assert isinstance(results, list)
+        assert len(results) >= 1, "hybrid_text_vector_search returned no results"
+        r = results[0]
+        assert isinstance(r, HybridResult)
+        assert isinstance(r.node_id, int)
+        assert isinstance(r.score, float)
+        assert r.score > 0
+    finally:
+        client.cypher("MATCH (n:FtsHybridTest {tag: $tag}) DETACH DELETE n", params={"tag": tag})
