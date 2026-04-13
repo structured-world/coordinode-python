@@ -45,8 +45,13 @@ class CoordinodeGraph(GraphStore):
         *,
         database: str | None = None,
         timeout: float = 30.0,
+        client: Any = None,
     ) -> None:
-        self._client = CoordinodeClient(addr, timeout=timeout)
+        # ``client`` allows passing a pre-built client (e.g. LocalClient from
+        # coordinode-embedded) instead of creating a gRPC connection.  The object
+        # must expose a ``.cypher(query, params)`` method and, optionally,
+        # ``.get_schema_text()`` and ``.vector_search()``.
+        self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
         self._schema: str | None = None
         self._structured_schema: dict[str, Any] | None = None
 

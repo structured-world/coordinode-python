@@ -68,8 +68,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         addr: str = "localhost:7080",
         *,
         timeout: float = 30.0,
+        client: Any = None,
     ) -> None:
-        self._client = CoordinodeClient(addr, timeout=timeout)
+        # ``client`` allows passing a pre-built client (e.g. LocalClient from
+        # coordinode-embedded) instead of creating a gRPC connection.
+        self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
 
     # ── Node operations ───────────────────────────────────────────────────
 
