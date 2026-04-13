@@ -51,6 +51,7 @@ class CoordinodeGraph(GraphStore):
         # coordinode-embedded) instead of creating a gRPC connection.  The object
         # must expose a ``.cypher(query, params)`` method and, optionally,
         # ``.get_schema_text()`` and ``.vector_search()``.
+        self._owns_client = client is None
         self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
         self._schema: str | None = None
         self._structured_schema: dict[str, Any] | None = None
@@ -233,8 +234,14 @@ class CoordinodeGraph(GraphStore):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
-        """Close the underlying gRPC connection."""
-        self._client.close()
+        """Close the underlying gRPC connection.
+
+        Only closes the client if it was created internally (i.e. ``client`` was
+        not passed to ``__init__``).  Externally-injected clients are owned by
+        the caller and must be closed by them.
+        """
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> CoordinodeGraph:
         return self

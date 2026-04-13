@@ -72,6 +72,7 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     ) -> None:
         # ``client`` allows passing a pre-built client (e.g. LocalClient from
         # coordinode-embedded) instead of creating a gRPC connection.
+        self._owns_client = client is None
         self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
 
     # ── Node operations ───────────────────────────────────────────────────
@@ -303,7 +304,14 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         return self.get_schema(refresh=refresh)
 
     def close(self) -> None:
-        self._client.close()
+        """Close the underlying gRPC connection.
+
+        Only closes the client if it was created internally (i.e. ``client`` was
+        not passed to ``__init__``).  Externally-injected clients are owned by
+        the caller and must be closed by them.
+        """
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> CoordinodePropertyGraphStore:
         return self
