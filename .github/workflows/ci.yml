@@ -45,6 +45,23 @@ jobs:
       - name: Unit tests
         run: uv run pytest tests/unit/ -v
 
+  build-embedded:
+    name: Build embedded (CI check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          submodules: recursive
+
+      - name: Build (maturin / Linux x86_64)
+        uses: PyO3/maturin-action@b03994fa3b4aa2d8c697185e0e66d1fa2041bfe2  # v1.47.0
+        with:
+          command: build
+          args: >-
+            --manifest-path coordinode-embedded/Cargo.toml
+            --out /tmp/embedded-dist
+          manylinux: manylinux_2_28
+
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest

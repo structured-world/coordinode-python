@@ -1,0 +1,25 @@
+[package]
+name = "coordinode-embedded"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "CoordiNode embedded Python bindings — in-process graph database, no server required"
+license = "Apache-2.0"
+repository = "https://github.com/structured-world/coordinode-python"
+readme = "README.md"
+
+[lib]
+name = "_coordinode_embedded"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+coordinode-embed = { path = "../coordinode-rs/crates/coordinode-embed" }
+coordinode-core = { path = "../coordinode-rs/crates/coordinode-core" }
+rmpv = "1"
+tempfile = "3"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

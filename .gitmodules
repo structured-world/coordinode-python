@@ -1,3 +1,7 @@
 [submodule "proto"]
 	path = proto
 	url = https://github.com/structured-world/coordinode-proto-ce.git
+[submodule "coordinode-rs"]
+	path = coordinode-rs
+	url = https://github.com/structured-world/coordinode.git
+	shallow = true

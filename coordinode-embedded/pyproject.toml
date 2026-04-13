@@ -1,0 +1,34 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "coordinode-embedded"
+description = "CoordiNode embedded Python bindings — in-process graph database, no server required"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+keywords = ["graph", "database", "cypher", "embedded", "knowledge-graph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://coordinode.dev"
+Repository = "https://github.com/structured-world/coordinode-python"
+Documentation = "https://docs.coordinode.dev"
+
+[tool.maturin]
+python-source = "python"
+module-name = "coordinode_embedded._coordinode_embedded"
+features = ["pyo3/extension-module"]
