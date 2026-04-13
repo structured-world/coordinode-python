@@ -73,10 +73,31 @@ class CoordinodeGraph(GraphStore):
         return self._structured_schema or {}
 
     def refresh_schema(self) -> None:
-        """Fetch current schema from CoordiNode."""
-        text = self._client.get_schema_text()
-        self._schema = text
-        structured = _parse_schema(text)
+        """Fetch current schema from CoordiNode.
+
+        Prefers the structured ``get_labels()`` / ``get_edge_types()`` API
+        (available since ``coordinode`` 0.6.0) over the legacy text-parsing
+        path.  Injected clients (e.g. ``_EmbeddedAdapter`` in Colab notebooks)
+        that do not expose those methods fall back to ``_parse_schema()``.
+        """
+        self._schema = self._client.get_schema_text()
+
+        if hasattr(self._client, "get_labels") and hasattr(self._client, "get_edge_types"):
+            node_props: dict[str, list[dict[str, str]]] = {}
+            for label in self._client.get_labels():
+                node_props[label.name] = [
+                    {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
+                    for p in label.properties
+                ]
+            rel_props: dict[str, list[dict[str, str]]] = {}
+            for et in self._client.get_edge_types():
+                rel_props[et.name] = [
+                    {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")} for p in et.properties
+                ]
+            structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
+        else:
+            structured = _parse_schema(self._schema)
+
         # Augment with relationship triples (start_label, type, end_label).
         # No LIMIT: RETURN DISTINCT bounds result by unique triples, not edge count.
         # Note: can simplify to labels(a)[0] once subscript-on-function support lands in the
@@ -251,7 +272,22 @@ class CoordinodeGraph(GraphStore):
         self.close()
 
 
-# ── Schema parser ─────────────────────────────────────────────────────────
+# ── Schema helpers ────────────────────────────────────────────────────────
+
+# Maps PropertyType protobuf enum integers to LangChain-compatible type strings.
+# Values mirror coordinode.v1.graph.PropertyType (schema.proto).
+_PROPERTY_TYPE_NAME: dict[int, str] = {
+    0: "UNSPECIFIED",
+    1: "INT64",
+    2: "FLOAT64",
+    3: "STRING",
+    4: "BOOL",
+    5: "BYTES",
+    6: "TIMESTAMP",
+    7: "VECTOR",
+    8: "LIST",
+    9: "MAP",
+}
 
 
 def _stable_document_id(source: Any) -> str:
