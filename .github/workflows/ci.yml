@@ -61,6 +61,8 @@ jobs:
             --manifest-path coordinode-embedded/Cargo.toml
             --out /tmp/embedded-dist
           manylinux: manylinux_2_28
+          before-script-linux: |
+            dnf install -y protobuf-compiler
 
   test-integration:
     name: Integration tests

@@ -102,6 +102,12 @@ jobs:
       - name: Verify coordinode-rs submodule tag
         run: git -C coordinode-rs describe --tags --exact-match HEAD || true
 
+      - name: Install protoc (macOS / Windows)
+        if: runner.os != 'Linux'
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build wheels
         uses: PyO3/maturin-action@32307a466a178317e8c2ae343b38e73896a047be  # v1.47.0
         with:
@@ -113,6 +119,8 @@ jobs:
             --out dist
           manylinux: ${{ matrix.manylinux || 'auto' }}
           target: ${{ matrix.target }}
+          before-script-linux: |
+            dnf install -y protobuf-compiler
 
       - name: Upload wheels
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
