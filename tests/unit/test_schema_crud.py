@@ -168,6 +168,7 @@ class TestTraverseResult:
         result = TraverseResult(_FakeTraverseResponse(edges=edges))
         assert len(result.edges) == 1
         assert isinstance(result.edges[0], EdgeResult)
+        assert result.edges[0].id == 10
         assert result.edges[0].source_id == 1
         assert result.edges[0].target_id == 2
         assert result.edges[0].type == "KNOWS"
