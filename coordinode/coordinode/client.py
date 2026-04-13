@@ -383,6 +383,15 @@ class AsyncCoordinodeClient:
         Returns:
             :class:`TraverseResult` with ``nodes`` and ``edges`` lists.
         """
+        # Validate pure string/int inputs before importing proto stubs — ensures ValueError
+        # is raised even when proto stubs have not been generated yet.
+        _valid_directions = {"outbound", "inbound", "both"}
+        key = direction.lower()
+        if key not in _valid_directions:
+            raise ValueError(f"Invalid direction {direction!r}. Must be one of: 'outbound', 'inbound', 'both'.")
+        if max_depth < 1:
+            raise ValueError(f"max_depth must be >= 1, got {max_depth!r}.")
+
         from coordinode._proto.coordinode.v1.graph.graph_pb2 import (  # type: ignore[import]
             TraversalDirection,
             TraverseRequest,
@@ -393,11 +402,6 @@ class AsyncCoordinodeClient:
             "inbound": TraversalDirection.TRAVERSAL_DIRECTION_INBOUND,
             "both": TraversalDirection.TRAVERSAL_DIRECTION_BOTH,
         }
-        key = direction.lower()
-        if key not in _direction_map:
-            raise ValueError(f"Invalid direction {direction!r}. Must be one of: 'outbound', 'inbound', 'both'.")
-        if max_depth < 1:
-            raise ValueError(f"max_depth must be >= 1, got {max_depth!r}.")
         direction_value = _direction_map[key]
 
         req = TraverseRequest(
