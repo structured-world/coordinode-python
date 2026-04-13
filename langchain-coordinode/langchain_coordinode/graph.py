@@ -79,7 +79,8 @@ class CoordinodeGraph(GraphStore):
         structured = _parse_schema(text)
         # Augment with relationship triples (start_label, type, end_label).
         # No LIMIT: RETURN DISTINCT bounds result by unique triples, not edge count.
-        # TODO: simplify to labels(a)[0] once subscript-on-function is in published image.
+        # Note: can simplify to labels(a)[0] once subscript-on-function support lands in the
+        # published Docker image (tracked in G010 / GAPS.md).
         rows = self._client.cypher(
             "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels"
         )
