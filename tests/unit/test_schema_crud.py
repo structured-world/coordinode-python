@@ -5,7 +5,12 @@ Pattern mirrors test_types.py: fake proto objects with the same attribute
 interface that real generated messages provide.
 """
 
+import asyncio
+
+import pytest
+
 from coordinode.client import (
+    AsyncCoordinodeClient,
     EdgeResult,
     EdgeTypeInfo,
     LabelInfo,
@@ -189,3 +194,34 @@ class TestTraverseResult:
         r = repr(result)
         assert "nodes=1" in r
         assert "edges=0" in r
+
+
+# ── traverse() input validation ──────────────────────────────────────────────
+
+
+class TestTraverseValidation:
+    """Unit tests for AsyncCoordinodeClient.traverse() input validation.
+
+    Validation (direction and max_depth checks) runs before any RPC call, so no
+    running server is required — only the client object needs to be instantiated.
+    """
+
+    def test_invalid_direction_raises(self):
+        """traverse() raises ValueError for an unrecognised direction string."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            with pytest.raises(ValueError, match="Invalid direction"):
+                await client.traverse(1, "KNOWS", direction="sideways")
+
+        asyncio.run(_inner())
+
+    def test_max_depth_below_one_raises(self):
+        """traverse() raises ValueError when max_depth is less than 1."""
+
+        async def _inner() -> None:
+            client = AsyncCoordinodeClient("localhost:0")
+            with pytest.raises(ValueError, match="max_depth must be >= 1"):
+                await client.traverse(1, "KNOWS", max_depth=0)
+
+        asyncio.run(_inner())

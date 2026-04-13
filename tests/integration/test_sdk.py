@@ -276,9 +276,20 @@ def test_traverse_returns_neighbours(client):
         )
         assert len(rows) >= 1, "hub node not found"
         start_id = rows[0]["node_id"]
+
+        # Fetch the leaf1 node ID so we can assert it specifically appears in the result.
+        leaf_rows = client.cypher(
+            "MATCH (b:TraverseRPC {tag: $tag, role: 'leaf1'}) RETURN b AS node_id",
+            params={"tag": tag},
+        )
+        assert len(leaf_rows) >= 1, "leaf1 node not found"
+        leaf1_id = leaf_rows[0]["node_id"]
+
         result = client.traverse(start_id, "TRAVERSE_TEST", direction="outbound", max_depth=1)
         assert isinstance(result, TraverseResult)
         assert len(result.nodes) >= 1, "traverse() returned no neighbour nodes"
+        node_ids = {n.id for n in result.nodes}
+        assert leaf1_id in node_ids, f"traverse() did not return the expected leaf1 node ({leaf1_id}); got: {node_ids}"
     finally:
         client.cypher("MATCH (n:TraverseRPC {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
@@ -298,16 +309,23 @@ def test_traverse_inbound_direction(client):
         params={"tag": tag},
     )
     try:
-        # Get dst node id — traverse INBOUND from dst should reach src.
+        # Capture both src and dst so that when the server gains inbound support
+        # (XPASS), the assertion verifies the *correct* node was returned, not just any node.
         rows = client.cypher(
-            "MATCH (src:TraverseIn {tag: $tag})-[:INBOUND_TEST]->(dst:TraverseIn {tag: $tag}) RETURN dst AS node_id",
+            "MATCH (src:TraverseIn {tag: $tag})-[:INBOUND_TEST]->(dst:TraverseIn {tag: $tag}) "
+            "RETURN src AS src_id, dst AS dst_id",
             params={"tag": tag},
         )
         assert len(rows) >= 1
-        dst_id = rows[0]["node_id"]
+        src_id = rows[0]["src_id"]
+        dst_id = rows[0]["dst_id"]
         result = client.traverse(dst_id, "INBOUND_TEST", direction="inbound", max_depth=1)
         assert isinstance(result, TraverseResult)
         assert len(result.nodes) >= 1, "inbound traverse returned no nodes"
+        node_ids = {n.id for n in result.nodes}
+        assert src_id in node_ids, (
+            f"inbound traverse did not return the expected source node ({src_id}); got: {node_ids}"
+        )
     finally:
         client.cypher("MATCH (n:TraverseIn {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
