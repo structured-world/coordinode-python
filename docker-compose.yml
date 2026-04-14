@@ -7,7 +7,7 @@ version: "3.9"
 
 services:
   coordinode:
-    image: ghcr.io/structured-world/coordinode:0.3.11
+    image: ghcr.io/structured-world/coordinode:0.3.12
     container_name: coordinode
     ports:
       - "7080:7080"   # gRPC

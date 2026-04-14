@@ -1,6 +1,6 @@
 services:
   coordinode:
-    image: ghcr.io/structured-world/coordinode:0.3.11
+    image: ghcr.io/structured-world/coordinode:0.3.12
     container_name: demo-coordinode
     ports:
       - "37080:7080"   # gRPC (native API)
