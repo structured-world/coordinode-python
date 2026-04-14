@@ -489,6 +489,9 @@ def test_create_label_schema_mode_flexible(client):
     info = client.create_label(name, schema_mode="flexible")
     assert isinstance(info, LabelInfo)
     assert info.name == name
+    # FLEXIBLE (SchemaMode=3) is enforced server-side since coordinode-rs v0.3.12.
+    # Older servers that omit the field return 0 (default), but this test suite
+    # targets v0.3.12+ and asserts the concrete value to catch regressions.
     assert info.schema_mode == 3  # FLEXIBLE
 
 
