@@ -451,9 +451,11 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
                 continue
             # Parse inline properties: "- Label (properties: prop1: TYPE, prop2: TYPE)"
             props: list[dict[str, str]] = []
-            # [^)\n]+ matches property list characters without crossing line or ')'.
-            # Each character in the class is a simple literal — no backtracking risk.
-            m = re.search(r"\(properties:\s*([^)\n]+)\)", stripped)
+            # [^)\n]+ has no overlap with the surrounding literal chars, so backtracking
+            # is bounded at O(n).  Drop the earlier \s* — its overlap with [^)\n]
+            # (spaces match both) created O(n²) backtracking on malformed input.
+            # Leading/trailing whitespace is handled by prop_str.strip() below.
+            m = re.search(r"\(properties:([^)\n]+)\)", stripped)
             if m:
                 for prop_str in m.group(1).split(","):
                     kv = prop_str.strip().split(":", 1)
