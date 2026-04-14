@@ -564,24 +564,18 @@ def test_vector_search_returns_results(client):
 # exercise the common schema-free path; calling create_label() here would test a
 # different (schema-strict) code path and is covered by test_create_label_*.
 def _fts(fn):
-    """Mark an FTS test as expected-failure on servers without TextService.
+    """Wrap an FTS test to handle servers without TextService.
 
-    Expected failure modes handled explicitly — NOT via ``raises=`` on the marker:
-    - ``grpc.StatusCode.UNIMPLEMENTED``: TextService RPC does not exist; caught in
-      the wrapper and converted to ``pytest.xfail()`` so only this status is silenced.
-    - Empty result set: tests that require at least one hit call ``pytest.xfail()``
-      inline (``if not results: pytest.xfail(...)``), keeping the xfail scoped to
-      that specific condition.
+    Explicit xfail conditions:
+    - ``grpc.StatusCode.UNIMPLEMENTED``: TextService RPC does not exist → ``pytest.xfail()``.
+    - Empty result set: hit-requiring tests call ``pytest.xfail()`` inline.
 
-    Any ``AssertionError`` that is NOT the "no results" case (e.g. wrong return type,
-    malformed score) propagates as a real test failure so regressions on FTS-capable
-    servers are visible in CI.
+    All other exceptions (wrong return type, malformed score, unexpected gRPC errors)
+    propagate as real failures so regressions on FTS-capable servers are visible in CI.
+    No ``pytest.mark.xfail`` decorator is applied — that would silently swallow any
+    AssertionError and hide client-side regressions.
     """
 
-    @pytest.mark.xfail(
-        reason="TextService requires CoordiNode >=0.3.8 with FTS support",
-        strict=False,
-    )
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
@@ -597,16 +591,21 @@ def _fts(fn):
 @_fts
 def test_text_search_returns_results(client):
     """text_search() finds nodes whose text property matches the query."""
+    label = f"FtsTest_{uid()}"
     tag = uid()
-    client.cypher(
-        "CREATE (n:FtsTest {tag: $tag, body: 'machine learning and neural networks'})",
+    rows = client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, body: 'machine learning and neural networks'}}) RETURN n AS node_id",
         params={"tag": tag},
     )
+    seed_id = rows[0]["node_id"]
     try:
-        results = client.text_search("FtsTest", "machine learning", limit=5)
+        results = client.text_search(label, "machine learning", limit=5)
         assert isinstance(results, list)
         if not results:
             pytest.xfail("text_search returned no results — FTS index not available on this server")
+        assert any(r.node_id == seed_id for r in results), (
+            f"seeded node {seed_id} not found in text_search results: {results}"
+        )
         r = results[0]
         assert isinstance(r, TextResult)
         assert isinstance(r.node_id, int)
@@ -614,7 +613,7 @@ def test_text_search_returns_results(client):
         assert r.score > 0
         assert isinstance(r.snippet, str)
     finally:
-        client.cypher("MATCH (n:FtsTest {tag: $tag}) DELETE n", params={"tag": tag})
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 @_fts
@@ -645,15 +644,17 @@ def test_text_search_fuzzy(client):
 @_fts
 def test_hybrid_text_vector_search_returns_results(client):
     """hybrid_text_vector_search() returns HybridResult list with RRF scores."""
+    label = f"FtsHybridTest_{uid()}"
     tag = uid()
     vec = [float(i) / 16 for i in range(16)]
-    client.cypher(
-        "CREATE (n:FtsHybridTest {tag: $tag, body: 'graph neural network embedding', embedding: $vec})",
+    rows = client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, body: 'graph neural network embedding', embedding: $vec}}) RETURN n AS node_id",
         params={"tag": tag, "vec": vec},
     )
+    seed_id = rows[0]["node_id"]
     try:
         results = client.hybrid_text_vector_search(
-            "FtsHybridTest",
+            label,
             "graph neural",
             vec,
             limit=5,
@@ -661,10 +662,13 @@ def test_hybrid_text_vector_search_returns_results(client):
         assert isinstance(results, list)
         if not results:
             pytest.xfail("hybrid_text_vector_search returned no results — FTS index not available on this server")
+        assert any(r.node_id == seed_id for r in results), (
+            f"seeded node {seed_id} not found in hybrid_text_vector_search results: {results}"
+        )
         r = results[0]
         assert isinstance(r, HybridResult)
         assert isinstance(r.node_id, int)
         assert isinstance(r.score, float)
         assert r.score > 0
     finally:
-        client.cypher("MATCH (n:FtsHybridTest {tag: $tag}) DETACH DELETE n", params={"tag": tag})
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
