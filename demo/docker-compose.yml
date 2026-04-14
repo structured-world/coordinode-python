@@ -1,5 +1,6 @@
 services:
   coordinode:
+    # Keep version in sync with root docker-compose.yml
     image: ghcr.io/structured-world/coordinode:0.3.14
     container_name: demo-coordinode
     ports:
