@@ -21,7 +21,7 @@ ignore = [
 [lint.per-file-ignores]
 # Jupyter notebooks: multi-import lines, out-of-order imports after subprocess
 # install cells, and unsorted imports are normal in demo notebook code.
-"*.ipynb" = ["E401", "E402", "I001"]
+"**/*.ipynb" = ["E401", "E402", "I001"]
 
 [lint.isort]
 known-first-party = ["coordinode", "langchain_coordinode", "llama_index_coordinode"]
