@@ -30,7 +30,7 @@ services:
     environment:
       - COORDINODE_ADDR=coordinode:7080    # internal network address
       - JUPYTER_ENABLE_LAB=yes
-      - JUPYTER_TOKEN=demo
+      - JUPYTER_TOKEN=demo  # intentional: localhost-only demo stack, documented in README ("token: demo")
       - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0  # hatch-vcs: skip git, use fixed version
     depends_on:
       coordinode:
