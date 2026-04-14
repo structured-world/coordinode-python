@@ -7,6 +7,7 @@ Requires a running CoordiNode instance:
 
 from __future__ import annotations
 
+import functools
 import os
 import uuid
 
@@ -550,6 +551,7 @@ def test_vector_search_returns_results(client):
 
 # ── Full-text search ──────────────────────────────────────────────────────────
 
+
 # FTS tests require a CoordiNode server with TextService implemented (>=0.3.8).
 # They are marked xfail so the suite stays green against older servers; once
 # upgraded, the tests turn into expected passes automatically.
@@ -561,16 +563,33 @@ def test_vector_search_returns_results(client):
 # and hybrid_text_vector_search() work on schema-free graphs too.  These tests
 # exercise the common schema-free path; calling create_label() here would test a
 # different (schema-strict) code path and is covered by test_create_label_*.
-_fts = pytest.mark.xfail(
-    reason="TextService requires CoordiNode >=0.3.8 with FTS support",
-    strict=False,
-    # AssertionError is the actual observed failure mode on servers without FTS:
-    # text_search() returns [] (empty result set), triggering `assert len(...) >= 1`.
-    # grpc.RpcError covers servers that raise UNIMPLEMENTED.  Both are expected
-    # until the server is upgraded; removing AssertionError would cause those tests
-    # to error-out (unexpected failure) rather than xfail.
-    raises=(AssertionError, grpc.RpcError),
-)
+def _fts(fn):
+    """Mark an FTS test as expected-failure on servers without TextService.
+
+    Two expected failure modes:
+    - ``AssertionError``: server returns an empty result set (no FTS index), caught
+      by the marker directly so pytest reports it as xfail.
+    - ``grpc.StatusCode.UNIMPLEMENTED``: TextService RPC does not exist yet; we call
+      ``pytest.xfail()`` explicitly so only that specific status code is silenced.
+      Any other ``grpc.RpcError`` (e.g. INVALID_ARGUMENT from a malformed request)
+      propagates as a real test failure, preventing regressions from being masked.
+    """
+
+    @pytest.mark.xfail(
+        reason="TextService requires CoordiNode >=0.3.8 with FTS support",
+        strict=False,
+        raises=AssertionError,
+    )
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                pytest.xfail(f"TextService not implemented: {exc.details()}")
+            raise  # other gRPC errors (e.g. INVALID_ARGUMENT) surface as failures
+
+    return wrapper
 
 
 @_fts
