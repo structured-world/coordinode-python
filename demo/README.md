@@ -16,6 +16,8 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 
 ## Run locally (Docker Compose)
 
+`demo/docker-compose.yml` provides a CoordiNode + Jupyter Lab stack:
+
 ```bash
 cd demo/
 docker compose up -d --build
@@ -34,5 +36,6 @@ Notebooks 02 and 03 have optional sections that use `OPENAI_API_KEY`.
 They auto-skip when the key is absent — all core features work without LLM.
 
 ```bash
+cd demo/
 OPENAI_API_KEY=sk-... docker compose up -d
 ```

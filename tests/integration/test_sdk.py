@@ -626,19 +626,20 @@ def test_text_search_empty_for_unindexed_label(client):
 @_fts
 def test_text_search_fuzzy(client):
     """text_search() with fuzzy=True matches approximate terms."""
+    label = f"FtsFuzzyTest_{uid()}"
     tag = uid()
     client.cypher(
-        "CREATE (n:FtsFuzzyTest {tag: $tag, body: 'coordinode graph database'})",
+        f"CREATE (n:{label} {{tag: $tag, body: 'coordinode graph database'}})",
         params={"tag": tag},
     )
     try:
         # "coordinode" with a typo — fuzzy should still match
-        results = client.text_search("FtsFuzzyTest", "coordinod", fuzzy=True, limit=5)
+        results = client.text_search(label, "coordinod", fuzzy=True, limit=5)
         assert isinstance(results, list)
         # May return 0 results if fuzzy is not yet supported or index is cold;
         # just verify the call does not raise.
     finally:
-        client.cypher("MATCH (n:FtsFuzzyTest {tag: $tag}) DELETE n", params={"tag": tag})
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 @_fts
