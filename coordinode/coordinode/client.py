@@ -588,8 +588,10 @@ class AsyncCoordinodeClient:
         """Run a full-text BM25 search over all indexed text properties for *label*.
 
         Args:
-            label: Node label to search (e.g. ``"Article"``). Must have at least
-                one text index registered; returns ``[]`` otherwise.
+            label: Node label to search (e.g. ``"Article"``). On current
+                CoordiNode servers, text properties in schema-free graphs are
+                indexed automatically; labels with no searchable text content
+                simply return ``[]``.
             query: Full-text query string. Supports boolean operators (``AND``,
                 ``OR``, ``NOT``), phrase search (``"exact phrase"``), prefix
                 wildcards (``term*``), and per-term boosting (``term^N``).
