@@ -161,6 +161,23 @@ class TraverseResult:
         return f"TraverseResult(nodes={len(self.nodes)}, edges={len(self.edges)})"
 
 
+class TextIndexInfo:
+    """Information about a full-text index returned by :meth:`create_text_index`."""
+
+    def __init__(self, row: dict[str, Any]) -> None:
+        self.name: str = str(row.get("index", ""))
+        self.label: str = str(row.get("label", ""))
+        self.properties: str = str(row.get("properties", ""))
+        self.default_language: str = str(row.get("default_language", ""))
+        self.documents_indexed: int = int(row.get("documents_indexed", 0))
+
+    def __repr__(self) -> str:
+        return (
+            f"TextIndexInfo(name={self.name!r}, label={self.label!r},"
+            f" properties={self.properties!r}, documents_indexed={self.documents_indexed})"
+        )
+
+
 # ── Async client ─────────────────────────────────────────────────────────────
 
 
@@ -524,6 +541,57 @@ class AsyncCoordinodeClient:
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)
 
+    async def create_text_index(
+        self,
+        name: str,
+        label: str,
+        properties: str | list[str],
+        *,
+        language: str = "",
+    ) -> TextIndexInfo:
+        """Create a full-text (BM25) index on one or more node properties.
+
+        Args:
+            name: Unique index name (e.g. ``"article_body"``).
+            label: Node label to index (e.g. ``"Article"``).
+            properties: Property name or list of property names to index
+                (e.g. ``"body"`` or ``["title", "body"]``).
+            language: Default stemming/tokenization language (e.g. ``"english"``,
+                ``"russian"``).  Empty string uses the server default
+                (``"english"``).
+
+        Returns:
+            :class:`TextIndexInfo` with index metadata and document count.
+
+        Example::
+
+            info = await client.create_text_index("article_body", "Article", "body")
+            # then: results = await client.text_search("Article", "machine learning")
+        """
+        if isinstance(properties, str):
+            prop_list = [properties]
+        else:
+            prop_list = list(properties)
+        props_expr = ", ".join(prop_list)
+        lang_clause = f" DEFAULT LANGUAGE {language}" if language else ""
+        cypher = f"CREATE TEXT INDEX {name} ON :{label}({props_expr}){lang_clause}"
+        rows = await self.cypher(cypher)
+        if rows:
+            return TextIndexInfo(rows[0])
+        return TextIndexInfo({"index": name, "label": label, "properties": ", ".join(prop_list)})
+
+    async def drop_text_index(self, name: str) -> None:
+        """Drop a full-text index by name.
+
+        Args:
+            name: Index name previously passed to :meth:`create_text_index`.
+
+        Example::
+
+            await client.drop_text_index("article_body")
+        """
+        await self.cypher(f"DROP TEXT INDEX {name}")
+
     async def traverse(
         self,
         start_node_id: int,
@@ -604,6 +672,16 @@ class AsyncCoordinodeClient:
 
         Returns:
             List of :class:`TextResult` ordered by BM25 score descending.
+            Returns ``[]`` if no text index exists for *label*.
+
+        Note:
+            Text indexing is **not** automatic.  Before calling this method,
+            create a full-text index with the Cypher DDL statement::
+
+                CREATE TEXT INDEX my_index ON :Label(property)
+
+            or via :meth:`create_text_index`.  Nodes written before the index
+            was created are indexed immediately at DDL execution time.
         """
         from coordinode._proto.coordinode.v1.query.text_pb2 import TextSearchRequest  # type: ignore[import]
 
@@ -805,6 +883,21 @@ class CoordinodeClient:
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry."""
         return self._run(self._async.create_edge_type(name, properties))
+
+    def create_text_index(
+        self,
+        name: str,
+        label: str,
+        properties: str | list[str],
+        *,
+        language: str = "",
+    ) -> TextIndexInfo:
+        """Create a full-text (BM25) index on one or more node properties."""
+        return self._run(self._async.create_text_index(name, label, properties, language=language))
+
+    def drop_text_index(self, name: str) -> None:
+        """Drop a full-text index by name."""
+        return self._run(self._async.drop_text_index(name))
 
     def traverse(
         self,

@@ -20,6 +20,7 @@ from coordinode import (
     EdgeTypeInfo,
     HybridResult,
     LabelInfo,
+    TextIndexInfo,
     TextResult,
     TraverseResult,
 )
@@ -566,16 +567,13 @@ def test_vector_search_returns_results(client):
 
 
 # FTS tests require a CoordiNode server with TextService implemented (>=0.3.8).
-# They are marked xfail so the suite stays green against older servers; once
-# upgraded, the tests turn into expected passes automatically.
+# They are wrapped with @_fts so the suite stays green against older servers
+# (UNIMPLEMENTED gRPC status → xfail); against >=0.3.8 servers they are real passes.
 #
-# Note: create_label() is intentionally NOT called before text_search().
-# FTS indexing in CoordiNode is automatic for all nodes whose label was written
-# via CREATE/MERGE — no explicit label registration is required.  On schema-strict
-# servers a caller may choose to pre-register a label, but the SDK's text_search()
-# and hybrid_text_vector_search() work on schema-free graphs too.  These tests
-# exercise the common schema-free path; calling create_label() here would test a
-# different (schema-strict) code path and is covered by test_create_label_*.
+# FTS indexing is NOT automatic.  Each test that expects non-empty results must
+# first create a text index with CREATE TEXT INDEX (or client.create_text_index())
+# and drop it in the finally block.  Tests that deliberately cover the "no-index"
+# case (test_text_search_empty_for_unindexed_label) must NOT create an index.
 def _fts(fn):
     """Wrap an FTS test to handle servers without TextService.
 
@@ -606,6 +604,7 @@ def test_text_search_returns_results(client):
     """text_search() finds nodes whose text property matches the query."""
     label = f"FtsTest_{uid()}"
     tag = uid()
+    idx_name = f"idx_{label.lower()}"
     # CoordiNode executor serialises a node variable as Value::Int(node_id) — runner.rs NodeScan
     # path. No id() function needed; rows[0]["node_id"] is the integer internal node id.
     rows = client.cypher(
@@ -613,11 +612,14 @@ def test_text_search_returns_results(client):
         params={"tag": tag},
     )
     seed_id = rows[0]["node_id"]
+    # Text index must be created explicitly; nodes written before index creation
+    # are indexed immediately at DDL time.
+    idx_info = client.create_text_index(idx_name, label, "body")
+    assert isinstance(idx_info, TextIndexInfo)
     try:
         results = client.text_search(label, "machine learning", limit=5)
         assert isinstance(results, list)
-        if not results:
-            pytest.xfail("text_search returned no results — FTS index not available on this server")
+        assert results, "text_search returned no results after index creation"
         assert any(r.node_id == seed_id for r in results), (
             f"seeded node {seed_id} not found in text_search results: {results}"
         )
@@ -628,6 +630,7 @@ def test_text_search_returns_results(client):
         assert r.score > 0
         assert isinstance(r.snippet, str)
     finally:
+        client.drop_text_index(idx_name)
         client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
@@ -663,17 +666,19 @@ def test_text_search_fuzzy(client):
     """text_search() with fuzzy=True matches approximate terms."""
     label = f"FtsFuzzyTest_{uid()}"
     tag = uid()
+    idx_name = f"idx_{label.lower()}"
     client.cypher(
         f"CREATE (n:{label} {{tag: $tag, body: 'coordinode graph database'}})",
         params={"tag": tag},
     )
+    client.create_text_index(idx_name, label, "body")
     try:
-        # "coordinode" with a typo — fuzzy should still match
+        # "coordinode" with a one-character typo — Levenshtein-1 fuzzy must match.
         results = client.text_search(label, "coordinod", fuzzy=True, limit=5)
         assert isinstance(results, list)
-        # May return 0 results if fuzzy is not yet supported or index is cold;
-        # just verify the call does not raise.
+        assert results, "fuzzy text_search returned no results after index creation"
     finally:
+        client.drop_text_index(idx_name)
         client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
@@ -682,6 +687,7 @@ def test_hybrid_text_vector_search_returns_results(client):
     """hybrid_text_vector_search() returns HybridResult list with RRF scores."""
     label = f"FtsHybridTest_{uid()}"
     tag = uid()
+    idx_name = f"idx_{label.lower()}"
     vec = [float(i) / 16 for i in range(16)]
     # Same node-as-int pattern: RETURN n → Value::Int(node_id) in CoordiNode executor.
     rows = client.cypher(
@@ -689,6 +695,7 @@ def test_hybrid_text_vector_search_returns_results(client):
         params={"tag": tag, "vec": vec},
     )
     seed_id = rows[0]["node_id"]
+    client.create_text_index(idx_name, label, "body")
     try:
         results = client.hybrid_text_vector_search(
             label,
@@ -698,7 +705,7 @@ def test_hybrid_text_vector_search_returns_results(client):
         )
         assert isinstance(results, list)
         if not results:
-            pytest.xfail("hybrid_text_vector_search returned no results — FTS index not available on this server")
+            pytest.xfail("hybrid_text_vector_search returned no results — vector index not available on this server")
         assert any(r.node_id == seed_id for r in results), (
             f"seeded node {seed_id} not found in hybrid_text_vector_search results: {results}"
         )
@@ -708,4 +715,5 @@ def test_hybrid_text_vector_search_returns_results(client):
         assert isinstance(r.score, float)
         assert r.score > 0
     finally:
+        client.drop_text_index(idx_name)
         client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})

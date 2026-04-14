@@ -27,6 +27,7 @@ from coordinode.client import (
     LabelInfo,
     NodeResult,
     PropertyDefinitionInfo,
+    TextIndexInfo,
     TextResult,
     TraverseResult,
     VectorResult,
@@ -47,5 +48,6 @@ __all__ = [
     "LabelInfo",
     "EdgeTypeInfo",
     "PropertyDefinitionInfo",
+    "TextIndexInfo",
     "TraverseResult",
 ]
