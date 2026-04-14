@@ -416,8 +416,12 @@ class AsyncCoordinodeClient:
             "list": property_type_cls.PROPERTY_TYPE_LIST,
             "map": property_type_cls.PROPERTY_TYPE_MAP,
         }
+        if properties is None:
+            return []
+        if not isinstance(properties, (list, tuple)):
+            raise ValueError(f"'properties' must be a list of property dicts or None; got {type(properties).__name__}")
         result = []
-        for idx, p in enumerate(properties or []):
+        for idx, p in enumerate(properties):
             if not isinstance(p, dict):
                 raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
             name = p.get("name")

@@ -90,10 +90,23 @@ class CoordinodeGraph(GraphStore):
         path.  Injected clients (e.g. ``_EmbeddedAdapter`` in Colab notebooks)
         that do not expose those methods fall back to ``_parse_schema()``.
         Injected clients that only expose ``cypher()`` / ``close()`` (e.g.
-        a bare ``coordinode-embedded`` ``LocalClient``) return an empty schema.
+        a bare ``coordinode-embedded`` ``LocalClient``) return empty node/rel
+        property metadata, though relationships may still be inferred from
+        graph data via a Cypher query and populated in
+        ``structured["relationships"]``.
         """
         get_schema_text = getattr(self._client, "get_schema_text", None)
-        self._schema = get_schema_text() if callable(get_schema_text) else ""
+        if callable(get_schema_text):
+            try:
+                self._schema = get_schema_text()
+            except Exception:
+                logger.debug(
+                    "get_schema_text() raised — continuing with empty schema text",
+                    exc_info=True,
+                )
+                self._schema = ""
+        else:
+            self._schema = ""
 
         if callable(getattr(self._client, "get_labels", None)) and callable(
             getattr(self._client, "get_edge_types", None)
