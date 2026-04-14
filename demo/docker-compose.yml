@@ -11,7 +11,7 @@ services:
       - COORDINODE_LOG_FORMAT=text
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/coordinode", "version"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7084/health || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
