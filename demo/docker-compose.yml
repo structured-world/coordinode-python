@@ -1,10 +1,10 @@
 services:
   coordinode:
-    image: ghcr.io/structured-world/coordinode:0.3.12
+    image: ghcr.io/structured-world/coordinode:0.3.14
     container_name: demo-coordinode
     ports:
-      - "37080:7080"   # gRPC (native API)
-      - "37084:7084"   # Prometheus /metrics, /health
+      - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only
+      - "127.0.0.1:37084:7084"   # Prometheus /metrics, /health — localhost-only
     volumes:
       - coordinode-data:/data
     environment:
@@ -20,7 +20,9 @@ services:
   jupyter:
     build:
       context: .
-      dockerfile: Dockerfile.jupyter  # demo/Dockerfile.jupyter — builds Jupyter Lab with SDK installed
+      # Dockerfile.jupyter lives in demo/ (same context directory as this file).
+      # It builds a Jupyter Lab image with the SDK installed from the SDK source mount.
+      dockerfile: Dockerfile.jupyter
     container_name: demo-jupyter
     ports:
       - "127.0.0.1:38888:8888"   # Jupyter Lab (localhost-only)

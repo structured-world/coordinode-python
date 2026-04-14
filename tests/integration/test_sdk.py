@@ -624,9 +624,29 @@ def test_text_search_returns_results(client):
 
 @_fts
 def test_text_search_empty_for_unindexed_label(client):
-    """text_search() returns [] for a label with no text index (no error)."""
+    """text_search() returns [] when there are no text-indexed nodes to match.
+
+    Covers two distinct cases:
+    1. Label has never been inserted — nothing to search.
+    2. Label exists but nodes carry only numeric/boolean properties; the FTS
+       index contains no text, so no results can match any query term.
+    """
+    # Case 1: label that has never been inserted into the graph
     results = client.text_search("NoSuchLabelForFts_" + uid(), "anything")
     assert results == []
+
+    # Case 2: label exists but nodes have no text properties to index
+    label = f"FtsNumericOnly_{uid()}"
+    tag = uid()
+    client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, count: 42, active: true}})",
+        params={"tag": tag},
+    )
+    try:
+        results = client.text_search(label, "anything")
+        assert results == []
+    finally:
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 @_fts
