@@ -495,6 +495,15 @@ def test_create_label_schema_mode_flexible(client):
     assert info.schema_mode == 3  # FLEXIBLE
 
 
+def test_create_label_schema_mode_validated(client):
+    """create_label() with schema_mode='validated' is accepted and returns SchemaMode=2."""
+    name = f"ValidatedLabel{uid()}"
+    info = client.create_label(name, schema_mode="validated")
+    assert isinstance(info, LabelInfo)
+    assert info.name == name
+    assert info.schema_mode == 2  # VALIDATED
+
+
 def test_create_label_invalid_schema_mode_raises(client):
     """create_label() with unknown schema_mode raises ValueError locally."""
     with pytest.raises(ValueError, match="schema_mode"):
