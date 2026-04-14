@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile.jupyter
     container_name: demo-jupyter
     ports:
-      - "38888:8888"   # Jupyter Lab
+      - "127.0.0.1:38888:8888"   # Jupyter Lab (localhost-only)
     volumes:
       - ./notebooks:/home/jovyan/work
       - ../:/sdk       # mount SDK source so notebooks can pip install -e

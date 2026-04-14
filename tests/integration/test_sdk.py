@@ -489,8 +489,7 @@ def test_create_label_schema_mode_flexible(client):
     info = client.create_label(name, schema_mode="flexible")
     assert isinstance(info, LabelInfo)
     assert info.name == name
-    assert isinstance(info.schema_mode, int)
-    assert info.schema_mode in (0, 3)  # 0 on older servers, 3 = FLEXIBLE
+    assert info.schema_mode == 3  # FLEXIBLE
 
 
 def test_create_label_invalid_schema_mode_raises(client):

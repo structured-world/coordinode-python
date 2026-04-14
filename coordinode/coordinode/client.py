@@ -427,10 +427,14 @@ class AsyncCoordinodeClient:
             name = p.get("name")
             if not isinstance(name, str) or not name:
                 raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
-            type_str = str(p.get("type", "string")).lower()
+            raw_type = p.get("type", "string")
+            if "type" in p and not isinstance(raw_type, str):
+                raise ValueError(f"Property {name!r} must use a string value for 'type'; got {raw_type!r}")
+            type_str = str(raw_type).strip().lower()
             if type_str not in type_map:
                 raise ValueError(
-                    f"Unknown property type {type_str!r} for property {name!r}. Expected one of: {sorted(type_map)}"
+                    f"Unknown property type {type_str!r} for property {name!r}. "
+                    f"Expected 'type' to be one of: {sorted(type_map)}"
                 )
             required = p.get("required", False)
             unique = p.get("unique", False)

@@ -210,29 +210,17 @@ class CoordinodeGraph(GraphStore):
         )
 
     def _create_edge(self, rel: Any) -> None:
-        """Upsert a relationship via MERGE (idempotent).
-
-        SET r += $props is skipped when props is empty because
-        SET r += {} is not supported by all server versions.
-        """
+        """Upsert a relationship via MERGE (idempotent)."""
         src_label = _cypher_ident(rel.source.type or "Entity")
         dst_label = _cypher_ident(rel.target.type or "Entity")
         rel_type = _cypher_ident(rel.type)
         props = dict(rel.properties or {})
-        if props:
-            self._client.cypher(
-                f"MATCH (src:{src_label} {{name: $src}}) "
-                f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                f"MERGE (src)-[r:{rel_type}]->(dst) SET r += $props",
-                params={"src": rel.source.id, "dst": rel.target.id, "props": props},
-            )
-        else:
-            self._client.cypher(
-                f"MATCH (src:{src_label} {{name: $src}}) "
-                f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                f"MERGE (src)-[r:{rel_type}]->(dst)",
-                params={"src": rel.source.id, "dst": rel.target.id},
-            )
+        self._client.cypher(
+            f"MATCH (src:{src_label} {{name: $src}}) "
+            f"MATCH (dst:{dst_label} {{name: $dst}}) "
+            f"MERGE (src)-[r:{rel_type}]->(dst) SET r += $props",
+            params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+        )
 
     def _link_document_to_entities(self, doc: Any) -> None:
         """Upsert a ``__Document__`` node and MERGE ``MENTIONS`` edges to all entities."""

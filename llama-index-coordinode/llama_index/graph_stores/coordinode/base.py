@@ -240,21 +240,14 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         for rel in relations:
             props = rel.properties or {}
             label = _cypher_ident(rel.label)
-            if props:
-                cypher = (
-                    f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
-                    f"MERGE (src)-[r:{label}]->(dst) SET r += $props"
-                )
-                self._client.cypher(
-                    cypher,
-                    params={"src_id": rel.source_id, "dst_id": rel.target_id, "props": props},
-                )
-            else:
-                cypher = f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) MERGE (src)-[r:{label}]->(dst)"
-                self._client.cypher(
-                    cypher,
-                    params={"src_id": rel.source_id, "dst_id": rel.target_id},
-                )
+            cypher = (
+                f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
+                f"MERGE (src)-[r:{label}]->(dst) SET r += $props"
+            )
+            self._client.cypher(
+                cypher,
+                params={"src_id": rel.source_id, "dst_id": rel.target_id, "props": props},
+            )
 
     def delete(
         self,
