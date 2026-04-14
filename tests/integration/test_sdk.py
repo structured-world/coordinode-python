@@ -489,6 +489,8 @@ def test_create_label_schema_mode_flexible(client):
     info = client.create_label(name, schema_mode="flexible")
     assert isinstance(info, LabelInfo)
     assert info.name == name
+    assert isinstance(info.schema_mode, int)
+    assert info.schema_mode in (0, 3)  # 0 on older servers, 3 = FLEXIBLE
 
 
 def test_create_label_invalid_schema_mode_raises(client):
@@ -593,6 +595,8 @@ def test_text_search_returns_results(client):
     """text_search() finds nodes whose text property matches the query."""
     label = f"FtsTest_{uid()}"
     tag = uid()
+    # CoordiNode executor serialises a node variable as Value::Int(node_id) — runner.rs NodeScan
+    # path. No id() function needed; rows[0]["node_id"] is the integer internal node id.
     rows = client.cypher(
         f"CREATE (n:{label} {{tag: $tag, body: 'machine learning and neural networks'}}) RETURN n AS node_id",
         params={"tag": tag},
@@ -648,6 +652,7 @@ def test_hybrid_text_vector_search_returns_results(client):
     label = f"FtsHybridTest_{uid()}"
     tag = uid()
     vec = [float(i) / 16 for i in range(16)]
+    # Same node-as-int pattern: RETURN n → Value::Int(node_id) in CoordiNode executor.
     rows = client.cypher(
         f"CREATE (n:{label} {{tag: $tag, body: 'graph neural network embedding', embedding: $vec}}) RETURN n AS node_id",
         params={"tag": tag, "vec": vec},

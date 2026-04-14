@@ -1,0 +1,42 @@
+services:
+  coordinode:
+    image: ghcr.io/structured-world/coordinode:0.3.11
+    container_name: demo-coordinode
+    ports:
+      - "37080:7080"   # gRPC (native API)
+      - "37084:7084"   # Prometheus /metrics, /health
+    volumes:
+      - coordinode-data:/data
+    environment:
+      - COORDINODE_LOG_FORMAT=text
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/coordinode", "version"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    container_name: demo-jupyter
+    ports:
+      - "38888:8888"   # Jupyter Lab
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ../:/sdk       # mount SDK source so notebooks can pip install -e
+    environment:
+      - COORDINODE_ADDR=coordinode:7080    # internal network address
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=demo
+      - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0  # hatch-vcs: skip git, use fixed version
+    depends_on:
+      coordinode:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  coordinode-data:
+    driver: local
