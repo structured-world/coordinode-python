@@ -13,7 +13,7 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 
 > **Note:** First run installs `coordinode-embedded` from source (Rust build, ~5 min).
 > Subsequent runs use Colab's pip cache.
-> Notebooks are pinned to a specific commit that bundles coordinode-rs v0.3.12.
+> Notebooks are pinned to a specific commit that bundles coordinode-rs v0.3.13.
 
 ## Run locally (Docker Compose)
 
