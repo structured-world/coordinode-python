@@ -35,6 +35,12 @@ services:
       - JUPYTER_ENABLE_LAB=yes
       - JUPYTER_TOKEN=demo  # intentional: localhost-only demo stack, documented in README ("token: demo")
       - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0  # hatch-vcs: skip git, use fixed version
+    # Install SDK packages from the mounted /sdk source at container start,
+    # then hand off to the default Jupyter Lab startup script.
+    # /tmp/install-sdk.sh is copied into the image by Dockerfile.jupyter;
+    # it must run after /sdk is mounted (i.e. at runtime, not during build).
+    command: >-
+      bash -c "/tmp/install-sdk.sh && start-notebook.sh"
     depends_on:
       coordinode:
         condition: service_healthy

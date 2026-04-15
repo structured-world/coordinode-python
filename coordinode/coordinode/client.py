@@ -474,7 +474,9 @@ class AsyncCoordinodeClient:
         # list | tuple union syntax is valid in isinstance() for Python ≥3.10 (PEP 604).
         # This project targets Python ≥3.11 (pyproject.toml: requires-python = ">=3.11").
         if not isinstance(properties, list | tuple):
-            raise ValueError(f"'properties' must be a list of property dicts or None; got {type(properties).__name__}")
+            raise ValueError(
+                f"'properties' must be a list or tuple of property dicts or None; got {type(properties).__name__}"
+            )
         result = []
         for idx, p in enumerate(properties):
             name, type_str, required, unique = AsyncCoordinodeClient._validate_property_dict(p, idx)
@@ -498,7 +500,7 @@ class AsyncCoordinodeClient:
         name: str,
         properties: list[dict[str, Any]] | None = None,
         *,
-        schema_mode: str = "strict",
+        schema_mode: str | int = "strict",
     ) -> LabelInfo:
         """Create a node label in the schema registry.
 
@@ -525,17 +527,28 @@ class AsyncCoordinodeClient:
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
             "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
         }
-        if not isinstance(schema_mode, str):
-            raise ValueError(f"schema_mode must be a str, got {type(schema_mode).__name__!r}")
-        schema_mode_normalized = schema_mode.strip().lower()
-        if schema_mode_normalized not in _mode_map:
-            raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+        if isinstance(schema_mode, int):
+            # Accept int to allow round-tripping LabelInfo.schema_mode back into this call.
+            valid_ints = set(_mode_map.values())
+            if schema_mode not in valid_ints:
+                raise ValueError(
+                    f"schema_mode integer {schema_mode!r} is not a valid SchemaMode value; "
+                    f"expected one of {sorted(valid_ints)} or a string {list(_mode_map)!r}"
+                )
+            proto_schema_mode = schema_mode
+        elif isinstance(schema_mode, str):
+            schema_mode_normalized = schema_mode.strip().lower()
+            if schema_mode_normalized not in _mode_map:
+                raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+            proto_schema_mode = _mode_map[schema_mode_normalized]
+        else:
+            raise ValueError(f"schema_mode must be a str or int, got {type(schema_mode).__name__!r}")
 
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateLabelRequest(
             name=name,
             properties=proto_props,
-            schema_mode=_mode_map[schema_mode_normalized],
+            schema_mode=proto_schema_mode,
         )
         label = await self._schema_stub.CreateLabel(req, timeout=self._timeout)
         return LabelInfo(label)
@@ -545,7 +558,7 @@ class AsyncCoordinodeClient:
         name: str,
         properties: list[dict[str, Any]] | None = None,
         *,
-        schema_mode: str = "strict",
+        schema_mode: str | int = "strict",
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry.
 
@@ -571,17 +584,28 @@ class AsyncCoordinodeClient:
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
             "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
         }
-        if not isinstance(schema_mode, str):
-            raise ValueError(f"schema_mode must be a str, got {type(schema_mode).__name__!r}")
-        schema_mode_normalized = schema_mode.strip().lower()
-        if schema_mode_normalized not in _mode_map:
-            raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+        if isinstance(schema_mode, int):
+            # Accept int to allow round-tripping EdgeTypeInfo.schema_mode back into this call.
+            valid_ints = set(_mode_map.values())
+            if schema_mode not in valid_ints:
+                raise ValueError(
+                    f"schema_mode integer {schema_mode!r} is not a valid SchemaMode value; "
+                    f"expected one of {sorted(valid_ints)} or a string {list(_mode_map)!r}"
+                )
+            proto_schema_mode = schema_mode
+        elif isinstance(schema_mode, str):
+            schema_mode_normalized = schema_mode.strip().lower()
+            if schema_mode_normalized not in _mode_map:
+                raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+            proto_schema_mode = _mode_map[schema_mode_normalized]
+        else:
+            raise ValueError(f"schema_mode must be a str or int, got {type(schema_mode).__name__!r}")
 
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateEdgeTypeRequest(
             name=name,
             properties=proto_props,
-            schema_mode=_mode_map[schema_mode_normalized],
+            schema_mode=proto_schema_mode,
         )
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)
@@ -626,7 +650,7 @@ class AsyncCoordinodeClient:
         elif isinstance(properties, list | tuple):
             prop_list = list(properties)
         else:
-            raise ValueError("'properties' must be a property name (str) or a list of property names")
+            raise ValueError("'properties' must be a property name (str) or a list or tuple of property names")
         if not prop_list:
             raise ValueError("'properties' must contain at least one property name")
         for prop in prop_list:
@@ -942,7 +966,7 @@ class CoordinodeClient:
         name: str,
         properties: list[dict[str, Any]] | None = None,
         *,
-        schema_mode: str = "strict",
+        schema_mode: str | int = "strict",
     ) -> LabelInfo:
         """Create a node label in the schema registry."""
         return self._run(self._async.create_label(name, properties, schema_mode=schema_mode))
@@ -952,7 +976,7 @@ class CoordinodeClient:
         name: str,
         properties: list[dict[str, Any]] | None = None,
         *,
-        schema_mode: str = "strict",
+        schema_mode: str | int = "strict",
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry."""
         return self._run(self._async.create_edge_type(name, properties, schema_mode=schema_mode))
