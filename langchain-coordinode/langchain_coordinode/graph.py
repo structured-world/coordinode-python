@@ -126,6 +126,11 @@ class CoordinodeGraph(GraphStore):
                     ]
                 if node_props or rel_props:
                     structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
+                    # Backfill text schema for clients that expose get_labels()/get_edge_types()
+                    # but not get_schema_text().  Keeps graph.schema consistent with
+                    # graph.structured_schema so callers that read either view get the same data.
+                    if not self._schema:
+                        self._schema = _structured_to_text(node_props, rel_props)
                 else:
                     # Both APIs returned empty (e.g. schema-free graph or stub adapter) —
                     # fall back to text parsing so we don't lose what get_schema_text() returned.
@@ -390,6 +395,34 @@ def _cypher_ident(name: str) -> str:
     if re.match(r"^[A-Za-z_]\w*$", name, re.ASCII):
         return name
     return f"`{name.replace('`', '``')}`"
+
+
+def _structured_to_text(
+    node_props: dict[str, list[dict[str, str]]],
+    rel_props: dict[str, list[dict[str, str]]],
+) -> str:
+    """Render node_props/rel_props dicts as a schema text string.
+
+    Produces the same format that :func:`_parse_schema` consumes, so the two
+    functions are inverses.  Used to backfill ``self._schema`` when the server
+    exposes ``get_labels()`` / ``get_edge_types()`` but not ``get_schema_text()``.
+    """
+    lines: list[str] = ["Node labels:"]
+    for label, props in sorted(node_props.items()):
+        if props:
+            props_str = ", ".join(f"{p['property']}: {p['type']}" for p in props)
+            lines.append(f"  - {label} (properties: {props_str})")
+        else:
+            lines.append(f"  - {label}")
+    lines.append("")
+    lines.append("Edge types:")
+    for rel_type, props in sorted(rel_props.items()):
+        if props:
+            props_str = ", ".join(f"{p['property']}: {p['type']}" for p in props)
+            lines.append(f"  - {rel_type} (properties: {props_str})")
+        else:
+            lines.append(f"  - {rel_type}")
+    return "\n".join(lines)
 
 
 def _parse_schema(schema_text: str) -> dict[str, Any]:

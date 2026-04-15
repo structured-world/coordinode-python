@@ -471,7 +471,7 @@ class AsyncCoordinodeClient:
         }
         if properties is None:
             return []
-        if not isinstance(properties, (list, tuple)):
+        if not isinstance(properties, list | tuple):
             raise ValueError(f"'properties' must be a list of property dicts or None; got {type(properties).__name__}")
         result = []
         for idx, p in enumerate(properties):
@@ -613,7 +613,9 @@ class AsyncCoordinodeClient:
         rows = await self.cypher(cypher)
         if rows:
             return TextIndexInfo(rows[0])
-        return TextIndexInfo({"index": name, "label": label, "properties": ", ".join(prop_list)})
+        return TextIndexInfo(
+            {"index": name, "label": label, "properties": ", ".join(prop_list), "default_language": language}
+        )
 
     async def drop_text_index(self, name: str) -> None:
         """Drop a full-text index by name.
