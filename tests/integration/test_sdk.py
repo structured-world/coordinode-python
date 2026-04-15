@@ -7,12 +7,23 @@ Requires a running CoordiNode instance:
 
 from __future__ import annotations
 
+import functools
 import os
 import uuid
 
+import grpc
 import pytest
 
-from coordinode import AsyncCoordinodeClient, CoordinodeClient, EdgeTypeInfo, LabelInfo, TraverseResult
+from coordinode import (
+    AsyncCoordinodeClient,
+    CoordinodeClient,
+    EdgeTypeInfo,
+    HybridResult,
+    LabelInfo,
+    TextIndexInfo,
+    TextResult,
+    TraverseResult,
+)
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
 
@@ -426,6 +437,116 @@ async def test_async_create_node():
         await c.cypher("MATCH (n:AsyncTest {tag: $tag}) DELETE n", params={"tag": tag})
 
 
+# ── create_label / create_edge_type ──────────────────────────────────────────
+
+
+def test_create_label_returns_label_info(client):
+    """create_label() registers a label and returns LabelInfo."""
+    name = f"CreateLabelTest{uid()}"
+    info = client.create_label(
+        name,
+        properties=[
+            {"name": "title", "type": "string", "required": True},
+            {"name": "score", "type": "float64"},
+        ],
+    )
+    assert isinstance(info, LabelInfo)
+    assert info.name == name
+
+
+def test_create_label_appears_in_get_labels(client):
+    """Label created via create_label() appears in get_labels() once a node exists.
+
+    Known limitation: ListLabels currently returns only labels that have at least
+    one node in the graph. Ideally it should also include schema-only labels
+    registered via create_label() (analogous to Neo4j returning schema-constrained
+    labels even without data). Tracked as a server-side gap.
+    """
+    name = f"CreateLabelVisible{uid()}"
+    tag = uid()
+    # Declare both properties used in the workaround node.  Note: schema_mode
+    # is accepted by the server but not yet enforced in the current image;
+    # the properties are declared here for forward compatibility.
+    client.create_label(
+        name,
+        properties=[
+            {"name": "x", "type": "int64"},
+            {"name": "tag", "type": "string"},
+        ],
+    )
+    # Workaround: create a node so the label appears in ListLabels.
+    client.cypher(f"CREATE (n:{name} {{x: 1, tag: $tag}})", params={"tag": tag})
+    try:
+        labels = client.get_labels()
+        names = [lbl.name for lbl in labels]
+        assert name in names, f"{name} not in {names}"
+    finally:
+        client.cypher(f"MATCH (n:{name} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+def test_create_label_schema_mode_flexible(client):
+    """create_label() with schema_mode='flexible' is accepted by the server."""
+    name = f"FlexLabel{uid()}"
+    info = client.create_label(name, schema_mode="flexible")
+    assert isinstance(info, LabelInfo)
+    assert info.name == name
+    # FLEXIBLE (SchemaMode=3) is enforced server-side since coordinode-rs v0.3.12.
+    # Older servers that omit the field return 0 (default), but this test suite
+    # targets v0.3.12+ and asserts the concrete value to catch regressions.
+    assert info.schema_mode == 3  # FLEXIBLE
+
+
+def test_create_label_schema_mode_validated(client):
+    """create_label() with schema_mode='validated' is accepted and returns SchemaMode=2."""
+    name = f"ValidatedLabel{uid()}"
+    info = client.create_label(name, schema_mode="validated")
+    assert isinstance(info, LabelInfo)
+    assert info.name == name
+    assert info.schema_mode == 2  # VALIDATED
+
+
+def test_create_label_invalid_schema_mode_raises(client):
+    """create_label() with unknown schema_mode raises ValueError locally."""
+    with pytest.raises(ValueError, match="schema_mode"):
+        client.create_label(f"Bad{uid()}", schema_mode="unknown")
+
+
+def test_create_edge_type_returns_edge_type_info(client):
+    """create_edge_type() registers an edge type and returns EdgeTypeInfo."""
+    name = f"CREATE_ET_{uid()}".upper()
+    info = client.create_edge_type(
+        name,
+        properties=[{"name": "since", "type": "timestamp"}],
+    )
+    assert isinstance(info, EdgeTypeInfo)
+    assert info.name == name
+
+
+def test_create_edge_type_appears_in_get_edge_types(client):
+    """Edge type created via create_edge_type() appears in get_edge_types() once an edge exists.
+
+    Same known limitation as test_create_label_appears_in_get_labels: ListEdgeTypes
+    currently requires at least one edge of that type to exist in the graph.
+    """
+    name = f"VISIBLE_ET_{uid()}".upper()
+    tag = uid()
+    client.create_edge_type(name)
+    # Workaround: create an edge so the type appears in ListEdgeTypes.
+    client.cypher(
+        f"CREATE (a:VisibleEtNode {{tag: $tag}})-[:{name}]->(b:VisibleEtNode {{tag: $tag}})",
+        params={"tag": tag},
+    )
+    try:
+        edge_types = client.get_edge_types()
+        names = [et.name for et in edge_types]
+        assert name in names, f"{name} not in {names}"
+    finally:
+        client.cypher(
+            "MATCH (n:VisibleEtNode {tag: $tag}) DETACH DELETE n",
+            params={"tag": tag},
+        )
+
+
 # ── Vector search ─────────────────────────────────────────────────────────────
 
 
@@ -443,3 +564,175 @@ def test_vector_search_returns_results(client):
         assert hasattr(results[0], "node")
     finally:
         client.cypher("MATCH (n:VecSDKTest {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+# ── Full-text search ──────────────────────────────────────────────────────────
+
+
+# FTS tests require a CoordiNode server with TextService implemented (>=0.3.8).
+# They are wrapped with @_fts so the suite stays green against older servers
+# (UNIMPLEMENTED gRPC status → xfail); against >=0.3.8 servers they are real passes.
+#
+# These tests intentionally exercise the explicit text-index lifecycle APIs.
+# Schema-free graphs may still be auto-indexed by the server, but the tests
+# below create/drop an index explicitly so create_text_index()/drop_text_index()
+# are covered deterministically.  Tests that deliberately cover the "no-index"
+# case (test_text_search_empty_for_unindexed_label) must NOT create an index.
+def _fts(fn):
+    """Wrap an FTS test to handle servers without TextService.
+
+    Explicit xfail conditions:
+    - ``grpc.StatusCode.UNIMPLEMENTED``: TextService RPC does not exist → ``pytest.xfail()``.
+    - Empty result set: hit-requiring tests call ``pytest.xfail()`` inline.
+
+    All other exceptions (wrong return type, malformed score, unexpected gRPC errors)
+    propagate as real failures so regressions on FTS-capable servers are visible in CI.
+    No ``pytest.mark.xfail`` decorator is applied — that would silently swallow any
+    AssertionError and hide client-side regressions.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                pytest.xfail(f"TextService not implemented: {exc.details()}")
+            raise  # other gRPC errors (e.g. INVALID_ARGUMENT) surface as failures
+
+    return wrapper
+
+
+@_fts
+def test_text_search_returns_results(client):
+    """text_search() finds nodes whose text property matches the query."""
+    label = f"FtsTest_{uid()}"
+    tag = uid()
+    idx_name = f"idx_{label.lower()}"
+    # CoordiNode executor serialises a node variable as Value::Int(node_id) — runner.rs NodeScan
+    # path. No id() function needed; rows[0]["node_id"] is the integer internal node id.
+    rows = client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, body: 'machine learning and neural networks'}}) RETURN n AS node_id",
+        params={"tag": tag},
+    )
+    seed_id = rows[0]["node_id"]
+    # Text index must be created explicitly; nodes written before index creation
+    # are indexed immediately at DDL time.
+    idx_created = False
+    try:
+        idx_info = client.create_text_index(idx_name, label, "body")
+        idx_created = True
+        assert isinstance(idx_info, TextIndexInfo)
+        results = client.text_search(label, "machine learning", limit=5)
+        assert isinstance(results, list)
+        assert results, "text_search returned no results after index creation"
+        assert any(r.node_id == seed_id for r in results), (
+            f"seeded node {seed_id} not found in text_search results: {results}"
+        )
+        r = results[0]
+        assert isinstance(r, TextResult)
+        assert isinstance(r.node_id, int)
+        assert isinstance(r.score, float)
+        assert r.score > 0
+        assert isinstance(r.snippet, str)
+    finally:
+        try:
+            if idx_created:
+                client.drop_text_index(idx_name)
+        finally:
+            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+@_fts
+def test_text_search_empty_for_unindexed_label(client):
+    """text_search() returns [] when there are no text-indexed nodes to match.
+
+    Covers two distinct cases:
+    1. Label has never been inserted — nothing to search.
+    2. Label exists but nodes carry only numeric/boolean properties; the FTS
+       index contains no text, so no results can match any query term.
+    """
+    # Case 1: label that has never been inserted into the graph
+    results = client.text_search("NoSuchLabelForFts_" + uid(), "anything")
+    assert results == []
+
+    # Case 2: label exists but nodes have no text properties to index
+    label = f"FtsNumericOnly_{uid()}"
+    tag = uid()
+    client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, count: 42, active: true}})",
+        params={"tag": tag},
+    )
+    try:
+        results = client.text_search(label, "anything")
+        assert results == []
+    finally:
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+@_fts
+def test_text_search_fuzzy(client):
+    """text_search() with fuzzy=True matches approximate terms."""
+    label = f"FtsFuzzyTest_{uid()}"
+    tag = uid()
+    idx_name = f"idx_{label.lower()}"
+    client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, body: 'coordinode graph database'}})",
+        params={"tag": tag},
+    )
+    idx_created = False
+    try:
+        client.create_text_index(idx_name, label, "body")
+        idx_created = True
+        # "coordinode" with a one-character typo — Levenshtein-1 fuzzy must match.
+        results = client.text_search(label, "coordinod", fuzzy=True, limit=5)
+        assert isinstance(results, list)
+        assert results, "fuzzy text_search returned no results after index creation"
+    finally:
+        try:
+            if idx_created:
+                client.drop_text_index(idx_name)
+        finally:
+            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+@_fts
+def test_hybrid_text_vector_search_returns_results(client):
+    """hybrid_text_vector_search() returns HybridResult list with RRF scores."""
+    label = f"FtsHybridTest_{uid()}"
+    tag = uid()
+    idx_name = f"idx_{label.lower()}"
+    vec = [float(i) / 16 for i in range(16)]
+    # Same node-as-int pattern: RETURN n → Value::Int(node_id) in CoordiNode executor.
+    rows = client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, body: 'graph neural network embedding', embedding: $vec}}) RETURN n AS node_id",
+        params={"tag": tag, "vec": vec},
+    )
+    seed_id = rows[0]["node_id"]
+    idx_created = False
+    try:
+        client.create_text_index(idx_name, label, "body")
+        idx_created = True
+        results = client.hybrid_text_vector_search(
+            label,
+            "graph neural",
+            vec,
+            limit=5,
+        )
+        assert isinstance(results, list)
+        if not results:
+            pytest.xfail("hybrid_text_vector_search returned no results — vector index not available on this server")
+        assert any(r.node_id == seed_id for r in results), (
+            f"seeded node {seed_id} not found in hybrid_text_vector_search results: {results}"
+        )
+        r = results[0]
+        assert isinstance(r, HybridResult)
+        assert isinstance(r.node_id, int)
+        assert isinstance(r.score, float)
+        assert r.score > 0
+    finally:
+        try:
+            if idx_created:
+                client.drop_text_index(idx_name)
+        finally:
+            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -11,6 +12,8 @@ from typing import Any
 from langchain_community.graphs.graph_store import GraphStore
 
 from coordinode import CoordinodeClient
+
+logger = logging.getLogger(__name__)
 
 
 class CoordinodeGraph(GraphStore):
@@ -37,6 +40,11 @@ class CoordinodeGraph(GraphStore):
         addr: CoordiNode gRPC address, e.g. ``"localhost:7080"``.
         database: Database name (reserved for future multi-db support).
         timeout: Per-request gRPC deadline in seconds.
+        client: Optional pre-built client object (e.g. ``LocalClient`` from
+            ``coordinode-embedded``) to use instead of creating a gRPC connection.
+            Must expose a callable ``cypher(query, params)`` method.  When
+            provided, ``addr`` and ``timeout`` are ignored.  The caller is
+            responsible for closing the client.
     """
 
     def __init__(
@@ -45,8 +53,16 @@ class CoordinodeGraph(GraphStore):
         *,
         database: str | None = None,
         timeout: float = 30.0,
+        client: Any = None,
     ) -> None:
-        self._client = CoordinodeClient(addr, timeout=timeout)
+        # ``client`` allows passing a pre-built client (e.g. LocalClient from
+        # coordinode-embedded) instead of creating a gRPC connection.  The object
+        # must expose a ``.cypher(query, params)`` method and, optionally,
+        # ``.get_schema_text()`` and ``.vector_search()``.
+        if client is not None and not callable(getattr(client, "cypher", None)):
+            raise TypeError("client must provide a callable cypher(query, params) method")
+        self._owns_client = client is None
+        self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
         self._schema: str | None = None
         self._structured_schema: dict[str, Any] | None = None
 
@@ -67,26 +83,85 @@ class CoordinodeGraph(GraphStore):
         return self._structured_schema or {}
 
     def refresh_schema(self) -> None:
-        """Fetch current schema from CoordiNode."""
-        text = self._client.get_schema_text()
-        self._schema = text
-        structured = _parse_schema(text)
-        # Augment with relationship triples (start_label, type, end_label) via
-        # Cypher — get_schema_text() only lists edge types without direction.
-        # No LIMIT here intentionally: RETURN DISTINCT already collapses all edges
-        # to unique (src_label, rel_type, dst_label) combinations, so the result
-        # is bounded by the number of distinct relationship type triples, not by
-        # total edge count. Adding a LIMIT would silently drop relationship types
-        # that happen to appear beyond the limit, producing an incomplete schema.
+        """Fetch current schema from CoordiNode.
+
+        Prefers the structured ``get_labels()`` / ``get_edge_types()`` API
+        (available since ``coordinode`` 0.6.0) over the legacy text-parsing
+        path.  Injected clients (e.g. ``_EmbeddedAdapter`` in Colab notebooks)
+        that do not expose those methods fall back to ``_parse_schema()``.
+        Injected clients that only expose ``cypher()`` / ``close()`` (e.g.
+        a bare ``coordinode-embedded`` ``LocalClient``) return empty node/rel
+        property metadata, though relationships may still be inferred from
+        graph data via a Cypher query and populated in
+        ``structured["relationships"]``.
+        """
+        get_schema_text = getattr(self._client, "get_schema_text", None)
+        if callable(get_schema_text):
+            try:
+                self._schema = get_schema_text()
+            except Exception:
+                logger.debug(
+                    "get_schema_text() raised — continuing with empty schema text",
+                    exc_info=True,
+                )
+                self._schema = ""
+        else:
+            self._schema = ""
+
+        if callable(getattr(self._client, "get_labels", None)) and callable(
+            getattr(self._client, "get_edge_types", None)
+        ):
+            try:
+                node_props: dict[str, list[dict[str, str]]] = {}
+                for label in self._client.get_labels():
+                    node_props[label.name] = [
+                        {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
+                        for p in label.properties
+                    ]
+                rel_props: dict[str, list[dict[str, str]]] = {}
+                for et in self._client.get_edge_types():
+                    rel_props[et.name] = [
+                        {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
+                        for p in et.properties
+                    ]
+                if node_props or rel_props:
+                    structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
+                    # Backfill text schema for clients that expose get_labels()/get_edge_types()
+                    # but not get_schema_text().  Keeps graph.schema consistent with
+                    # graph.structured_schema so callers that read either view get the same data.
+                    if not self._schema:
+                        self._schema = _structured_to_text(node_props, rel_props)
+                else:
+                    # Both APIs returned empty (e.g. schema-free graph or stub adapter) —
+                    # fall back to text parsing so we don't lose what get_schema_text() returned.
+                    structured = _parse_schema(self._schema)
+            except Exception:
+                # Server may expose get_labels/get_edge_types but raise UNIMPLEMENTED
+                # or another gRPC error if the schema service is not available in the
+                # deployed version.  Fall back to text-based schema parsing to avoid
+                # surfacing an unhandled exception to the caller.
+                # We catch broad Exception (rather than grpc.RpcError specifically)
+                # because langchain-coordinode does not take a hard grpc dependency —
+                # clients may be non-gRPC (e.g. coordinode-embedded LocalClient).
+                # The exception is logged at DEBUG so it remains observable without
+                # cluttering production output.
+                logger.debug(
+                    "get_labels()/get_edge_types() failed — falling back to _parse_schema()",
+                    exc_info=True,
+                )
+                structured = _parse_schema(self._schema)
+        else:
+            structured = _parse_schema(self._schema)
+
+        # Augment with relationship triples (start_label, type, end_label).
+        # No LIMIT: RETURN DISTINCT bounds result by unique triples, not edge count.
+        # Note: can simplify to labels(a)[0] once subscript-on-function support lands in the
+        # published Docker image (tracked in G010 / GAPS.md).
         rows = self._client.cypher(
-            "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels"
+            "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels",
+            params={},
         )
         if rows:
-            # Deduplicate after _first_label() normalization: RETURN DISTINCT operates on
-            # raw label lists, but _first_label(min()) can collapse different multi-label
-            # combinations to the same (start, type, end) triple (e.g. ['Employee','Person']
-            # and ['Person','Employee'] both min-normalize to 'Employee'). Use a set to
-            # ensure each relationship triple appears at most once.
             triples: set[tuple[str, str, str]] = set()
             for row in rows:
                 start = _first_label(row.get("src_labels"))
@@ -140,29 +215,20 @@ class CoordinodeGraph(GraphStore):
         )
 
     def _create_edge(self, rel: Any) -> None:
-        """Upsert a relationship via MERGE (idempotent).
-
-        SET r += $props is skipped when props is empty because
-        SET r += {} is not supported by all server versions.
-        """
+        """Upsert a relationship via MERGE (idempotent)."""
         src_label = _cypher_ident(rel.source.type or "Entity")
         dst_label = _cypher_ident(rel.target.type or "Entity")
         rel_type = _cypher_ident(rel.type)
         props = dict(rel.properties or {})
-        if props:
-            self._client.cypher(
-                f"MATCH (src:{src_label} {{name: $src}}) "
-                f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                f"MERGE (src)-[r:{rel_type}]->(dst) SET r += $props",
-                params={"src": rel.source.id, "dst": rel.target.id, "props": props},
-            )
-        else:
-            self._client.cypher(
-                f"MATCH (src:{src_label} {{name: $src}}) "
-                f"MATCH (dst:{dst_label} {{name: $dst}}) "
-                f"MERGE (src)-[r:{rel_type}]->(dst)",
-                params={"src": rel.source.id, "dst": rel.target.id},
-            )
+        # SET r += $props is intentionally unconditional (even for empty dicts).
+        # CoordiNode ≥ v0.3.12 supports SET r += {} as a no-op, which lets us
+        # keep a single code path instead of branching on emptiness.
+        self._client.cypher(
+            f"MATCH (src:{src_label} {{name: $src}}) "
+            f"MATCH (dst:{dst_label} {{name: $dst}}) "
+            f"MERGE (src)-[r:{rel_type}]->(dst) SET r += $props",
+            params={"src": rel.source.id, "dst": rel.target.id, "props": props},
+        )
 
     def _link_document_to_entities(self, doc: Any) -> None:
         """Upsert a ``__Document__`` node and MERGE ``MENTIONS`` edges to all entities."""
@@ -223,6 +289,10 @@ class CoordinodeGraph(GraphStore):
         # used in a boolean context. len() == 0 works for all sequence types.
         if len(query_vector) == 0:
             return []
+        if not callable(getattr(self._client, "vector_search", None)):
+            # Injected clients (e.g. bare coordinode-embedded LocalClient) may
+            # not implement vector_search — return empty rather than AttributeError.
+            return []
         results = sorted(
             self._client.vector_search(
                 label=label,
@@ -237,8 +307,15 @@ class CoordinodeGraph(GraphStore):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
-        """Close the underlying gRPC connection."""
-        self._client.close()
+        """Close the underlying client connection.
+
+        Only closes the client if it was created internally (i.e. ``client`` was
+        not passed to ``__init__``).  Externally-injected clients are owned by
+        the caller and must be closed by them.  The underlying transport may be
+        gRPC or an embedded in-process client.
+        """
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> CoordinodeGraph:
         return self
@@ -247,7 +324,26 @@ class CoordinodeGraph(GraphStore):
         self.close()
 
 
-# ── Schema parser ─────────────────────────────────────────────────────────
+# ── Schema helpers ────────────────────────────────────────────────────────
+
+# Maps PropertyType protobuf enum integers to LangChain-compatible type strings.
+# Values mirror coordinode.v1.graph.PropertyType (schema.proto).
+# A static dict is intentional: importing generated proto modules here would create
+# a hard dependency on coordinode's internal proto layout inside langchain-coordinode.
+# This package already receives integer enum values via LabelInfo/EdgeTypeInfo from
+# the coordinode SDK, so a local lookup table is the correct decoupling boundary.
+_PROPERTY_TYPE_NAME: dict[int, str] = {
+    0: "UNSPECIFIED",
+    1: "INT64",
+    2: "FLOAT64",
+    3: "STRING",
+    4: "BOOL",
+    5: "BYTES",
+    6: "TIMESTAMP",
+    7: "VECTOR",
+    8: "LIST",
+    9: "MAP",
+}
 
 
 def _stable_document_id(source: Any) -> str:
@@ -276,9 +372,15 @@ def _stable_document_id(source: Any) -> str:
 def _first_label(labels: Any) -> str | None:
     """Extract a stable label from a labels() result (list of strings).
 
-    openCypher does not guarantee a stable ordering for labels(), so using
-    labels[0] would produce nondeterministic schema entries across calls.
-    We return the lexicographically smallest label as a deterministic rule.
+    In practice this application creates nodes with a single label, but the
+    underlying CoordiNode API accepts ``list[str]`` so multi-label nodes are
+    possible. ``min()`` gives a deterministic result regardless of how many
+    labels are present.
+
+    Note: once subscript-on-function support lands in the published Docker
+    image (tracked in G010 / GAPS.md), this Python helper could be replaced
+    by an inline Cypher expression — but keep the deterministic ``min()``
+    rule rather than index 0, since label ordering is not guaranteed stable.
     """
     if isinstance(labels, list) and labels:
         return str(min(labels))
@@ -293,6 +395,34 @@ def _cypher_ident(name: str) -> str:
     if re.match(r"^[A-Za-z_]\w*$", name, re.ASCII):
         return name
     return f"`{name.replace('`', '``')}`"
+
+
+def _structured_to_text(
+    node_props: dict[str, list[dict[str, str]]],
+    rel_props: dict[str, list[dict[str, str]]],
+) -> str:
+    """Render node_props/rel_props dicts as a schema text string.
+
+    Produces the same format that :func:`_parse_schema` consumes, so the two
+    functions are inverses.  Used to backfill ``self._schema`` when the server
+    exposes ``get_labels()`` / ``get_edge_types()`` but not ``get_schema_text()``.
+    """
+    lines: list[str] = ["Node labels:"]
+    for label, props in sorted(node_props.items()):
+        if props:
+            props_str = ", ".join(f"{p['property']}: {p['type']}" for p in props)
+            lines.append(f"  - {label} (properties: {props_str})")
+        else:
+            lines.append(f"  - {label}")
+    lines.append("")
+    lines.append("Edge types:")
+    for rel_type, props in sorted(rel_props.items()):
+        if props:
+            props_str = ", ".join(f"{p['property']}: {p['type']}" for p in props)
+            lines.append(f"  - {rel_type} (properties: {props_str})")
+        else:
+            lines.append(f"  - {rel_type}")
+    return "\n".join(lines)
 
 
 def _parse_schema(schema_text: str) -> dict[str, Any]:
@@ -346,7 +476,11 @@ def _parse_schema(schema_text: str) -> dict[str, Any]:
                 continue
             # Parse inline properties: "- Label (properties: prop1: TYPE, prop2: TYPE)"
             props: list[dict[str, str]] = []
-            m = re.search(r"\(properties:\s*([^)]+)\)", stripped)
+            # [^)\n]+ has no overlap with the surrounding literal chars, so backtracking
+            # is bounded at O(n).  Drop the earlier \s* — its overlap with [^)\n]
+            # (spaces match both) created O(n²) backtracking on malformed input.
+            # Leading/trailing whitespace is handled by prop_str.strip() below.
+            m = re.search(r"\(properties:([^)\n]+)\)", stripped)
             if m:
                 for prop_str in m.group(1).split(","):
                     kv = prop_str.strip().split(":", 1)

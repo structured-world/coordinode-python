@@ -28,6 +28,21 @@ logger = logging.getLogger(__name__)
 # be reliably distinguished from a "host:port" pair.
 _HOST_PORT_RE = re.compile(r"^(\[.+\]|[^:]+):(\d+)$")
 
+# Cypher identifier: must start with a letter or underscore, followed by
+# letters, digits, or underscores.  Validated before interpolating user-supplied
+# names/labels/properties into DDL strings to surface clear errors early.
+_CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_cypher_identifier(value: str, param_name: str) -> None:
+    """Raise :exc:`ValueError` if *value* is not a valid Cypher identifier."""
+    if not isinstance(value, str) or not _CYPHER_IDENT_RE.fullmatch(value):
+        raise ValueError(
+            f"{param_name} must be a valid Cypher identifier (letters, digits, underscores, "
+            f"starting with a letter or underscore); got {value!r}"
+        )
+
+
 # ── Low-level helpers ────────────────────────────────────────────────────────
 
 
@@ -85,6 +100,31 @@ class VectorResult:
         return f"VectorResult(distance={self.distance:.4f}, node={self.node})"
 
 
+class TextResult:
+    """A single full-text search result with BM25 score and optional snippet."""
+
+    def __init__(self, proto_result: Any) -> None:
+        self.node_id: int = proto_result.node_id
+        self.score: float = proto_result.score
+        # HTML snippet with <b>…</b> highlights. Empty when unavailable.
+        self.snippet: str = proto_result.snippet
+
+    def __repr__(self) -> str:
+        return f"TextResult(node_id={self.node_id}, score={self.score:.4f}, snippet={self.snippet!r})"
+
+
+class HybridResult:
+    """A single result from hybrid text + vector search (RRF-ranked)."""
+
+    def __init__(self, proto_result: Any) -> None:
+        self.node_id: int = proto_result.node_id
+        # Combined RRF score: text_weight/(60+rank_text) + vector_weight/(60+rank_vec).
+        self.score: float = proto_result.score
+
+    def __repr__(self) -> str:
+        return f"HybridResult(node_id={self.node_id}, score={self.score:.6f})"
+
+
 class PropertyDefinitionInfo:
     """A property definition from the schema (name, type, required, unique)."""
 
@@ -105,9 +145,11 @@ class LabelInfo:
         self.name: str = proto_label.name
         self.version: int = proto_label.version
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
+        # schema_mode: 0=unspecified, 1=strict, 2=validated, 3=flexible
+        self.schema_mode: int = getattr(proto_label, "schema_mode", 0)
 
     def __repr__(self) -> str:
-        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)})"
+        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
 
 
 class EdgeTypeInfo:
@@ -117,9 +159,10 @@ class EdgeTypeInfo:
         self.name: str = proto_edge_type.name
         self.version: int = proto_edge_type.version
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
+        self.schema_mode: int = getattr(proto_edge_type, "schema_mode", 0)
 
     def __repr__(self) -> str:
-        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)})"
+        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
 
 
 class TraverseResult:
@@ -131,6 +174,23 @@ class TraverseResult:
 
     def __repr__(self) -> str:
         return f"TraverseResult(nodes={len(self.nodes)}, edges={len(self.edges)})"
+
+
+class TextIndexInfo:
+    """Information about a full-text index returned by :meth:`create_text_index`."""
+
+    def __init__(self, row: dict[str, Any]) -> None:
+        self.name: str = str(row.get("index", ""))
+        self.label: str = str(row.get("label", ""))
+        self.properties: str = str(row.get("properties", ""))
+        self.default_language: str = str(row.get("default_language", ""))
+        self.documents_indexed: int = int(row.get("documents_indexed", 0))
+
+    def __repr__(self) -> str:
+        return (
+            f"TextIndexInfo(name={self.name!r}, label={self.label!r},"
+            f" properties={self.properties!r}, documents_indexed={self.documents_indexed})"
+        )
 
 
 # ── Async client ─────────────────────────────────────────────────────────────
@@ -191,6 +251,7 @@ class AsyncCoordinodeClient:
         self._channel = _make_async_channel(self._host, self._port, self._tls)
         self._cypher_stub = _cypher_stub(self._channel)
         self._vector_stub = _vector_stub(self._channel)
+        self._text_stub = _text_stub(self._channel)
         self._graph_stub = _graph_stub(self._channel)
         self._schema_stub = _schema_stub(self._channel)
         self._health_stub = _health_stub(self._channel)
@@ -365,6 +426,240 @@ class AsyncCoordinodeClient:
         resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
         return [EdgeTypeInfo(et) for et in resp.edge_types]
 
+    @staticmethod
+    def _validate_property_dict(p: Any, idx: int) -> tuple[str, str, bool, bool]:
+        """Validate a single property dict and return ``(name, type_str, required, unique)``."""
+        if not isinstance(p, dict):
+            raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
+        name = p.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
+        raw_type = p.get("type", "string")
+        if "type" in p and not isinstance(raw_type, str):
+            raise ValueError(f"Property {name!r} must use a string value for 'type'; got {raw_type!r}")
+        type_str = str(raw_type).strip().lower()
+        required = p.get("required", False)
+        unique = p.get("unique", False)
+        if not isinstance(required, bool) or not isinstance(unique, bool):
+            raise ValueError(
+                f"Property {name!r} must use boolean values for 'required' and 'unique'; got "
+                f"required={required!r}, unique={unique!r}"
+            )
+        return name, type_str, required, unique
+
+    @staticmethod
+    def _build_property_definitions(
+        properties: list[dict[str, Any]] | None,
+        property_type_cls: Any,
+        property_definition_cls: Any,
+    ) -> list[Any]:
+        """Convert property dicts to proto PropertyDefinition objects.
+
+        Shared by :meth:`create_label` and :meth:`create_edge_type` to avoid
+        duplicating the type-map and validation logic.
+        """
+        type_map = {
+            "int64": property_type_cls.PROPERTY_TYPE_INT64,
+            "float64": property_type_cls.PROPERTY_TYPE_FLOAT64,
+            "string": property_type_cls.PROPERTY_TYPE_STRING,
+            "bool": property_type_cls.PROPERTY_TYPE_BOOL,
+            "bytes": property_type_cls.PROPERTY_TYPE_BYTES,
+            "timestamp": property_type_cls.PROPERTY_TYPE_TIMESTAMP,
+            "vector": property_type_cls.PROPERTY_TYPE_VECTOR,
+            "list": property_type_cls.PROPERTY_TYPE_LIST,
+            "map": property_type_cls.PROPERTY_TYPE_MAP,
+        }
+        if properties is None:
+            return []
+        # list | tuple union syntax is valid in isinstance() for Python ≥3.10 (PEP 604).
+        # This project targets Python ≥3.11 (pyproject.toml: requires-python = ">=3.11").
+        if not isinstance(properties, list | tuple):
+            raise ValueError(f"'properties' must be a list of property dicts or None; got {type(properties).__name__}")
+        result = []
+        for idx, p in enumerate(properties):
+            name, type_str, required, unique = AsyncCoordinodeClient._validate_property_dict(p, idx)
+            if type_str not in type_map:
+                raise ValueError(
+                    f"Unknown property type {type_str!r} for property {name!r}. "
+                    f"Expected 'type' to be one of: {sorted(type_map)}"
+                )
+            result.append(
+                property_definition_cls(
+                    name=name,
+                    type=type_map[type_str],
+                    required=required,
+                    unique=unique,
+                )
+            )
+        return result
+
+    async def create_label(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
+    ) -> LabelInfo:
+        """Create a node label in the schema registry.
+
+        Args:
+            name: Label name (e.g. ``"Person"``).
+            properties: Optional list of property dicts with keys
+                ``name`` (str), ``type`` (str), ``required`` (bool),
+                ``unique`` (bool).  Type strings: ``"string"``,
+                ``"int64"``, ``"float64"``, ``"bool"``, ``"bytes"``,
+                ``"timestamp"``, ``"vector"``, ``"list"``, ``"map"``.
+            schema_mode: ``"strict"`` (default — reject undeclared props),
+                ``"validated"`` (allow extra props without interning),
+                ``"flexible"`` (no enforcement).
+        """
+        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
+            CreateLabelRequest,
+            PropertyDefinition,
+            PropertyType,
+            SchemaMode,
+        )
+
+        _mode_map = {
+            "strict": SchemaMode.SCHEMA_MODE_STRICT,
+            "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
+            "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
+        }
+        if not isinstance(schema_mode, str):
+            raise ValueError(f"schema_mode must be a str, got {type(schema_mode).__name__!r}")
+        schema_mode_normalized = schema_mode.strip().lower()
+        if schema_mode_normalized not in _mode_map:
+            raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+
+        proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
+        req = CreateLabelRequest(
+            name=name,
+            properties=proto_props,
+            schema_mode=_mode_map[schema_mode_normalized],
+        )
+        label = await self._schema_stub.CreateLabel(req, timeout=self._timeout)
+        return LabelInfo(label)
+
+    async def create_edge_type(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
+    ) -> EdgeTypeInfo:
+        """Create an edge type in the schema registry.
+
+        Args:
+            name: Edge type name (e.g. ``"KNOWS"``).
+            properties: Optional list of property dicts with keys
+                ``name`` (str), ``type`` (str), ``required`` (bool),
+                ``unique`` (bool). Same type strings as :meth:`create_label`.
+            schema_mode: ``"strict"`` (default — reject undeclared props),
+                ``"validated"`` (warn on extras), or ``"flexible"`` (allow any
+                prop without declaration).  Case-insensitive; leading/trailing
+                whitespace is stripped.
+        """
+        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
+            CreateEdgeTypeRequest,
+            PropertyDefinition,
+            PropertyType,
+            SchemaMode,
+        )
+
+        _mode_map = {
+            "strict": SchemaMode.SCHEMA_MODE_STRICT,
+            "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
+            "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
+        }
+        if not isinstance(schema_mode, str):
+            raise ValueError(f"schema_mode must be a str, got {type(schema_mode).__name__!r}")
+        schema_mode_normalized = schema_mode.strip().lower()
+        if schema_mode_normalized not in _mode_map:
+            raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+
+        proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
+        req = CreateEdgeTypeRequest(
+            name=name,
+            properties=proto_props,
+            schema_mode=_mode_map[schema_mode_normalized],
+        )
+        et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
+        return EdgeTypeInfo(et)
+
+    async def create_text_index(
+        self,
+        name: str,
+        label: str,
+        properties: str | list[str],
+        *,
+        language: str = "",
+    ) -> TextIndexInfo:
+        """Create a full-text (BM25) index on one or more node properties.
+
+        Args:
+            name: Unique index name (e.g. ``"article_body"``).  Must be a
+                simple Cypher identifier: letters, digits, and underscores only,
+                starting with a letter or underscore.  Names with dashes or
+                spaces are not supported by this method; use raw :meth:`cypher`
+                with backtick-escaped identifiers instead.
+            label: Node label to index (e.g. ``"Article"``).  Same identifier
+                restrictions as *name* apply.
+            properties: Property name or list of property names to index
+                (e.g. ``"body"`` or ``["title", "body"]``).  Same identifier
+                restrictions apply.
+            language: Default stemming/tokenization language (e.g. ``"english"``,
+                ``"russian"``).  Empty string uses the server default
+                (``"english"``).  Same identifier restrictions apply.
+
+        Returns:
+            :class:`TextIndexInfo` with index metadata and document count.
+
+        Example::
+
+            info = await client.create_text_index("article_body", "Article", "body")
+            # then: results = await client.text_search("Article", "machine learning")
+        """
+        _validate_cypher_identifier(name, "name")
+        _validate_cypher_identifier(label, "label")
+        if isinstance(properties, str):
+            prop_list = [properties]
+        elif isinstance(properties, list | tuple):
+            prop_list = list(properties)
+        else:
+            raise ValueError("'properties' must be a property name (str) or a list of property names")
+        if not prop_list:
+            raise ValueError("'properties' must contain at least one property name")
+        for prop in prop_list:
+            _validate_cypher_identifier(prop, "property")
+        if language:
+            _validate_cypher_identifier(language, "language")
+        props_expr = ", ".join(prop_list)
+        lang_clause = f" DEFAULT LANGUAGE {language}" if language else ""
+        cypher = f"CREATE TEXT INDEX {name} ON :{label}({props_expr}){lang_clause}"
+        rows = await self.cypher(cypher)
+        if rows:
+            return TextIndexInfo(rows[0])
+        effective_language = language or "english"
+        return TextIndexInfo(
+            {"index": name, "label": label, "properties": ", ".join(prop_list), "default_language": effective_language}
+        )
+
+    async def drop_text_index(self, name: str) -> None:
+        """Drop a full-text index by name.
+
+        Args:
+            name: Index name previously passed to :meth:`create_text_index`.
+                Must be a simple Cypher identifier (letters, digits, underscores).
+                Use raw :meth:`cypher` with backtick-escaped identifiers for names
+                that contain dashes or spaces.
+
+        Example::
+
+            await client.drop_text_index("article_body")
+        """
+        _validate_cypher_identifier(name, "name")
+        await self.cypher(f"DROP TEXT INDEX {name}")
+
     async def traverse(
         self,
         start_node_id: int,
@@ -416,6 +711,104 @@ class AsyncCoordinodeClient:
         )
         resp = await self._graph_stub.Traverse(req, timeout=self._timeout)
         return TraverseResult(resp)
+
+    async def text_search(
+        self,
+        label: str,
+        query: str,
+        *,
+        limit: int = 10,
+        fuzzy: bool = False,
+        language: str = "",
+    ) -> list[TextResult]:
+        """Run a full-text BM25 search over all indexed text properties for *label*.
+
+        Args:
+            label: Node label to search (e.g. ``"Article"``).
+            query: Full-text query string. Supports boolean operators (``AND``,
+                ``OR``, ``NOT``), phrase search (``"exact phrase"``), prefix
+                wildcards (``term*``), and per-term boosting (``term^N``).
+            limit: Maximum results to return (default 10). The server may apply
+                its own upper bound; pass a reasonable value (e.g. ≤ 1000).
+            fuzzy: If ``True``, apply Levenshtein-1 fuzzy matching to individual
+                terms. Increases recall at the cost of precision.
+            language: Tokenization/stemming language (e.g. ``"english"``,
+                ``"russian"``). Empty string uses the index's default language.
+
+        Returns:
+            List of :class:`TextResult` ordered by BM25 score descending.
+            Returns ``[]`` if no text index exists for *label*.
+
+        Note:
+            Text indexing is **not** automatic.  Before calling this method,
+            create a full-text index with the Cypher DDL statement::
+
+                CREATE TEXT INDEX my_index ON :Label(property)
+
+            or via :meth:`create_text_index`.  Nodes written before the index
+            was created are indexed immediately at DDL execution time.
+        """
+        from coordinode._proto.coordinode.v1.query.text_pb2 import TextSearchRequest  # type: ignore[import]
+
+        req = TextSearchRequest(label=label, query=query, limit=limit, fuzzy=fuzzy, language=language)
+        resp = await self._text_stub.TextSearch(req, timeout=self._timeout)
+        return [TextResult(r) for r in resp.results]
+
+    async def hybrid_text_vector_search(
+        self,
+        label: str,
+        text_query: str,
+        vector: Sequence[float],
+        *,
+        limit: int = 10,
+        text_weight: float = 0.5,
+        vector_weight: float = 0.5,
+        vector_property: str = "embedding",
+    ) -> list[HybridResult]:
+        """Fuse BM25 text search and cosine vector search using Reciprocal Rank Fusion (RRF).
+
+        Runs text and vector searches independently, then combines their ranked
+        lists::
+
+            rrf_score(node) = text_weight / (60 + rank_text)
+                            + vector_weight / (60 + rank_vec)
+
+        Args:
+            label: Node label to search (e.g. ``"Article"``).
+            text_query: Full-text query string (same syntax as :meth:`text_search`).
+            vector: Query embedding vector. Must match the dimensionality stored
+                in *vector_property*.
+            limit: Maximum fused results to return (default 10). The server may
+                apply its own upper bound; pass a reasonable value (e.g. ≤ 1000).
+            text_weight: Weight for the BM25 component (default 0.5).
+            vector_weight: Weight for the cosine component (default 0.5).
+            vector_property: Node property containing the embedding (default
+                ``"embedding"``).
+
+        Returns:
+            List of :class:`HybridResult` ordered by RRF score descending.
+
+        Note:
+            A full-text index covering *label* **must exist** before calling this
+            method — create one with :meth:`create_text_index` or a
+            ``CREATE TEXT INDEX`` Cypher statement.  Calling this method on a
+            label without a text index returns an empty list.
+        """
+        from coordinode._proto.coordinode.v1.query.text_pb2 import (  # type: ignore[import]
+            HybridTextVectorSearchRequest,
+        )
+
+        req = HybridTextVectorSearchRequest(
+            label=label,
+            text_query=text_query,
+            vector=[float(v) for v in vector],
+            limit=limit,
+            text_weight=text_weight,
+            vector_weight=vector_weight,
+            vector_property=vector_property,
+        )
+        resp = await self._text_stub.HybridTextVectorSearch(req, timeout=self._timeout)
+        return [HybridResult(r) for r in resp.results]
 
     async def health(self) -> bool:
         from coordinode._proto.coordinode.v1.health.health_pb2 import (  # type: ignore[import]
@@ -544,6 +937,41 @@ class CoordinodeClient:
         """Return all edge types defined in the schema."""
         return self._run(self._async.get_edge_types())
 
+    def create_label(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
+    ) -> LabelInfo:
+        """Create a node label in the schema registry."""
+        return self._run(self._async.create_label(name, properties, schema_mode=schema_mode))
+
+    def create_edge_type(
+        self,
+        name: str,
+        properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
+    ) -> EdgeTypeInfo:
+        """Create an edge type in the schema registry."""
+        return self._run(self._async.create_edge_type(name, properties, schema_mode=schema_mode))
+
+    def create_text_index(
+        self,
+        name: str,
+        label: str,
+        properties: str | list[str],
+        *,
+        language: str = "",
+    ) -> TextIndexInfo:
+        """Create a full-text (BM25) index on one or more node properties."""
+        return self._run(self._async.create_text_index(name, label, properties, language=language))
+
+    def drop_text_index(self, name: str) -> None:
+        """Drop a full-text index by name."""
+        return self._run(self._async.drop_text_index(name))
+
     def traverse(
         self,
         start_node_id: int,
@@ -553,6 +981,42 @@ class CoordinodeClient:
     ) -> TraverseResult:
         """Traverse the graph from *start_node_id* following *edge_type* edges."""
         return self._run(self._async.traverse(start_node_id, edge_type, direction, max_depth))
+
+    def text_search(
+        self,
+        label: str,
+        query: str,
+        *,
+        limit: int = 10,
+        fuzzy: bool = False,
+        language: str = "",
+    ) -> list[TextResult]:
+        """Run a full-text BM25 search over all indexed text properties for *label*."""
+        return self._run(self._async.text_search(label, query, limit=limit, fuzzy=fuzzy, language=language))
+
+    def hybrid_text_vector_search(
+        self,
+        label: str,
+        text_query: str,
+        vector: Sequence[float],
+        *,
+        limit: int = 10,
+        text_weight: float = 0.5,
+        vector_weight: float = 0.5,
+        vector_property: str = "embedding",
+    ) -> list[HybridResult]:
+        """Fuse BM25 text search and cosine vector search using RRF ranking."""
+        return self._run(
+            self._async.hybrid_text_vector_search(
+                label,
+                text_query,
+                vector,
+                limit=limit,
+                text_weight=text_weight,
+                vector_weight=vector_weight,
+                vector_property=vector_property,
+            )
+        )
 
     def health(self) -> bool:
         return self._run(self._async.health())
@@ -571,6 +1035,12 @@ def _vector_stub(channel: Any) -> Any:
     from coordinode._proto.coordinode.v1.query.vector_pb2_grpc import VectorServiceStub  # type: ignore[import]
 
     return VectorServiceStub(channel)
+
+
+def _text_stub(channel: Any) -> Any:
+    from coordinode._proto.coordinode.v1.query.text_pb2_grpc import TextServiceStub  # type: ignore[import]
+
+    return TextServiceStub(channel)
 
 
 def _graph_stub(channel: Any) -> Any:

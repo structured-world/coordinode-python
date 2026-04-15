@@ -58,6 +58,11 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     Args:
         addr: CoordiNode gRPC address, e.g. ``"localhost:7080"``.
         timeout: Per-request gRPC deadline in seconds.
+        client: Optional pre-built client object (e.g. ``LocalClient`` from
+            ``coordinode-embedded``) to use instead of creating a gRPC connection.
+            Must expose a callable ``cypher(query, params)`` method.  When
+            provided, ``addr`` and ``timeout`` are ignored.  The caller is
+            responsible for closing the client.
     """
 
     supports_structured_queries: bool = True
@@ -68,8 +73,19 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         addr: str = "localhost:7080",
         *,
         timeout: float = 30.0,
+        client: Any = None,
     ) -> None:
-        self._client = CoordinodeClient(addr, timeout=timeout)
+        # ``client`` allows passing a pre-built client (e.g. LocalClient from
+        # coordinode-embedded) instead of creating a gRPC connection.
+        if client is not None and not callable(getattr(client, "cypher", None)):
+            raise TypeError("client must provide a callable cypher() method")
+        self._owns_client = client is None
+        self._client = client if client is not None else CoordinodeClient(addr, timeout=timeout)
+        # Advertise vector capability based on what the actual client exposes.
+        # Injected clients (e.g. bare coordinode-embedded LocalClient) may not
+        # implement vector_search(); claiming True unconditionally would mislead
+        # LlamaIndex into passing vector queries that silently return no results.
+        self.supports_vector_queries = callable(getattr(self._client, "vector_search", None))
 
     # ── Node operations ───────────────────────────────────────────────────
 
@@ -224,21 +240,17 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         for rel in relations:
             props = rel.properties or {}
             label = _cypher_ident(rel.label)
-            if props:
-                cypher = (
-                    f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
-                    f"MERGE (src)-[r:{label}]->(dst) SET r += $props"
-                )
-                self._client.cypher(
-                    cypher,
-                    params={"src_id": rel.source_id, "dst_id": rel.target_id, "props": props},
-                )
-            else:
-                cypher = f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) MERGE (src)-[r:{label}]->(dst)"
-                self._client.cypher(
-                    cypher,
-                    params={"src_id": rel.source_id, "dst_id": rel.target_id},
-                )
+            # SET r += $props is intentionally unconditional (even for empty dicts).
+            # CoordiNode ≥ v0.3.12 supports SET r += {} as a no-op, which lets us
+            # keep a single code path instead of branching on emptiness.
+            cypher = (
+                f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
+                f"MERGE (src)-[r:{label}]->(dst) SET r += $props"
+            )
+            self._client.cypher(
+                cypher,
+                params={"src_id": rel.source_id, "dst_id": rel.target_id, "props": props},
+            )
 
     def delete(
         self,
@@ -269,6 +281,12 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         if query.query_embedding is None:
             return [], []
 
+        if not self.supports_vector_queries:
+            # Injected clients (e.g. bare coordinode-embedded LocalClient) may
+            # not implement vector_search — return empty rather than AttributeError.
+            # supports_vector_queries is set in __init__ via callable(getattr(...)).
+            return [], []
+
         results = self._client.vector_search(
             label=query.filters.filters[0].value if query.filters else "Chunk",
             property="embedding",
@@ -293,14 +311,30 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def get_schema(self, refresh: bool = False) -> str:
-        """Return schema as text."""
-        return self._client.get_schema_text()
+        """Return schema as text.
+
+        Returns an empty string if the injected client does not expose
+        ``get_schema_text()`` (e.g. a bare ``coordinode-embedded``
+        ``LocalClient`` that only implements ``cypher()`` / ``close()``).
+        """
+        get_schema_text = getattr(self._client, "get_schema_text", None)
+        if callable(get_schema_text):
+            return get_schema_text()
+        return ""
 
     def get_schema_str(self, refresh: bool = False) -> str:
         return self.get_schema(refresh=refresh)
 
     def close(self) -> None:
-        self._client.close()
+        """Close the underlying client connection.
+
+        Only closes the client if it was created internally (i.e. ``client`` was
+        not passed to ``__init__``).  Externally-injected clients are owned by
+        the caller and must be closed by them.  The underlying transport may be
+        gRPC or an embedded in-process client.
+        """
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> CoordinodePropertyGraphStore:
         return self

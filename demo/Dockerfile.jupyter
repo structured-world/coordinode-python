@@ -1,0 +1,32 @@
+FROM jupyter/scipy-notebook:python-3.11.6
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends gcc git && rm -rf /var/lib/apt/lists/*
+
+# Copy and chmod install script while still root
+COPY install-sdk.sh /tmp/install-sdk.sh
+RUN chmod +x /tmp/install-sdk.sh
+
+USER ${NB_UID}
+
+# Core graph + LLM orchestration stack
+RUN pip install --no-cache-dir \
+    # build tools for SDK editable installs (hatch-vcs reads git tags for versioning)
+    hatchling \
+    hatch-vcs \
+    nest_asyncio \
+    # LlamaIndex core + graph store protocol
+    llama-index-core \
+    llama-index-llms-openai \
+    llama-index-embeddings-openai \
+    # LangChain + LangGraph
+    langchain \
+    langchain-openai \
+    langchain-community \
+    langgraph \
+    # coordinode SDK packages (installed from mounted /sdk)
+    grpcio \
+    grpcio-tools \
+    protobuf
+
+WORKDIR /home/jovyan/work
