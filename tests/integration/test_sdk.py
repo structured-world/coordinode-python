@@ -573,9 +573,10 @@ def test_vector_search_returns_results(client):
 # They are wrapped with @_fts so the suite stays green against older servers
 # (UNIMPLEMENTED gRPC status → xfail); against >=0.3.8 servers they are real passes.
 #
-# FTS indexing is NOT automatic.  Each test that expects non-empty results must
-# first create a text index with CREATE TEXT INDEX (or client.create_text_index())
-# and drop it in the finally block.  Tests that deliberately cover the "no-index"
+# These tests intentionally exercise the explicit text-index lifecycle APIs.
+# Schema-free graphs may still be auto-indexed by the server, but the tests
+# below create/drop an index explicitly so create_text_index()/drop_text_index()
+# are covered deterministically.  Tests that deliberately cover the "no-index"
 # case (test_text_search_empty_for_unindexed_label) must NOT create an index.
 def _fts(fn):
     """Wrap an FTS test to handle servers without TextService.

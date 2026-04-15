@@ -573,13 +573,19 @@ class AsyncCoordinodeClient:
         """Create a full-text (BM25) index on one or more node properties.
 
         Args:
-            name: Unique index name (e.g. ``"article_body"``).
-            label: Node label to index (e.g. ``"Article"``).
+            name: Unique index name (e.g. ``"article_body"``).  Must be a
+                simple Cypher identifier: letters, digits, and underscores only,
+                starting with a letter or underscore.  Names with dashes or
+                spaces are not supported by this method; use raw :meth:`cypher`
+                with backtick-escaped identifiers instead.
+            label: Node label to index (e.g. ``"Article"``).  Same identifier
+                restrictions as *name* apply.
             properties: Property name or list of property names to index
-                (e.g. ``"body"`` or ``["title", "body"]``).
+                (e.g. ``"body"`` or ``["title", "body"]``).  Same identifier
+                restrictions apply.
             language: Default stemming/tokenization language (e.g. ``"english"``,
                 ``"russian"``).  Empty string uses the server default
-                (``"english"``).
+                (``"english"``).  Same identifier restrictions apply.
 
         Returns:
             :class:`TextIndexInfo` with index metadata and document count.
@@ -614,6 +620,9 @@ class AsyncCoordinodeClient:
 
         Args:
             name: Index name previously passed to :meth:`create_text_index`.
+                Must be a simple Cypher identifier (letters, digits, underscores).
+                Use raw :meth:`cypher` with backtick-escaped identifiers for names
+                that contain dashes or spaces.
 
         Example::
 
