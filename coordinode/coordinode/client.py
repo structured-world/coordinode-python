@@ -623,8 +623,10 @@ class AsyncCoordinodeClient:
         _validate_cypher_identifier(label, "label")
         if isinstance(properties, str):
             prop_list = [properties]
-        else:
+        elif isinstance(properties, list | tuple):
             prop_list = list(properties)
+        else:
+            raise ValueError("'properties' must be a property name (str) or a list of property names")
         if not prop_list:
             raise ValueError("'properties' must contain at least one property name")
         for prop in prop_list:
@@ -785,6 +787,12 @@ class AsyncCoordinodeClient:
 
         Returns:
             List of :class:`HybridResult` ordered by RRF score descending.
+
+        Note:
+            A full-text index covering *label* **must exist** before calling this
+            method — create one with :meth:`create_text_index` or a
+            ``CREATE TEXT INDEX`` Cypher statement.  Calling this method on a
+            label without a text index returns an empty list.
         """
         from coordinode._proto.coordinode.v1.query.text_pb2 import (  # type: ignore[import]
             HybridTextVectorSearchRequest,
