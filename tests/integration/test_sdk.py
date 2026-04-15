@@ -542,10 +542,9 @@ def test_create_edge_type_appears_in_get_edge_types(client):
         assert name in names, f"{name} not in {names}"
     finally:
         client.cypher(
-            "MATCH (n:VisibleEtNode {tag: $tag})-[r]-() DELETE r",
+            "MATCH (n:VisibleEtNode {tag: $tag}) DETACH DELETE n",
             params={"tag": tag},
         )
-        client.cypher("MATCH (n:VisibleEtNode {tag: $tag}) DELETE n", params={"tag": tag})
 
 
 # ── Vector search ─────────────────────────────────────────────────────────────

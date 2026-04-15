@@ -595,8 +595,12 @@ class AsyncCoordinodeClient:
             prop_list = [properties]
         else:
             prop_list = list(properties)
+        if not prop_list:
+            raise ValueError("'properties' must contain at least one property name")
         for prop in prop_list:
             _validate_cypher_identifier(prop, "property")
+        if language:
+            _validate_cypher_identifier(language, "language")
         props_expr = ", ".join(prop_list)
         lang_clause = f" DEFAULT LANGUAGE {language}" if language else ""
         cypher = f"CREATE TEXT INDEX {name} ON :{label}({props_expr}){lang_clause}"
