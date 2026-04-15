@@ -617,9 +617,11 @@ def test_text_search_returns_results(client):
     seed_id = rows[0]["node_id"]
     # Text index must be created explicitly; nodes written before index creation
     # are indexed immediately at DDL time.
-    idx_info = client.create_text_index(idx_name, label, "body")
-    assert isinstance(idx_info, TextIndexInfo)
+    idx_created = False
     try:
+        idx_info = client.create_text_index(idx_name, label, "body")
+        idx_created = True
+        assert isinstance(idx_info, TextIndexInfo)
         results = client.text_search(label, "machine learning", limit=5)
         assert isinstance(results, list)
         assert results, "text_search returned no results after index creation"
@@ -633,8 +635,11 @@ def test_text_search_returns_results(client):
         assert r.score > 0
         assert isinstance(r.snippet, str)
     finally:
-        client.drop_text_index(idx_name)
-        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+        try:
+            if idx_created:
+                client.drop_text_index(idx_name)
+        finally:
+            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 @_fts
@@ -674,15 +679,20 @@ def test_text_search_fuzzy(client):
         f"CREATE (n:{label} {{tag: $tag, body: 'coordinode graph database'}})",
         params={"tag": tag},
     )
-    client.create_text_index(idx_name, label, "body")
+    idx_created = False
     try:
+        client.create_text_index(idx_name, label, "body")
+        idx_created = True
         # "coordinode" with a one-character typo — Levenshtein-1 fuzzy must match.
         results = client.text_search(label, "coordinod", fuzzy=True, limit=5)
         assert isinstance(results, list)
         assert results, "fuzzy text_search returned no results after index creation"
     finally:
-        client.drop_text_index(idx_name)
-        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+        try:
+            if idx_created:
+                client.drop_text_index(idx_name)
+        finally:
+            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 @_fts
@@ -698,8 +708,10 @@ def test_hybrid_text_vector_search_returns_results(client):
         params={"tag": tag, "vec": vec},
     )
     seed_id = rows[0]["node_id"]
-    client.create_text_index(idx_name, label, "body")
+    idx_created = False
     try:
+        client.create_text_index(idx_name, label, "body")
+        idx_created = True
         results = client.hybrid_text_vector_search(
             label,
             "graph neural",
@@ -718,5 +730,8 @@ def test_hybrid_text_vector_search_returns_results(client):
         assert isinstance(r.score, float)
         assert r.score > 0
     finally:
-        client.drop_text_index(idx_name)
-        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
+        try:
+            if idx_created:
+                client.drop_text_index(idx_name)
+        finally:
+            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
