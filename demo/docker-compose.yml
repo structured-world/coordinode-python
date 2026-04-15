@@ -1,7 +1,7 @@
 services:
   coordinode:
     # Keep version in sync with root docker-compose.yml
-    image: ghcr.io/structured-world/coordinode:0.3.15
+    image: ghcr.io/structured-world/coordinode:0.3.17
     container_name: demo-coordinode
     ports:
       - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only
