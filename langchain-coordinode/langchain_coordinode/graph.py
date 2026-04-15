@@ -215,6 +215,9 @@ class CoordinodeGraph(GraphStore):
         dst_label = _cypher_ident(rel.target.type or "Entity")
         rel_type = _cypher_ident(rel.type)
         props = dict(rel.properties or {})
+        # SET r += $props is intentionally unconditional (even for empty dicts).
+        # CoordiNode ≥ v0.3.12 supports SET r += {} as a no-op, which lets us
+        # keep a single code path instead of branching on emptiness.
         self._client.cypher(
             f"MATCH (src:{src_label} {{name: $src}}) "
             f"MATCH (dst:{dst_label} {{name: $dst}}) "

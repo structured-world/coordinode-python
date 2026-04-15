@@ -240,6 +240,9 @@ class CoordinodePropertyGraphStore(PropertyGraphStore):
         for rel in relations:
             props = rel.properties or {}
             label = _cypher_ident(rel.label)
+            # SET r += $props is intentionally unconditional (even for empty dicts).
+            # CoordiNode ≥ v0.3.12 supports SET r += {} as a no-op, which lets us
+            # keep a single code path instead of branching on emptiness.
             cypher = (
                 f"MATCH (src {{id: $src_id}}) MATCH (dst {{id: $dst_id}}) "
                 f"MERGE (src)-[r:{label}]->(dst) SET r += $props"

@@ -36,7 +36,7 @@ _CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def _validate_cypher_identifier(value: str, param_name: str) -> None:
     """Raise :exc:`ValueError` if *value* is not a valid Cypher identifier."""
-    if not isinstance(value, str) or not _CYPHER_IDENT_RE.match(value):
+    if not isinstance(value, str) or not _CYPHER_IDENT_RE.fullmatch(value):
         raise ValueError(
             f"{param_name} must be a valid Cypher identifier (letters, digits, underscores, "
             f"starting with a letter or underscore); got {value!r}"
