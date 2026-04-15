@@ -30,6 +30,7 @@ Open: http://localhost:38888 (token: `demo`)
 | Port | Service |
 |------|---------|
 | 37080 | CoordiNode gRPC |
+| 37084 | CoordiNode metrics/health (`/metrics`, `/health`) |
 | 38888 | Jupyter Lab |
 
 ## With OpenAI (optional)

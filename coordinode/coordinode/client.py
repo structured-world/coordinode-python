@@ -28,6 +28,21 @@ logger = logging.getLogger(__name__)
 # be reliably distinguished from a "host:port" pair.
 _HOST_PORT_RE = re.compile(r"^(\[.+\]|[^:]+):(\d+)$")
 
+# Cypher identifier: must start with a letter or underscore, followed by
+# letters, digits, or underscores.  Validated before interpolating user-supplied
+# names/labels/properties into DDL strings to surface clear errors early.
+_CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_cypher_identifier(value: str, param_name: str) -> None:
+    """Raise :exc:`ValueError` if *value* is not a valid Cypher identifier."""
+    if not isinstance(value, str) or not _CYPHER_IDENT_RE.match(value):
+        raise ValueError(
+            f"{param_name} must be a valid Cypher identifier (letters, digits, underscores, "
+            f"starting with a letter or underscore); got {value!r}"
+        )
+
+
 # ── Low-level helpers ────────────────────────────────────────────────────────
 
 
@@ -412,6 +427,27 @@ class AsyncCoordinodeClient:
         return [EdgeTypeInfo(et) for et in resp.edge_types]
 
     @staticmethod
+    def _validate_property_dict(p: Any, idx: int) -> tuple[str, str, bool, bool]:
+        """Validate a single property dict and return ``(name, type_str, required, unique)``."""
+        if not isinstance(p, dict):
+            raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
+        name = p.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
+        raw_type = p.get("type", "string")
+        if "type" in p and not isinstance(raw_type, str):
+            raise ValueError(f"Property {name!r} must use a string value for 'type'; got {raw_type!r}")
+        type_str = str(raw_type).strip().lower()
+        required = p.get("required", False)
+        unique = p.get("unique", False)
+        if not isinstance(required, bool) or not isinstance(unique, bool):
+            raise ValueError(
+                f"Property {name!r} must use boolean values for 'required' and 'unique'; got "
+                f"required={required!r}, unique={unique!r}"
+            )
+        return name, type_str, required, unique
+
+    @staticmethod
     def _build_property_definitions(
         properties: list[dict[str, Any]] | None,
         property_type_cls: Any,
@@ -439,26 +475,11 @@ class AsyncCoordinodeClient:
             raise ValueError(f"'properties' must be a list of property dicts or None; got {type(properties).__name__}")
         result = []
         for idx, p in enumerate(properties):
-            if not isinstance(p, dict):
-                raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
-            name = p.get("name")
-            if not isinstance(name, str) or not name:
-                raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
-            raw_type = p.get("type", "string")
-            if "type" in p and not isinstance(raw_type, str):
-                raise ValueError(f"Property {name!r} must use a string value for 'type'; got {raw_type!r}")
-            type_str = str(raw_type).strip().lower()
+            name, type_str, required, unique = AsyncCoordinodeClient._validate_property_dict(p, idx)
             if type_str not in type_map:
                 raise ValueError(
                     f"Unknown property type {type_str!r} for property {name!r}. "
                     f"Expected 'type' to be one of: {sorted(type_map)}"
-                )
-            required = p.get("required", False)
-            unique = p.get("unique", False)
-            if not isinstance(required, bool) or not isinstance(unique, bool):
-                raise ValueError(
-                    f"Property {name!r} must use boolean values for 'required' and 'unique'; got "
-                    f"required={required!r}, unique={unique!r}"
                 )
             result.append(
                 property_definition_cls(
@@ -568,10 +589,14 @@ class AsyncCoordinodeClient:
             info = await client.create_text_index("article_body", "Article", "body")
             # then: results = await client.text_search("Article", "machine learning")
         """
+        _validate_cypher_identifier(name, "name")
+        _validate_cypher_identifier(label, "label")
         if isinstance(properties, str):
             prop_list = [properties]
         else:
             prop_list = list(properties)
+        for prop in prop_list:
+            _validate_cypher_identifier(prop, "property")
         props_expr = ", ".join(prop_list)
         lang_clause = f" DEFAULT LANGUAGE {language}" if language else ""
         cypher = f"CREATE TEXT INDEX {name} ON :{label}({props_expr}){lang_clause}"
@@ -590,6 +615,7 @@ class AsyncCoordinodeClient:
 
             await client.drop_text_index("article_body")
         """
+        _validate_cypher_identifier(name, "name")
         await self.cypher(f"DROP TEXT INDEX {name}")
 
     async def traverse(
