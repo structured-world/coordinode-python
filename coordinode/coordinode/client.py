@@ -471,6 +471,8 @@ class AsyncCoordinodeClient:
         }
         if properties is None:
             return []
+        # list | tuple union syntax is valid in isinstance() for Python ≥3.10 (PEP 604).
+        # This project targets Python ≥3.11 (pyproject.toml: requires-python = ">=3.11").
         if not isinstance(properties, list | tuple):
             raise ValueError(f"'properties' must be a list of property dicts or None; got {type(properties).__name__}")
         result = []
@@ -542,6 +544,8 @@ class AsyncCoordinodeClient:
         self,
         name: str,
         properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry.
 
@@ -550,15 +554,35 @@ class AsyncCoordinodeClient:
             properties: Optional list of property dicts with keys
                 ``name`` (str), ``type`` (str), ``required`` (bool),
                 ``unique`` (bool). Same type strings as :meth:`create_label`.
+            schema_mode: ``"strict"`` (default — reject undeclared props),
+                ``"validated"`` (warn on extras), or ``"flexible"`` (allow any
+                prop without declaration).  Case-insensitive; leading/trailing
+                whitespace is stripped.
         """
         from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
             CreateEdgeTypeRequest,
             PropertyDefinition,
             PropertyType,
+            SchemaMode,
         )
 
+        _mode_map = {
+            "strict": SchemaMode.SCHEMA_MODE_STRICT,
+            "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
+            "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
+        }
+        if not isinstance(schema_mode, str):
+            raise ValueError(f"schema_mode must be a str, got {type(schema_mode).__name__!r}")
+        schema_mode_normalized = schema_mode.strip().lower()
+        if schema_mode_normalized not in _mode_map:
+            raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
+
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
-        req = CreateEdgeTypeRequest(name=name, properties=proto_props)
+        req = CreateEdgeTypeRequest(
+            name=name,
+            properties=proto_props,
+            schema_mode=_mode_map[schema_mode_normalized],
+        )
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)
 
@@ -613,8 +637,9 @@ class AsyncCoordinodeClient:
         rows = await self.cypher(cypher)
         if rows:
             return TextIndexInfo(rows[0])
+        effective_language = language or "english"
         return TextIndexInfo(
-            {"index": name, "label": label, "properties": ", ".join(prop_list), "default_language": language}
+            {"index": name, "label": label, "properties": ", ".join(prop_list), "default_language": effective_language}
         )
 
     async def drop_text_index(self, name: str) -> None:
@@ -918,9 +943,11 @@ class CoordinodeClient:
         self,
         name: str,
         properties: list[dict[str, Any]] | None = None,
+        *,
+        schema_mode: str = "strict",
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry."""
-        return self._run(self._async.create_edge_type(name, properties))
+        return self._run(self._async.create_edge_type(name, properties, schema_mode=schema_mode))
 
     def create_text_index(
         self,
