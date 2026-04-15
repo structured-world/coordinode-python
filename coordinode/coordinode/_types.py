@@ -33,11 +33,13 @@ def to_property_value(py_val: PyValue) -> Any:
         pv.string_value = py_val
     elif isinstance(py_val, bytes):
         pv.bytes_value = py_val
-    elif isinstance(py_val, (list, tuple)):
+    elif isinstance(py_val, list | tuple):
         # Homogeneous float list → Vector; mixed/str list → PropertyList.
         # bool is a subclass of int, so exclude it explicitly — [True, False] must
         # not be serialised as a Vector of 1.0/0.0 but as a PropertyList.
-        if py_val and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in py_val):
+        # list | tuple union syntax is valid in isinstance() for Python ≥3.10 (PEP 604).
+        # This project targets Python ≥3.11 (pyproject.toml: requires-python = ">=3.11").
+        if py_val and all(isinstance(v, int | float) and not isinstance(v, bool) for v in py_val):
             vec = Vector(values=[float(v) for v in py_val])
             pv.vector_value.CopyFrom(vec)
         else:
