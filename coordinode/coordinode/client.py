@@ -495,6 +495,35 @@ class AsyncCoordinodeClient:
             )
         return result
 
+    @staticmethod
+    def _normalize_schema_mode(schema_mode: str | int, mode_map: dict[str, int]) -> int:
+        """Normalize schema_mode (str or int) to a proto SchemaMode enum value.
+
+        Shared by :meth:`create_label` and :meth:`create_edge_type` to avoid
+        duplicating the validation and normalisation logic.
+
+        Accepts:
+        - ``str`` — case-insensitive, leading/trailing whitespace stripped.
+        - ``int`` — must be one of the values in *mode_map*; allows round-tripping
+          ``LabelInfo.schema_mode`` / ``EdgeTypeInfo.schema_mode`` back into the call.
+        """
+        if isinstance(schema_mode, int):
+            # Accept int to allow round-tripping LabelInfo/EdgeTypeInfo.schema_mode.
+            valid_ints = set(mode_map.values())
+            if schema_mode not in valid_ints:
+                raise ValueError(
+                    f"schema_mode integer {schema_mode!r} is not a valid SchemaMode value; "
+                    f"expected one of {sorted(valid_ints)} or a string {list(mode_map)!r}"
+                )
+            return schema_mode
+        elif isinstance(schema_mode, str):
+            normalized = schema_mode.strip().lower()
+            if normalized not in mode_map:
+                raise ValueError(f"schema_mode must be one of {list(mode_map)}, got {schema_mode!r}")
+            return mode_map[normalized]
+        else:
+            raise ValueError(f"schema_mode must be a str or int, got {type(schema_mode).__name__!r}")
+
     async def create_label(
         self,
         name: str,
@@ -527,22 +556,7 @@ class AsyncCoordinodeClient:
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
             "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
         }
-        if isinstance(schema_mode, int):
-            # Accept int to allow round-tripping LabelInfo.schema_mode back into this call.
-            valid_ints = set(_mode_map.values())
-            if schema_mode not in valid_ints:
-                raise ValueError(
-                    f"schema_mode integer {schema_mode!r} is not a valid SchemaMode value; "
-                    f"expected one of {sorted(valid_ints)} or a string {list(_mode_map)!r}"
-                )
-            proto_schema_mode = schema_mode
-        elif isinstance(schema_mode, str):
-            schema_mode_normalized = schema_mode.strip().lower()
-            if schema_mode_normalized not in _mode_map:
-                raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
-            proto_schema_mode = _mode_map[schema_mode_normalized]
-        else:
-            raise ValueError(f"schema_mode must be a str or int, got {type(schema_mode).__name__!r}")
+        proto_schema_mode = self._normalize_schema_mode(schema_mode, _mode_map)
 
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateLabelRequest(
@@ -584,22 +598,7 @@ class AsyncCoordinodeClient:
             "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
             "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
         }
-        if isinstance(schema_mode, int):
-            # Accept int to allow round-tripping EdgeTypeInfo.schema_mode back into this call.
-            valid_ints = set(_mode_map.values())
-            if schema_mode not in valid_ints:
-                raise ValueError(
-                    f"schema_mode integer {schema_mode!r} is not a valid SchemaMode value; "
-                    f"expected one of {sorted(valid_ints)} or a string {list(_mode_map)!r}"
-                )
-            proto_schema_mode = schema_mode
-        elif isinstance(schema_mode, str):
-            schema_mode_normalized = schema_mode.strip().lower()
-            if schema_mode_normalized not in _mode_map:
-                raise ValueError(f"schema_mode must be one of {list(_mode_map)}, got {schema_mode!r}")
-            proto_schema_mode = _mode_map[schema_mode_normalized]
-        else:
-            raise ValueError(f"schema_mode must be a str or int, got {type(schema_mode).__name__!r}")
+        proto_schema_mode = self._normalize_schema_mode(schema_mode, _mode_map)
 
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateEdgeTypeRequest(
