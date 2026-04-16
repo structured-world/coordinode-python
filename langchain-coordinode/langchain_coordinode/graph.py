@@ -307,13 +307,22 @@ class CoordinodeGraph(GraphStore):
             # Injected clients (e.g. bare coordinode-embedded LocalClient) may
             # not implement text_search — return empty rather than AttributeError.
             return []
-        results = self._client.text_search(
-            label,
-            query,
-            limit=k,
-            fuzzy=fuzzy,
-            language=language,
-        )
+        try:
+            results = self._client.text_search(
+                label,
+                query,
+                limit=k,
+                fuzzy=fuzzy,
+                language=language,
+            )
+        except Exception:
+            # Server may return UNIMPLEMENTED (feature not yet available in the
+            # deployed version) or NOT_FOUND (no text index for *label*).
+            # We catch broad Exception (rather than grpc.RpcError specifically)
+            # because langchain-coordinode does not take a hard grpc dependency.
+            # The exception is logged at DEBUG so it remains observable.
+            logger.debug("text_search() failed — returning empty list", exc_info=True)
+            return []
         # Use "id" (not "node_id") for consistency with similarity_search() return
         # format, so callers can write generic code over both methods.
         return [{"id": r.node_id, "score": r.score, "snippet": r.snippet} for r in results]
