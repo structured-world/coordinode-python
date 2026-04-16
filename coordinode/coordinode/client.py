@@ -512,6 +512,8 @@ class AsyncCoordinodeClient:
         - ``int`` — must be one of the values in *mode_map*; allows round-tripping
           ``LabelInfo.schema_mode`` / ``EdgeTypeInfo.schema_mode`` back into the call.
         """
+        if isinstance(schema_mode, bool):
+            raise ValueError(f"schema_mode must be a str or int, got bool {schema_mode!r}.")
         if isinstance(schema_mode, int):
             # Accept int to allow round-tripping LabelInfo/EdgeTypeInfo.schema_mode.
             valid_ints = set(mode_map.values())
