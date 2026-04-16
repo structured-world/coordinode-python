@@ -1,0 +1,51 @@
+services:
+  coordinode:
+    # Keep version in sync with root docker-compose.yml
+    image: ghcr.io/structured-world/coordinode:0.3.17
+    container_name: demo-coordinode
+    ports:
+      - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only
+      - "127.0.0.1:37084:7084"   # Prometheus /metrics, /health — localhost-only
+    volumes:
+      - coordinode-data:/data
+    environment:
+      - COORDINODE_LOG_FORMAT=text
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7084/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  jupyter:
+    build:
+      context: .
+      # Dockerfile.jupyter lives in demo/ (same context directory as this file).
+      # It builds a Jupyter Lab image with the SDK installed from the SDK source mount.
+      dockerfile: Dockerfile.jupyter
+    container_name: demo-jupyter
+    ports:
+      - "127.0.0.1:38888:8888"   # Jupyter Lab (localhost-only)
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ../:/sdk       # mount SDK source so notebooks can pip install -e
+    environment:
+      - COORDINODE_ADDR=coordinode:7080    # internal network address
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=demo  # intentional: localhost-only demo stack, documented in README ("token: demo")
+      - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0  # hatch-vcs: skip git, use fixed version
+    # Install SDK packages from the mounted /sdk source at container start,
+    # then hand off to the default Jupyter Lab startup script.
+    # /tmp/install-sdk.sh is copied into the image by Dockerfile.jupyter;
+    # it must run after /sdk is mounted (i.e. at runtime, not during build).
+    command: >-
+      bash -c "/tmp/install-sdk.sh && exec start-notebook.sh"
+    depends_on:
+      coordinode:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  coordinode-data:
+    driver: local
