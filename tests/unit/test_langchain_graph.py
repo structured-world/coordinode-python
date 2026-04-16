@@ -65,6 +65,20 @@ class _ClientWithoutTextSearch:
         return None
 
 
+class _ClientWithRaisingTextSearch:
+    """Fake client whose text_search raises (e.g. gRPC UNIMPLEMENTED)."""
+
+    def cypher(self, query: str, params: dict | None = None) -> list[dict]:
+        return []
+
+    def text_search(self, label: str, query: str, **kwargs: Any) -> list[Any]:
+        raise RuntimeError("StatusCode.UNIMPLEMENTED")
+
+    def close(self) -> None:
+        # No-op: keeps interface parity with real CoordinodeClient.
+        return None
+
+
 # ── Tests: keyword_search ─────────────────────────────────────────────────────
 
 
@@ -150,3 +164,12 @@ class TestKeywordSearch:
         out = graph.keyword_search("test")
 
         assert out[0]["snippet"] == ""
+
+    def test_returns_empty_when_text_search_raises(self) -> None:
+        """Returns [] when text_search raises (e.g. gRPC UNIMPLEMENTED from older server)."""
+        client = _ClientWithRaisingTextSearch()
+        graph = CoordinodeGraph(client=client)
+
+        out = graph.keyword_search("query")
+
+        assert out == []

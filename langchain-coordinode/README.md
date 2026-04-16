@@ -120,7 +120,10 @@ graph = CoordinodeGraph("localhost:7080", timeout=60.0)
 | `query(query, params)` | Execute Cypher, returns `List[Dict[str, Any]]` |
 | `refresh_schema()` | Reload node/relationship schema from database |
 | `add_graph_documents(docs)` | Batch MERGE nodes + relationships from `GraphDocument` list |
+| `keyword_search(query, k, label, fuzzy, language)` | Full-text BM25 search — returns `[{"id", "score", "snippet"}, …]` |
+| `similarity_search(query_vector, k, label, property)` | Vector nearest-neighbour search — returns `[{"id", "node", "distance"}, …]` |
 | `schema` | Schema string for LLM context |
+| `structured_schema` | Structured schema dict for programmatic access |
 
 ## Related Packages
 
