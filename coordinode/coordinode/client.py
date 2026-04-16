@@ -122,8 +122,9 @@ class HybridResult:
         self.score: float = proto_result.score
         # NOTE: proto HybridResult carries only node_id + score (no embedded Node
         # message). A full node is not included by design — the server returns IDs
-        # for efficiency; callers that need properties should issue a follow-up
-        # Cypher query: MATCH (n) WHERE id(n) = <node_id> RETURN n.
+        # for efficiency. Callers that need node properties should use the client
+        # API: `client.get_node(self.node_id)`, or match on an application-level
+        # property in Cypher (e.g. WHERE n.id = <value>).
 
     def __repr__(self) -> str:
         return f"HybridResult(node_id={self.node_id}, score={self.score:.6f})"
@@ -765,6 +766,8 @@ class AsyncCoordinodeClient:
             or via :meth:`create_text_index`.  Nodes written before the index
             was created are indexed immediately at DDL execution time.
         """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ValueError(f"limit must be an integer >= 1, got {limit!r}.")
         from coordinode._proto.coordinode.v1.query.text_pb2 import TextSearchRequest  # type: ignore[import]
 
         req = TextSearchRequest(label=label, query=query, limit=limit, fuzzy=fuzzy, language=language)
@@ -811,6 +814,8 @@ class AsyncCoordinodeClient:
             ``CREATE TEXT INDEX`` Cypher statement.  Calling this method on a
             label without a text index returns an empty list.
         """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ValueError(f"limit must be an integer >= 1, got {limit!r}.")
         from coordinode._proto.coordinode.v1.query.text_pb2 import (  # type: ignore[import]
             HybridTextVectorSearchRequest,
         )
