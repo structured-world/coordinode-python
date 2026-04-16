@@ -159,7 +159,7 @@ class CoordinodeGraph(GraphStore):
         # published Docker image (tracked in G010 / GAPS.md).
         rows = self._client.cypher(
             "MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS src_labels, type(r) AS rel, labels(b) AS dst_labels",
-            params={},
+            {},
         )
         if rows:
             triples: set[tuple[str, str, str]] = set()
