@@ -273,9 +273,10 @@ class CoordinodeGraph(GraphStore):
         """Find nodes matching a full-text BM25 query.
 
         Wraps ``CoordinodeClient.text_search()``.  The returned list contains
-        one dict per result with the keys ``node_id`` (integer internal ID),
-        ``score`` (BM25 relevance score, higher = more relevant), and
-        ``snippet`` (HTML-highlighted excerpt, may be empty).
+        one dict per result with the keys ``id`` (integer internal node ID,
+        matches the key used by :meth:`similarity_search`), ``score`` (BM25
+        relevance score, higher = more relevant), and ``snippet``
+        (HTML-highlighted excerpt, may be empty).
 
         A full-text index must exist on *label* before calling this method.
         Create one via the Cypher DDL statement::
@@ -313,7 +314,9 @@ class CoordinodeGraph(GraphStore):
             fuzzy=fuzzy,
             language=language,
         )
-        return [{"node_id": r.node_id, "score": r.score, "snippet": r.snippet} for r in results]
+        # Use "id" (not "node_id") for consistency with similarity_search() return
+        # format, so callers can write generic code over both methods.
+        return [{"id": r.node_id, "score": r.score, "snippet": r.snippet} for r in results]
 
     def similarity_search(
         self,

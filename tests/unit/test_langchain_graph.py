@@ -50,7 +50,8 @@ class _ClientWithTextSearch:
         return self._results
 
     def close(self) -> None:
-        pass
+        # No-op: keeps interface parity with real CoordinodeClient.
+        return None
 
 
 class _ClientWithoutTextSearch:
@@ -60,7 +61,8 @@ class _ClientWithoutTextSearch:
         return []
 
     def close(self) -> None:
-        pass
+        # No-op: keeps interface parity with real CoordinodeClient.
+        return None
 
 
 # ── Tests: keyword_search ─────────────────────────────────────────────────────
@@ -68,7 +70,7 @@ class _ClientWithoutTextSearch:
 
 class TestKeywordSearch:
     def test_returns_list_of_dicts(self) -> None:
-        """keyword_search returns list[dict] with node_id/score/snippet keys."""
+        """keyword_search returns list[dict] with id/score/snippet keys."""
         results = [
             _FakeTextResult(node_id=1, score=0.95, snippet="<b>machine</b> learning"),
             _FakeTextResult(node_id=2, score=0.72, snippet=""),
@@ -79,8 +81,8 @@ class TestKeywordSearch:
         out = graph.keyword_search("machine learning", k=5, label="Article")
 
         assert len(out) == 2
-        assert out[0] == {"node_id": 1, "score": 0.95, "snippet": "<b>machine</b> learning"}
-        assert out[1] == {"node_id": 2, "score": 0.72, "snippet": ""}
+        assert out[0] == {"id": 1, "score": 0.95, "snippet": "<b>machine</b> learning"}
+        assert out[1] == {"id": 2, "score": 0.72, "snippet": ""}
 
     def test_passes_params_to_client(self) -> None:
         """keyword_search forwards label, query, k, fuzzy, language to client.text_search."""
