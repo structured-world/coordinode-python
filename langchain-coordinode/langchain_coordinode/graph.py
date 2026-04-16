@@ -261,6 +261,63 @@ class CoordinodeGraph(GraphStore):
         # cypher() returns List[Dict[str, Any]] directly — column name → value.
         return self._client.cypher(query, params=params or {})
 
+    def keyword_search(
+        self,
+        query: str,
+        k: int = 5,
+        label: str = "Chunk",
+        *,
+        fuzzy: bool = False,
+        language: str = "",
+    ) -> list[dict[str, Any]]:
+        """Find nodes matching a full-text BM25 query.
+
+        Wraps ``CoordinodeClient.text_search()``.  The returned list contains
+        one dict per result with the keys ``id`` (integer internal node ID,
+        matches the key used by :meth:`similarity_search`), ``score`` (BM25
+        relevance score, higher = more relevant), and ``snippet``
+        (HTML-highlighted excerpt, may be empty).
+
+        A full-text index must exist on *label* before calling this method.
+        Create one via the Cypher DDL statement::
+
+            CREATE TEXT INDEX my_index ON :Chunk(text)
+
+        or via ``CoordinodeClient.create_text_index()``.
+
+        Args:
+            query: Full-text query string. Supports boolean operators
+                (``AND``, ``OR``, ``NOT``), phrase search
+                (``"exact phrase"``), prefix wildcards (``term*``),
+                and per-term boosting (``term^N``).
+            k: Maximum number of results to return (default 5).
+            label: Node label to search (default ``"Chunk"``).
+            fuzzy: If ``True``, apply Levenshtein-1 fuzzy matching to
+                individual terms. Increases recall at the cost of precision.
+            language: Tokenization/stemming language (e.g. ``"english"``,
+                ``"russian"``). Empty string uses the index's default language.
+
+        Returns:
+            List of result dicts sorted by descending BM25 score.
+            Returns ``[]`` if the client does not support ``text_search``
+            (e.g. bare injected clients without the full SDK) or if no
+            text index exists for *label*.
+        """
+        if not callable(getattr(self._client, "text_search", None)):
+            # Injected clients (e.g. bare coordinode-embedded LocalClient) may
+            # not implement text_search — return empty rather than AttributeError.
+            return []
+        results = self._client.text_search(
+            label,
+            query,
+            limit=k,
+            fuzzy=fuzzy,
+            language=language,
+        )
+        # Use "id" (not "node_id") for consistency with similarity_search() return
+        # format, so callers can write generic code over both methods.
+        return [{"id": r.node_id, "score": r.score, "snippet": r.snippet} for r in results]
+
     def similarity_search(
         self,
         query_vector: Sequence[float],
