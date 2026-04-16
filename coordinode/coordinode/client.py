@@ -570,9 +570,7 @@ class AsyncCoordinodeClient:
     async def create_edge_type(
         self,
         name: str,
-        properties: list[dict[str, Any]] | None = None,
-        *,
-        schema_mode: str | int = "strict",
+        properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry.
 
@@ -581,30 +579,22 @@ class AsyncCoordinodeClient:
             properties: Optional list of property dicts with keys
                 ``name`` (str), ``type`` (str), ``required`` (bool),
                 ``unique`` (bool). Same type strings as :meth:`create_label`.
-            schema_mode: ``"strict"`` (default — reject undeclared props),
-                ``"validated"`` (warn on extras), or ``"flexible"`` (allow any
-                prop without declaration).  Case-insensitive; leading/trailing
-                whitespace is stripped.
+
+        Note:
+            ``schema_mode`` is not yet supported by the server for edge types
+            (``CreateEdgeTypeRequest`` does not carry that field).  Schema
+            mode enforcement for edge types is planned for a future release.
         """
         from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
             CreateEdgeTypeRequest,
             PropertyDefinition,
             PropertyType,
-            SchemaMode,
         )
-
-        _mode_map = {
-            "strict": SchemaMode.SCHEMA_MODE_STRICT,
-            "validated": SchemaMode.SCHEMA_MODE_VALIDATED,
-            "flexible": SchemaMode.SCHEMA_MODE_FLEXIBLE,
-        }
-        proto_schema_mode = self._normalize_schema_mode(schema_mode, _mode_map)
 
         proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateEdgeTypeRequest(
             name=name,
             properties=proto_props,
-            schema_mode=proto_schema_mode,
         )
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)
@@ -973,12 +963,10 @@ class CoordinodeClient:
     def create_edge_type(
         self,
         name: str,
-        properties: list[dict[str, Any]] | None = None,
-        *,
-        schema_mode: str | int = "strict",
+        properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     ) -> EdgeTypeInfo:
         """Create an edge type in the schema registry."""
-        return self._run(self._async.create_edge_type(name, properties, schema_mode=schema_mode))
+        return self._run(self._async.create_edge_type(name, properties))
 
     def create_text_index(
         self,
