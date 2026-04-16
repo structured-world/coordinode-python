@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.8.0](https://github.com/structured-world/coordinode-python/compare/v0.7.0...v0.8.0) (2026-04-16)
+
+
+### Features
+
+* **client,adapters,demo:** schema DDL API, full-text search, Colab notebooks ([d5a4eb9](https://github.com/structured-world/coordinode-python/commit/d5a4eb9112986507295df7ffd80d5482625e26b3))
+* **client,adapters,demo:** schema DDL API, full-text search, Colab notebooks ([4ed2391](https://github.com/structured-world/coordinode-python/commit/4ed23912eeade1b0042cbff0a48e065c0a3e4e25))
+
+
+### Bug Fixes
+
+* **client,demo:** accept schema_mode as str|int; fix error messages; run install-sdk.sh at Jupyter startup ([e5c50c4](https://github.com/structured-world/coordinode-python/commit/e5c50c48c985f67336c121d1902e3dc541bf7362))
+* **client,demo:** align type annotations and query_facts param guard ([e581683](https://github.com/structured-world/coordinode-python/commit/e581683aa4da7aa6e3ce04716bcbd5b6ea9cee31))
+* **client,demo:** align type annotations with runtime; exec in docker; notebook fixes ([62ea048](https://github.com/structured-world/coordinode-python/commit/62ea0485d02e5b44dde45fb1a36ecb1e3fd7de1a))
+* **client,demo:** limit validation, HybridResult comment, embedded fallthrough ([4655747](https://github.com/structured-world/coordinode-python/commit/465574762f8732b753cfea7c8ca5f06ab2b4bda4))
+* **client,demo:** reject bool schema_mode, guard _EMBEDDED_PIP_SPEC reference ([a17b45a](https://github.com/structured-world/coordinode-python/commit/a17b45ab5cf7604da228274653a0c3972fd07259))
+* **client:** remove schema_mode from create_edge_type — proto field absent ([ded059d](https://github.com/structured-world/coordinode-python/commit/ded059d45f3f9dd60b23f098ae6caf65a64dbf08))
+* **langchain:** pass cypher params positionally for injected client compatibility ([8b7ceb4](https://github.com/structured-world/coordinode-python/commit/8b7ceb4c8e9b50f035a938d5676e3274d7d2da75))
+
+
+### Documentation
+
+* **demo:** clarify rustup supply-chain note in all notebooks ([565a74c](https://github.com/structured-world/coordinode-python/commit/565a74c8d0cacef114568861744dbff431b4fee7))
+
 ## [0.7.0](https://github.com/structured-world/coordinode-python/compare/v0.6.0...v0.7.0) (2026-04-13)
 
 
