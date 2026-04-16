@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/structured-world/coordinode-python/compare/v0.8.0...v0.9.0) (2026-04-16)
+
+
+### Features
+
+* **langchain:** add CoordinodeGraph.keyword_search() ([8169085](https://github.com/structured-world/coordinode-python/commit/81690850e4ff081fb12af13ef39a91fe2df6c0f3)), closes [#22](https://github.com/structured-world/coordinode-python/issues/22)
+* **langchain:** add CoordinodeGraph.keyword_search() ([#41](https://github.com/structured-world/coordinode-python/issues/41)) ([35d2f5e](https://github.com/structured-world/coordinode-python/commit/35d2f5e674a9c62421770cd48914c3698627261c))
+
+
+### Bug Fixes
+
+* **langchain:** use "id" key in keyword_search() output, matching similarity_search() ([81633f9](https://github.com/structured-world/coordinode-python/commit/81633f9bf5ea2273ebdcf508ce44ebfc8673ca1e))
+
 ## [0.8.0](https://github.com/structured-world/coordinode-python/compare/v0.7.0...v0.8.0) (2026-04-16)
 
 
