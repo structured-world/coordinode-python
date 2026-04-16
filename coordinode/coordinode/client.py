@@ -120,6 +120,10 @@ class HybridResult:
         self.node_id: int = proto_result.node_id
         # Combined RRF score: text_weight/(60+rank_text) + vector_weight/(60+rank_vec).
         self.score: float = proto_result.score
+        # NOTE: proto HybridResult carries only node_id + score (no embedded Node
+        # message). A full node is not included by design — the server returns IDs
+        # for efficiency; callers that need properties should issue a follow-up
+        # Cypher query: MATCH (n) WHERE id(n) = <node_id> RETURN n.
 
     def __repr__(self) -> str:
         return f"HybridResult(node_id={self.node_id}, score={self.score:.6f})"
@@ -527,7 +531,7 @@ class AsyncCoordinodeClient:
     async def create_label(
         self,
         name: str,
-        properties: list[dict[str, Any]] | None = None,
+        properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         *,
         schema_mode: str | int = "strict",
     ) -> LabelInfo:
@@ -953,7 +957,7 @@ class CoordinodeClient:
     def create_label(
         self,
         name: str,
-        properties: list[dict[str, Any]] | None = None,
+        properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         *,
         schema_mode: str | int = "strict",
     ) -> LabelInfo:
