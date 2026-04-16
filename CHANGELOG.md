@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/structured-world/coordinode-python/compare/v0.9.0...v0.9.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **langchain:** catch gRPC errors in keyword_search, add missing methods to README ([b4f887f](https://github.com/structured-world/coordinode-python/commit/b4f887f0faaecafed8464ff73753839944b4e00c))
+* **langchain:** catch gRPC errors in keyword_search, add missing methods to README ([#44](https://github.com/structured-world/coordinode-python/issues/44)) ([871bd11](https://github.com/structured-world/coordinode-python/commit/871bd111960b6b9289e253ac2f5ea9255db7442a))
+
 ## [0.9.0](https://github.com/structured-world/coordinode-python/compare/v0.8.0...v0.9.0) (2026-04-16)
 
 
