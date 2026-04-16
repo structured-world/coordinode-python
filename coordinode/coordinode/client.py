@@ -449,7 +449,7 @@ class AsyncCoordinodeClient:
 
     @staticmethod
     def _build_property_definitions(
-        properties: list[dict[str, Any]] | None,
+        properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
         property_type_cls: Any,
         property_definition_cls: Any,
     ) -> list[Any]:
@@ -613,7 +613,7 @@ class AsyncCoordinodeClient:
         self,
         name: str,
         label: str,
-        properties: str | list[str],
+        properties: str | list[str] | tuple[str, ...],
         *,
         language: str = "",
     ) -> TextIndexInfo:
@@ -984,7 +984,7 @@ class CoordinodeClient:
         self,
         name: str,
         label: str,
-        properties: str | list[str],
+        properties: str | list[str] | tuple[str, ...],
         *,
         language: str = "",
     ) -> TextIndexInfo:

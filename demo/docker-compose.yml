@@ -40,7 +40,7 @@ services:
     # /tmp/install-sdk.sh is copied into the image by Dockerfile.jupyter;
     # it must run after /sdk is mounted (i.e. at runtime, not during build).
     command: >-
-      bash -c "/tmp/install-sdk.sh && start-notebook.sh"
+      bash -c "/tmp/install-sdk.sh && exec start-notebook.sh"
     depends_on:
       coordinode:
         condition: service_healthy
