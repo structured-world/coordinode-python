@@ -138,8 +138,10 @@ rows = db.cypher("""
 # Full node properties: db.get_node(rows[0]["doc_id"]).
 ```
 
-Helpers available in Cypher: ``text_score``, ``vec_score``, ``doc_score``,
-``text_match``, ``rrf_score``, ``hybrid_score``.
+Helpers available in Cypher (evaluated server-side in coordinode-rs ≥ v0.4.0):
+``text_score``, ``vec_score``, ``doc_score``, ``text_match``, ``rrf_score``,
+``hybrid_score``. These are built-in Cypher functions; nothing to import on the
+Python side.
 
 ## ATTACH / DETACH DOCUMENT (v0.4+)
 
