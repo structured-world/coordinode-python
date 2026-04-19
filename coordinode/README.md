@@ -122,17 +122,20 @@ for r in results:
 Fuse BM25 full-text and vector similarity using Cypher scoring functions:
 
 ```python
-# Reciprocal Rank Fusion of text + vector
+# Reciprocal Rank Fusion of text + vector. Projecting `d AS doc_id` returns the
+# internal node id (an integer) — fetch properties explicitly when needed.
 rows = db.cypher("""
     MATCH (d:Doc)
     WHERE text_match(d, $q) OR d.embedding IS NOT NULL
-    RETURN d,
+    RETURN d AS doc_id,
+           d.title AS title,
            rrf_score(
                text_score(d, $q),
                vec_score(d.embedding, $vec)
            ) AS score
     ORDER BY score DESC LIMIT 10
 """, params={"q": "graph neural network", "vec": [0.1] * 384})
+# Full node properties: db.get_node(rows[0]["doc_id"]).
 ```
 
 Helpers available in Cypher: ``text_score``, ``vec_score``, ``doc_score``,
@@ -152,14 +155,18 @@ db.cypher("MATCH (a:Article {id: $id})-[:HAS_BODY]->(d:Body) "
 ## Consistency Controls
 
 ```python
-# Majority read for strict freshness
-db.cypher("MATCH (n:Account) RETURN n", read_concern="majority")
+# Majority read for strict freshness. `n AS node_id` returns the integer id;
+# use get_node(id) or project explicit properties (e.g. n.email AS email).
+db.cypher(
+    "MATCH (n:Account) RETURN n AS node_id, n.email AS email",
+    read_concern="majority",
+)
 
 # Majority write (required for causal reads)
 db.cypher("CREATE (n:Event {t: timestamp()})", write_concern="majority")
 
 # Causal read: see at least state at raft index 42
-db.cypher("MATCH (n) RETURN count(n)", after_index=42)
+db.cypher("MATCH (n) RETURN count(n) AS total", after_index=42)
 ```
 
 Accepted values:
