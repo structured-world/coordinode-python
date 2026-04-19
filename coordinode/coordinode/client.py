@@ -776,64 +776,6 @@ class AsyncCoordinodeClient:
         resp = await self._text_stub.TextSearch(req, timeout=self._timeout)
         return [TextResult(r) for r in resp.results]
 
-    async def hybrid_text_vector_search(
-        self,
-        label: str,
-        text_query: str,
-        vector: Sequence[float],
-        *,
-        limit: int = 10,
-        text_weight: float = 0.5,
-        vector_weight: float = 0.5,
-        vector_property: str = "embedding",
-    ) -> list[HybridResult]:
-        """Fuse BM25 text search and cosine vector search using Reciprocal Rank Fusion (RRF).
-
-        Runs text and vector searches independently, then combines their ranked
-        lists::
-
-            rrf_score(node) = text_weight / (60 + rank_text)
-                            + vector_weight / (60 + rank_vec)
-
-        Args:
-            label: Node label to search (e.g. ``"Article"``).
-            text_query: Full-text query string (same syntax as :meth:`text_search`).
-            vector: Query embedding vector. Must match the dimensionality stored
-                in *vector_property*.
-            limit: Maximum fused results to return (default 10). The server may
-                apply its own upper bound; pass a reasonable value (e.g. ≤ 1000).
-            text_weight: Weight for the BM25 component (default 0.5).
-            vector_weight: Weight for the cosine component (default 0.5).
-            vector_property: Node property containing the embedding (default
-                ``"embedding"``).
-
-        Returns:
-            List of :class:`HybridResult` ordered by RRF score descending.
-
-        Note:
-            A full-text index covering *label* **must exist** before calling this
-            method — create one with :meth:`create_text_index` or a
-            ``CREATE TEXT INDEX`` Cypher statement.  Calling this method on a
-            label without a text index returns an empty list.
-        """
-        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-            raise ValueError(f"limit must be an integer >= 1, got {limit!r}.")
-        from coordinode._proto.coordinode.v1.query.text_pb2 import (  # type: ignore[import]
-            HybridTextVectorSearchRequest,
-        )
-
-        req = HybridTextVectorSearchRequest(
-            label=label,
-            text_query=text_query,
-            vector=[float(v) for v in vector],
-            limit=limit,
-            text_weight=text_weight,
-            vector_weight=vector_weight,
-            vector_property=vector_property,
-        )
-        resp = await self._text_stub.HybridTextVectorSearch(req, timeout=self._timeout)
-        return [HybridResult(r) for r in resp.results]
-
     async def health(self) -> bool:
         from coordinode._proto.coordinode.v1.health.health_pb2 import (  # type: ignore[import]
             HealthCheckRequest,
@@ -1015,30 +957,6 @@ class CoordinodeClient:
     ) -> list[TextResult]:
         """Run a full-text BM25 search over all indexed text properties for *label*."""
         return self._run(self._async.text_search(label, query, limit=limit, fuzzy=fuzzy, language=language))
-
-    def hybrid_text_vector_search(
-        self,
-        label: str,
-        text_query: str,
-        vector: Sequence[float],
-        *,
-        limit: int = 10,
-        text_weight: float = 0.5,
-        vector_weight: float = 0.5,
-        vector_property: str = "embedding",
-    ) -> list[HybridResult]:
-        """Fuse BM25 text search and cosine vector search using RRF ranking."""
-        return self._run(
-            self._async.hybrid_text_vector_search(
-                label,
-                text_query,
-                vector,
-                limit=limit,
-                text_weight=text_weight,
-                vector_weight=vector_weight,
-                vector_property=vector_property,
-            )
-        )
 
     def health(self) -> bool:
         return self._run(self._async.health())

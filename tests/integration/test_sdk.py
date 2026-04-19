@@ -18,7 +18,6 @@ from coordinode import (
     AsyncCoordinodeClient,
     CoordinodeClient,
     EdgeTypeInfo,
-    HybridResult,
     LabelInfo,
     TextIndexInfo,
     TextResult,
@@ -694,45 +693,3 @@ def test_text_search_fuzzy(client):
                 client.drop_text_index(idx_name)
         finally:
             client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
-
-
-@_fts
-def test_hybrid_text_vector_search_returns_results(client):
-    """hybrid_text_vector_search() returns HybridResult list with RRF scores."""
-    label = f"FtsHybridTest_{uid()}"
-    tag = uid()
-    idx_name = f"idx_{label.lower()}"
-    vec = [float(i) / 16 for i in range(16)]
-    # Same node-as-int pattern: RETURN n → Value::Int(node_id) in CoordiNode executor.
-    rows = client.cypher(
-        f"CREATE (n:{label} {{tag: $tag, body: 'graph neural network embedding', embedding: $vec}}) RETURN n AS node_id",
-        params={"tag": tag, "vec": vec},
-    )
-    seed_id = rows[0]["node_id"]
-    idx_created = False
-    try:
-        client.create_text_index(idx_name, label, "body")
-        idx_created = True
-        results = client.hybrid_text_vector_search(
-            label,
-            "graph neural",
-            vec,
-            limit=5,
-        )
-        assert isinstance(results, list)
-        if not results:
-            pytest.xfail("hybrid_text_vector_search returned no results — vector index not available on this server")
-        assert any(r.node_id == seed_id for r in results), (
-            f"seeded node {seed_id} not found in hybrid_text_vector_search results: {results}"
-        )
-        r = results[0]
-        assert isinstance(r, HybridResult)
-        assert isinstance(r.node_id, int)
-        assert isinstance(r.score, float)
-        assert r.score > 0
-    finally:
-        try:
-            if idx_created:
-                client.drop_text_index(idx_name)
-        finally:
-            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
