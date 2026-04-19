@@ -105,7 +105,7 @@ db.cypher(
     params={"title": "RAG intro", "vec": [0.1] * 384},
 )
 
-# Nearest-neighbour search (requires HNSW index — coming in v0.4)
+# Nearest-neighbour search
 results = db.vector_search(
     label="Doc",
     property="embedding",
@@ -116,6 +116,57 @@ results = db.vector_search(
 for r in results:
     print(r.node.id, r.distance)
 ```
+
+## Hybrid Search (v0.4+)
+
+Fuse BM25 full-text and vector similarity using Cypher scoring functions:
+
+```python
+# Reciprocal Rank Fusion of text + vector
+rows = db.cypher("""
+    MATCH (d:Doc)
+    WHERE text_match(d, $q) OR d.embedding IS NOT NULL
+    RETURN d,
+           rrf_score(
+               text_score(d, $q),
+               vec_score(d.embedding, $vec)
+           ) AS score
+    ORDER BY score DESC LIMIT 10
+""", params={"q": "graph neural network", "vec": [0.1] * 384})
+```
+
+Helpers available in Cypher: ``text_score``, ``vec_score``, ``doc_score``,
+``text_match``, ``rrf_score``, ``hybrid_score``.
+
+## ATTACH / DETACH DOCUMENT (v0.4+)
+
+Promote a nested property to a graph node (and back):
+
+```python
+db.cypher("MATCH (a:Article {id: $id}) DETACH DOCUMENT a.body AS (d:Body)",
+          params={"id": 1})
+db.cypher("MATCH (a:Article {id: $id})-[:HAS_BODY]->(d:Body) "
+          "ATTACH DOCUMENT d INTO a.body", params={"id": 1})
+```
+
+## Consistency Controls
+
+```python
+# Majority read for strict freshness
+db.cypher("MATCH (n:Account) RETURN n", read_concern="majority")
+
+# Majority write (required for causal reads)
+db.cypher("CREATE (n:Event {t: timestamp()})", write_concern="majority")
+
+# Causal read: see at least state at raft index 42
+db.cypher("MATCH (n) RETURN count(n)", after_index=42)
+```
+
+Accepted values:
+
+- ``read_concern``: ``local`` (default) · ``majority`` · ``linearizable`` · ``snapshot``
+- ``write_concern``: ``w0`` · ``w1`` (default) · ``majority``
+- ``read_preference``: ``primary`` (default) · ``primary_preferred`` · ``secondary`` · ``secondary_preferred`` · ``nearest``
 
 ## Related Packages
 

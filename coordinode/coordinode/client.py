@@ -253,8 +253,24 @@ class AsyncCoordinodeClient:
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
+        *,
+        read_concern: str | None = None,
+        write_concern: str | None = None,
+        read_preference: str | None = None,
+        after_index: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute an OpenCypher query. Returns rows as list of dicts."""
+        """Execute an OpenCypher query. Returns rows as list of dicts.
+
+        Consistency parameters (all optional; server defaults apply when omitted):
+
+        - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
+        - ``write_concern``: ``"w0"``, ``"w1"`` (default, leader-ack), ``"majority"``. Required
+          ``"majority"`` when using causal reads (``after_index`` > 0).
+        - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
+          ``"secondary_preferred"``, ``"nearest"``.
+        - ``after_index``: raft log index for causal reads — returned rows reflect at least
+          the state at this index.
+        """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
         )
@@ -263,6 +279,12 @@ class AsyncCoordinodeClient:
             query=query,
             parameters=dict_to_props(params or {}),
         )
+        if read_concern is not None or after_index is not None:
+            req.read_concern.CopyFrom(_make_read_concern(read_concern, after_index))
+        if write_concern is not None:
+            req.write_concern.CopyFrom(_make_write_concern(write_concern))
+        if read_preference is not None:
+            req.read_preference = _make_read_preference(read_preference)
         resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
         columns = list(resp.columns)
         return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
@@ -832,9 +854,23 @@ class CoordinodeClient:
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
+        *,
+        read_concern: str | None = None,
+        write_concern: str | None = None,
+        read_preference: str | None = None,
+        after_index: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute an OpenCypher query. Returns rows as list of dicts."""
-        return self._run(self._async.cypher(query, params))
+        """Execute an OpenCypher query. See :meth:`AsyncCoordinodeClient.cypher` for consistency args."""
+        return self._run(
+            self._async.cypher(
+                query,
+                params,
+                read_concern=read_concern,
+                write_concern=write_concern,
+                read_preference=read_preference,
+                after_index=after_index,
+            )
+        )
 
     def vector_search(
         self,
@@ -943,6 +979,61 @@ class CoordinodeClient:
 
     def health(self) -> bool:
         return self._run(self._async.health())
+
+
+# ── Consistency helpers ──────────────────────────────────────────────────────
+
+
+_READ_CONCERN_MAP = {
+    "local": "READ_CONCERN_LEVEL_LOCAL",
+    "majority": "READ_CONCERN_LEVEL_MAJORITY",
+    "linearizable": "READ_CONCERN_LEVEL_LINEARIZABLE",
+    "snapshot": "READ_CONCERN_LEVEL_SNAPSHOT",
+}
+_WRITE_CONCERN_MAP = {
+    "w0": "WRITE_CONCERN_LEVEL_W0",
+    "w1": "WRITE_CONCERN_LEVEL_W1",
+    "majority": "WRITE_CONCERN_LEVEL_MAJORITY",
+}
+_READ_PREFERENCE_MAP = {
+    "primary": "READ_PREFERENCE_PRIMARY",
+    "primary_preferred": "READ_PREFERENCE_PRIMARY_PREFERRED",
+    "secondary": "READ_PREFERENCE_SECONDARY",
+    "secondary_preferred": "READ_PREFERENCE_SECONDARY_PREFERRED",
+    "nearest": "READ_PREFERENCE_NEAREST",
+}
+
+
+def _make_read_concern(level: str | None, after_index: int | None) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    enum_name = _READ_CONCERN_MAP.get(level.lower()) if level else None
+    if level and enum_name is None:
+        raise ValueError(f"invalid read_concern {level!r}; expected one of {sorted(_READ_CONCERN_MAP)}")
+    kwargs: dict[str, Any] = {}
+    if enum_name is not None:
+        kwargs["level"] = getattr(pb, enum_name)
+    if after_index is not None:
+        kwargs["after_index"] = int(after_index)
+    return pb.ReadConcern(**kwargs)
+
+
+def _make_write_concern(level: str) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    enum_name = _WRITE_CONCERN_MAP.get(level.lower())
+    if enum_name is None:
+        raise ValueError(f"invalid write_concern {level!r}; expected one of {sorted(_WRITE_CONCERN_MAP)}")
+    return pb.WriteConcern(level=getattr(pb, enum_name))
+
+
+def _make_read_preference(pref: str) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    enum_name = _READ_PREFERENCE_MAP.get(pref.lower())
+    if enum_name is None:
+        raise ValueError(f"invalid read_preference {pref!r}; expected one of {sorted(_READ_PREFERENCE_MAP)}")
+    return getattr(pb, enum_name)
 
 
 # ── Stub factories (deferred import) ─────────────────────────────────────────
