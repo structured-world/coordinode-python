@@ -30,6 +30,16 @@ class TestReadConcern:
         with pytest.raises(ValueError, match="invalid read_concern"):
             _make_read_concern("strong", None)
 
+    @pytest.mark.parametrize("bad", ["", "   ", 5, True])
+    def test_rejects_blank_or_non_string_level(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="read_concern must be a non-empty string"):
+            _make_read_concern(bad, None)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("bad", [True, False, -1, 1.5, "7"])
+    def test_rejects_bool_negative_non_int_after_index(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+            _make_read_concern(None, bad)  # type: ignore[arg-type]
+
 
 class TestWriteConcern:
     @pytest.mark.parametrize(
@@ -47,6 +57,11 @@ class TestWriteConcern:
         with pytest.raises(ValueError, match="invalid write_concern"):
             _make_write_concern("w9")
 
+    @pytest.mark.parametrize("bad", ["", "   ", None, 1])
+    def test_rejects_blank_or_non_string(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="write_concern must be a non-empty string"):
+            _make_write_concern(bad)  # type: ignore[arg-type]
+
 
 class TestReadPreference:
     @pytest.mark.parametrize(
@@ -63,3 +78,8 @@ class TestReadPreference:
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError, match="invalid read_preference"):
             _make_read_preference("leader")
+
+    @pytest.mark.parametrize("bad", ["", "   ", None, 0])
+    def test_rejects_blank_or_non_string(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="read_preference must be a non-empty string"):
+            _make_read_preference(bad)  # type: ignore[arg-type]

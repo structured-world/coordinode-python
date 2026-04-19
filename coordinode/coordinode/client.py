@@ -1004,36 +1004,38 @@ _READ_PREFERENCE_MAP = {
 }
 
 
+def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string; got {value!r}")
+    enum_name = mapping.get(value.strip().lower())
+    if enum_name is None:
+        raise ValueError(f"invalid {field} {value!r}; expected one of {sorted(mapping)}")
+    return enum_name
+
+
 def _make_read_concern(level: str | None, after_index: int | None) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
-    enum_name = _READ_CONCERN_MAP.get(level.lower()) if level else None
-    if level and enum_name is None:
-        raise ValueError(f"invalid read_concern {level!r}; expected one of {sorted(_READ_CONCERN_MAP)}")
     kwargs: dict[str, Any] = {}
-    if enum_name is not None:
-        kwargs["level"] = getattr(pb, enum_name)
+    if level is not None:
+        kwargs["level"] = getattr(pb, _normalize_consistency_key(level, "read_concern", _READ_CONCERN_MAP))
     if after_index is not None:
-        kwargs["after_index"] = int(after_index)
+        if not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0:
+            raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
+        kwargs["after_index"] = after_index
     return pb.ReadConcern(**kwargs)
 
 
 def _make_write_concern(level: str) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
-    enum_name = _WRITE_CONCERN_MAP.get(level.lower())
-    if enum_name is None:
-        raise ValueError(f"invalid write_concern {level!r}; expected one of {sorted(_WRITE_CONCERN_MAP)}")
-    return pb.WriteConcern(level=getattr(pb, enum_name))
+    return pb.WriteConcern(level=getattr(pb, _normalize_consistency_key(level, "write_concern", _WRITE_CONCERN_MAP)))
 
 
 def _make_read_preference(pref: str) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
-    enum_name = _READ_PREFERENCE_MAP.get(pref.lower())
-    if enum_name is None:
-        raise ValueError(f"invalid read_preference {pref!r}; expected one of {sorted(_READ_PREFERENCE_MAP)}")
-    return getattr(pb, enum_name)
+    return getattr(pb, _normalize_consistency_key(pref, "read_preference", _READ_PREFERENCE_MAP))
 
 
 # ── Stub factories (deferred import) ─────────────────────────────────────────
