@@ -693,3 +693,40 @@ def test_text_search_fuzzy(client):
                 client.drop_text_index(idx_name)
         finally:
             client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+def test_cypher_accepts_consistency_kwargs(client):
+    """cypher() wires read_concern / write_concern / read_preference / after_index into the request."""
+    # Write with majority concern then read back with majority + primary + after_index.
+    label = f"ConsistencyTest_{uid()}"
+    tag = uid()
+    client.cypher(
+        f"CREATE (n:{label} {{tag: $tag, v: 1}})",
+        params={"tag": tag},
+        write_concern="majority",
+    )
+    rows = client.cypher(
+        f"MATCH (n:{label} {{tag: $tag}}) RETURN n.v AS v",
+        params={"tag": tag},
+        read_concern="majority",
+        read_preference="primary",
+        after_index=0,
+    )
+    try:
+        assert rows and rows[0]["v"] == 1
+    finally:
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+def test_cypher_rejects_invalid_consistency_values(client):
+    """Invalid consistency kwargs raise ValueError before the RPC."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="invalid read_concern"):
+        client.cypher("RETURN 1", read_concern="strong")
+    with _pytest.raises(ValueError, match="invalid write_concern"):
+        client.cypher("RETURN 1", write_concern="w9")
+    with _pytest.raises(ValueError, match="invalid read_preference"):
+        client.cypher("RETURN 1", read_preference="leader")
+    with _pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+        client.cypher("RETURN 1", after_index=-1)
