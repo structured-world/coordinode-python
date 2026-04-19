@@ -720,13 +720,11 @@ def test_cypher_accepts_consistency_kwargs(client):
 
 def test_cypher_rejects_invalid_consistency_values(client):
     """Invalid consistency kwargs raise ValueError before the RPC."""
-    import pytest as _pytest
-
-    with _pytest.raises(ValueError, match="invalid read_concern"):
+    with pytest.raises(ValueError, match="invalid read_concern"):
         client.cypher("RETURN 1", read_concern="strong")
-    with _pytest.raises(ValueError, match="invalid write_concern"):
+    with pytest.raises(ValueError, match="invalid write_concern"):
         client.cypher("RETURN 1", write_concern="w9")
-    with _pytest.raises(ValueError, match="invalid read_preference"):
+    with pytest.raises(ValueError, match="invalid read_preference"):
         client.cypher("RETURN 1", read_preference="leader")
-    with _pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+    with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
         client.cypher("RETURN 1", after_index=-1)
