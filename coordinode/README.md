@@ -122,6 +122,10 @@ for r in results:
 Fuse BM25 full-text and vector similarity using Cypher scoring functions:
 
 ```python
+# Full-text scoring (text_score / text_match) requires a TEXT INDEX on the
+# queried property — without it those calls return zero/no matches.
+db.create_text_index("idx_doc_body", "Doc", "body")
+
 # Reciprocal Rank Fusion of text + vector. Projecting `d AS doc_id` returns the
 # internal node id (an integer) — fetch properties explicitly when needed.
 rows = db.cypher("""
