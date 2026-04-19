@@ -113,23 +113,6 @@ class TextResult:
         return f"TextResult(node_id={self.node_id}, score={self.score:.4f}, snippet={self.snippet!r})"
 
 
-class HybridResult:
-    """A single result from hybrid text + vector search (RRF-ranked)."""
-
-    def __init__(self, proto_result: Any) -> None:
-        self.node_id: int = proto_result.node_id
-        # Combined RRF score: text_weight/(60+rank_text) + vector_weight/(60+rank_vec).
-        self.score: float = proto_result.score
-        # NOTE: proto HybridResult carries only node_id + score (no embedded Node
-        # message). A full node is not included by design — the server returns IDs
-        # for efficiency. Callers that need node properties should use the client
-        # API: `client.get_node(self.node_id)`, or match on an application-level
-        # property in Cypher (e.g. WHERE n.id = <value>).
-
-    def __repr__(self) -> str:
-        return f"HybridResult(node_id={self.node_id}, score={self.score:.6f})"
-
-
 class PropertyDefinitionInfo:
     """A property definition from the schema (name, type, required, unique)."""
 
