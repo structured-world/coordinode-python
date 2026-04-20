@@ -699,14 +699,12 @@ def test_cypher_accepts_consistency_kwargs(client):
     """cypher() wires read_concern / write_concern / read_preference / after_index into the request."""
     label = f"ConsistencyTest_{uid()}"
     tag = uid()
-    created = False
     try:
         client.cypher(
             f"CREATE (n:{label} {{tag: $tag, v: 1}})",
             params={"tag": tag},
             write_concern="majority",
         )
-        created = True
         rows = client.cypher(
             f"MATCH (n:{label} {{tag: $tag}}) RETURN n.v AS v",
             params={"tag": tag},
@@ -716,8 +714,8 @@ def test_cypher_accepts_consistency_kwargs(client):
         )
         assert rows and rows[0]["v"] == 1
     finally:
-        if created:
-            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+        # DELETE is a no-op when no nodes match — safe to run unconditionally.
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
 def test_cypher_rejects_invalid_consistency_values(client):
