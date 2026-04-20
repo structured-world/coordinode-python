@@ -275,6 +275,14 @@ class AsyncCoordinodeClient:
             ExecuteCypherRequest,
         )
 
+        # Causal reads (after_index > 0) are only satisfiable when writes were
+        # acknowledged by a majority; otherwise the referenced index may never
+        # replicate and the read would hang. Mirror the server's rejection.
+        if after_index is not None and after_index > 0 and (write_concern or "").lower() != "majority":
+            raise ValueError(
+                "after_index > 0 requires write_concern='majority' — causal reads "
+                "depend on majority-committed writes. Pass write_concern='majority'."
+            )
         req = ExecuteCypherRequest(
             query=query,
             parameters=dict_to_props(params or {}),

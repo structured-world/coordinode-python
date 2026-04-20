@@ -728,3 +728,8 @@ def test_cypher_rejects_invalid_consistency_values(client):
         client.cypher("RETURN 1", read_preference="leader")
     with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
         client.cypher("RETURN 1", after_index=-1)
+    # Causal reads (after_index > 0) require write_concern='majority'.
+    with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
+        client.cypher("RETURN 1", after_index=42)
+    with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
+        client.cypher("RETURN 1", after_index=42, write_concern="w1")
