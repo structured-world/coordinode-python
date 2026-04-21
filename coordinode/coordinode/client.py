@@ -275,6 +275,14 @@ class AsyncCoordinodeClient:
             ExecuteCypherRequest,
         )
 
+        # Validate after_index type/range BEFORE any numeric comparison so that
+        # True (bool is a subclass of int) and "7" (str) produce a clear
+        # "must be a non-negative integer" error instead of a misleading
+        # causal-read violation or a raw TypeError.
+        if after_index is not None and (
+            not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0
+        ):
+            raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
         # Causal reads (after_index > 0) are only satisfiable when writes were
         # acknowledged by a majority; otherwise the referenced index may never
         # replicate and the read would hang. Mirror the server's rejection.

@@ -733,3 +733,9 @@ def test_cypher_rejects_invalid_consistency_values(client):
         client.cypher("RETURN 1", after_index=42)
     with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
         client.cypher("RETURN 1", after_index=42, write_concern="w1")
+    # Type validation runs before the causal-read check so bools/strings
+    # surface the non-negative-integer error rather than a misleading one.
+    with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+        client.cypher("RETURN 1", after_index=True)
+    with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+        client.cypher("RETURN 1", after_index="7")  # type: ignore[arg-type]
