@@ -113,23 +113,6 @@ class TextResult:
         return f"TextResult(node_id={self.node_id}, score={self.score:.4f}, snippet={self.snippet!r})"
 
 
-class HybridResult:
-    """A single result from hybrid text + vector search (RRF-ranked)."""
-
-    def __init__(self, proto_result: Any) -> None:
-        self.node_id: int = proto_result.node_id
-        # Combined RRF score: text_weight/(60+rank_text) + vector_weight/(60+rank_vec).
-        self.score: float = proto_result.score
-        # NOTE: proto HybridResult carries only node_id + score (no embedded Node
-        # message). A full node is not included by design — the server returns IDs
-        # for efficiency. Callers that need node properties should use the client
-        # API: `client.get_node(self.node_id)`, or match on an application-level
-        # property in Cypher (e.g. WHERE n.id = <value>).
-
-    def __repr__(self) -> str:
-        return f"HybridResult(node_id={self.node_id}, score={self.score:.6f})"
-
-
 class PropertyDefinitionInfo:
     """A property definition from the schema (name, type, required, unique)."""
 
@@ -270,16 +253,54 @@ class AsyncCoordinodeClient:
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
+        *,
+        read_concern: str | None = None,
+        write_concern: str | None = None,
+        read_preference: str | None = None,
+        after_index: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute an OpenCypher query. Returns rows as list of dicts."""
+        """Execute an OpenCypher query. Returns rows as list of dicts.
+
+        Consistency parameters (all optional; server defaults apply when omitted):
+
+        - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
+        - ``write_concern``: ``"w0"``, ``"w1"`` (default, leader-ack), ``"majority"``. Required
+          ``"majority"`` when using causal reads (``after_index`` > 0).
+        - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
+          ``"secondary_preferred"``, ``"nearest"``.
+        - ``after_index``: raft log index for causal reads — returned rows reflect at least
+          the state at this index.
+        """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
         )
 
+        # Validate after_index type/range BEFORE any numeric comparison so that
+        # True (bool is a subclass of int) and "7" (str) produce a clear
+        # "must be a non-negative integer" error instead of a misleading
+        # causal-read violation or a raw TypeError.
+        if after_index is not None and (
+            not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0
+        ):
+            raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
+        # Causal reads (after_index > 0) are only satisfiable when writes were
+        # acknowledged by a majority; otherwise the referenced index may never
+        # replicate and the read would hang. Mirror the server's rejection.
+        if after_index is not None and after_index > 0 and (write_concern or "").strip().lower() != "majority":
+            raise ValueError(
+                "after_index > 0 requires write_concern='majority' — causal reads "
+                "depend on majority-committed writes. Pass write_concern='majority'."
+            )
         req = ExecuteCypherRequest(
             query=query,
             parameters=dict_to_props(params or {}),
         )
+        if read_concern is not None or after_index is not None:
+            req.read_concern.CopyFrom(_make_read_concern(read_concern, after_index))
+        if write_concern is not None:
+            req.write_concern.CopyFrom(_make_write_concern(write_concern))
+        if read_preference is not None:
+            req.read_preference = _make_read_preference(read_preference)
         resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
         columns = list(resp.columns)
         return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
@@ -776,64 +797,6 @@ class AsyncCoordinodeClient:
         resp = await self._text_stub.TextSearch(req, timeout=self._timeout)
         return [TextResult(r) for r in resp.results]
 
-    async def hybrid_text_vector_search(
-        self,
-        label: str,
-        text_query: str,
-        vector: Sequence[float],
-        *,
-        limit: int = 10,
-        text_weight: float = 0.5,
-        vector_weight: float = 0.5,
-        vector_property: str = "embedding",
-    ) -> list[HybridResult]:
-        """Fuse BM25 text search and cosine vector search using Reciprocal Rank Fusion (RRF).
-
-        Runs text and vector searches independently, then combines their ranked
-        lists::
-
-            rrf_score(node) = text_weight / (60 + rank_text)
-                            + vector_weight / (60 + rank_vec)
-
-        Args:
-            label: Node label to search (e.g. ``"Article"``).
-            text_query: Full-text query string (same syntax as :meth:`text_search`).
-            vector: Query embedding vector. Must match the dimensionality stored
-                in *vector_property*.
-            limit: Maximum fused results to return (default 10). The server may
-                apply its own upper bound; pass a reasonable value (e.g. ≤ 1000).
-            text_weight: Weight for the BM25 component (default 0.5).
-            vector_weight: Weight for the cosine component (default 0.5).
-            vector_property: Node property containing the embedding (default
-                ``"embedding"``).
-
-        Returns:
-            List of :class:`HybridResult` ordered by RRF score descending.
-
-        Note:
-            A full-text index covering *label* **must exist** before calling this
-            method — create one with :meth:`create_text_index` or a
-            ``CREATE TEXT INDEX`` Cypher statement.  Calling this method on a
-            label without a text index returns an empty list.
-        """
-        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-            raise ValueError(f"limit must be an integer >= 1, got {limit!r}.")
-        from coordinode._proto.coordinode.v1.query.text_pb2 import (  # type: ignore[import]
-            HybridTextVectorSearchRequest,
-        )
-
-        req = HybridTextVectorSearchRequest(
-            label=label,
-            text_query=text_query,
-            vector=[float(v) for v in vector],
-            limit=limit,
-            text_weight=text_weight,
-            vector_weight=vector_weight,
-            vector_property=vector_property,
-        )
-        resp = await self._text_stub.HybridTextVectorSearch(req, timeout=self._timeout)
-        return [HybridResult(r) for r in resp.results]
-
     async def health(self) -> bool:
         from coordinode._proto.coordinode.v1.health.health_pb2 import (  # type: ignore[import]
             HealthCheckRequest,
@@ -907,9 +870,23 @@ class CoordinodeClient:
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
+        *,
+        read_concern: str | None = None,
+        write_concern: str | None = None,
+        read_preference: str | None = None,
+        after_index: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute an OpenCypher query. Returns rows as list of dicts."""
-        return self._run(self._async.cypher(query, params))
+        """Execute an OpenCypher query. See :meth:`AsyncCoordinodeClient.cypher` for consistency args."""
+        return self._run(
+            self._async.cypher(
+                query,
+                params,
+                read_concern=read_concern,
+                write_concern=write_concern,
+                read_preference=read_preference,
+                after_index=after_index,
+            )
+        )
 
     def vector_search(
         self,
@@ -1016,32 +993,65 @@ class CoordinodeClient:
         """Run a full-text BM25 search over all indexed text properties for *label*."""
         return self._run(self._async.text_search(label, query, limit=limit, fuzzy=fuzzy, language=language))
 
-    def hybrid_text_vector_search(
-        self,
-        label: str,
-        text_query: str,
-        vector: Sequence[float],
-        *,
-        limit: int = 10,
-        text_weight: float = 0.5,
-        vector_weight: float = 0.5,
-        vector_property: str = "embedding",
-    ) -> list[HybridResult]:
-        """Fuse BM25 text search and cosine vector search using RRF ranking."""
-        return self._run(
-            self._async.hybrid_text_vector_search(
-                label,
-                text_query,
-                vector,
-                limit=limit,
-                text_weight=text_weight,
-                vector_weight=vector_weight,
-                vector_property=vector_property,
-            )
-        )
-
     def health(self) -> bool:
         return self._run(self._async.health())
+
+
+# ── Consistency helpers ──────────────────────────────────────────────────────
+
+
+_READ_CONCERN_MAP = {
+    "local": "READ_CONCERN_LEVEL_LOCAL",
+    "majority": "READ_CONCERN_LEVEL_MAJORITY",
+    "linearizable": "READ_CONCERN_LEVEL_LINEARIZABLE",
+    "snapshot": "READ_CONCERN_LEVEL_SNAPSHOT",
+}
+_WRITE_CONCERN_MAP = {
+    "w0": "WRITE_CONCERN_LEVEL_W0",
+    "w1": "WRITE_CONCERN_LEVEL_W1",
+    "majority": "WRITE_CONCERN_LEVEL_MAJORITY",
+}
+_READ_PREFERENCE_MAP = {
+    "primary": "READ_PREFERENCE_PRIMARY",
+    "primary_preferred": "READ_PREFERENCE_PRIMARY_PREFERRED",
+    "secondary": "READ_PREFERENCE_SECONDARY",
+    "secondary_preferred": "READ_PREFERENCE_SECONDARY_PREFERRED",
+    "nearest": "READ_PREFERENCE_NEAREST",
+}
+
+
+def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string; got {value!r}")
+    enum_name = mapping.get(value.strip().lower())
+    if enum_name is None:
+        raise ValueError(f"invalid {field} {value!r}; expected one of {sorted(mapping)}")
+    return enum_name
+
+
+def _make_read_concern(level: str | None, after_index: int | None) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    kwargs: dict[str, Any] = {}
+    if level is not None:
+        kwargs["level"] = getattr(pb, _normalize_consistency_key(level, "read_concern", _READ_CONCERN_MAP))
+    if after_index is not None:
+        if not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0:
+            raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
+        kwargs["after_index"] = after_index
+    return pb.ReadConcern(**kwargs)
+
+
+def _make_write_concern(level: str) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    return pb.WriteConcern(level=getattr(pb, _normalize_consistency_key(level, "write_concern", _WRITE_CONCERN_MAP)))
+
+
+def _make_read_preference(pref: str) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    return getattr(pb, _normalize_consistency_key(pref, "read_preference", _READ_PREFERENCE_MAP))
 
 
 # ── Stub factories (deferred import) ─────────────────────────────────────────

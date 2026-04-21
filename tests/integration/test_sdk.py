@@ -18,7 +18,6 @@ from coordinode import (
     AsyncCoordinodeClient,
     CoordinodeClient,
     EdgeTypeInfo,
-    HybridResult,
     LabelInfo,
     TextIndexInfo,
     TextResult,
@@ -696,43 +695,47 @@ def test_text_search_fuzzy(client):
             client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
-@_fts
-def test_hybrid_text_vector_search_returns_results(client):
-    """hybrid_text_vector_search() returns HybridResult list with RRF scores."""
-    label = f"FtsHybridTest_{uid()}"
+def test_cypher_accepts_consistency_kwargs(client):
+    """cypher() wires read_concern / write_concern / read_preference / after_index into the request."""
+    label = f"ConsistencyTest_{uid()}"
     tag = uid()
-    idx_name = f"idx_{label.lower()}"
-    vec = [float(i) / 16 for i in range(16)]
-    # Same node-as-int pattern: RETURN n → Value::Int(node_id) in CoordiNode executor.
-    rows = client.cypher(
-        f"CREATE (n:{label} {{tag: $tag, body: 'graph neural network embedding', embedding: $vec}}) RETURN n AS node_id",
-        params={"tag": tag, "vec": vec},
-    )
-    seed_id = rows[0]["node_id"]
-    idx_created = False
     try:
-        client.create_text_index(idx_name, label, "body")
-        idx_created = True
-        results = client.hybrid_text_vector_search(
-            label,
-            "graph neural",
-            vec,
-            limit=5,
+        client.cypher(
+            f"CREATE (n:{label} {{tag: $tag, v: 1}})",
+            params={"tag": tag},
+            write_concern="majority",
         )
-        assert isinstance(results, list)
-        if not results:
-            pytest.xfail("hybrid_text_vector_search returned no results — vector index not available on this server")
-        assert any(r.node_id == seed_id for r in results), (
-            f"seeded node {seed_id} not found in hybrid_text_vector_search results: {results}"
+        rows = client.cypher(
+            f"MATCH (n:{label} {{tag: $tag}}) RETURN n.v AS v",
+            params={"tag": tag},
+            read_concern="majority",
+            read_preference="primary",
+            after_index=0,
         )
-        r = results[0]
-        assert isinstance(r, HybridResult)
-        assert isinstance(r.node_id, int)
-        assert isinstance(r.score, float)
-        assert r.score > 0
+        assert rows and rows[0]["v"] == 1
     finally:
-        try:
-            if idx_created:
-                client.drop_text_index(idx_name)
-        finally:
-            client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DETACH DELETE n", params={"tag": tag})
+        # DELETE is a no-op when no nodes match — safe to run unconditionally.
+        client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
+
+
+def test_cypher_rejects_invalid_consistency_values(client):
+    """Invalid consistency kwargs raise ValueError before the RPC."""
+    with pytest.raises(ValueError, match="invalid read_concern"):
+        client.cypher("RETURN 1", read_concern="strong")
+    with pytest.raises(ValueError, match="invalid write_concern"):
+        client.cypher("RETURN 1", write_concern="w9")
+    with pytest.raises(ValueError, match="invalid read_preference"):
+        client.cypher("RETURN 1", read_preference="leader")
+    with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+        client.cypher("RETURN 1", after_index=-1)
+    # Causal reads (after_index > 0) require write_concern='majority'.
+    with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
+        client.cypher("RETURN 1", after_index=42)
+    with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
+        client.cypher("RETURN 1", after_index=42, write_concern="w1")
+    # Type validation runs before the causal-read check so bools/strings
+    # surface the non-negative-integer error rather than a misleading one.
+    with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+        client.cypher("RETURN 1", after_index=True)
+    with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
+        client.cypher("RETURN 1", after_index="7")  # type: ignore[arg-type]

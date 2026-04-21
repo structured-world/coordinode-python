@@ -105,7 +105,7 @@ db.cypher(
     params={"title": "RAG intro", "vec": [0.1] * 384},
 )
 
-# Nearest-neighbour search (requires HNSW index — coming in v0.4)
+# Nearest-neighbour search
 results = db.vector_search(
     label="Doc",
     property="embedding",
@@ -116,6 +116,70 @@ results = db.vector_search(
 for r in results:
     print(r.node.id, r.distance)
 ```
+
+## Hybrid Search (v0.4+)
+
+Fuse BM25 full-text and vector similarity using Cypher scoring functions:
+
+```python
+# Full-text scoring (text_score / text_match) requires a TEXT INDEX on the
+# queried property — without it those calls return zero/no matches.
+db.create_text_index("idx_doc_body", "Doc", "body")
+
+# Reciprocal Rank Fusion of text + vector. Projecting `d AS doc_id` returns the
+# internal node id (an integer) — fetch properties explicitly when needed.
+rows = db.cypher("""
+    MATCH (d:Doc)
+    WHERE text_match(d, $q) OR d.embedding IS NOT NULL
+    RETURN d AS doc_id,
+           d.title AS title,
+           rrf_score(
+               text_score(d, $q),
+               vec_score(d.embedding, $vec)
+           ) AS score
+    ORDER BY score DESC LIMIT 10
+""", params={"q": "graph neural network", "vec": [0.1] * 384})
+# Full node properties: db.get_node(rows[0]["doc_id"]).
+```
+
+Helpers available in Cypher (evaluated server-side in coordinode-rs ≥ v0.4.0):
+``text_score``, ``vec_score``, ``doc_score``, ``text_match``, ``rrf_score``,
+``hybrid_score``. These are built-in Cypher functions; nothing to import on the
+Python side.
+
+## ATTACH / DETACH DOCUMENT (v0.4+)
+
+Promote a nested property to a graph node (and back):
+
+```python
+db.cypher("MATCH (a:Article {id: $id}) DETACH DOCUMENT a.body AS (d:Body)",
+          params={"id": 1})
+db.cypher("MATCH (a:Article {id: $id})-[:HAS_BODY]->(d:Body) "
+          "ATTACH DOCUMENT d INTO a.body", params={"id": 1})
+```
+
+## Consistency Controls
+
+```python
+# Majority read for strict freshness. `n AS node_id` returns the integer id;
+# use get_node(id) or project explicit properties (e.g. n.email AS email).
+db.cypher(
+    "MATCH (n:Account) RETURN n AS node_id, n.email AS email",
+    read_concern="majority",
+)
+
+# Majority write (required for causal reads)
+db.cypher("CREATE (n:Event {t: timestamp()})", write_concern="majority")
+
+# Causal read: see at least state at raft index 42
+db.cypher("MATCH (n) RETURN count(n) AS total", after_index=42)
+```
+
+Accepted values:
+
+- ``read_concern``: ``local`` (default) · ``majority`` · ``linearizable`` · ``snapshot``
+- ``write_concern``: ``w0`` · ``w1`` (default) · ``majority``
+- ``read_preference``: ``primary`` (default) · ``primary_preferred`` · ``secondary`` · ``secondary_preferred`` · ``nearest``
 
 ## Related Packages
 
