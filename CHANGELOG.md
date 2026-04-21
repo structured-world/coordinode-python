@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.0.0](https://github.com/structured-world/coordinode-python/compare/v0.9.1...v1.0.0) (2026-04-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** HybridTextVectorSearch RPC removed upstream.
+
+### Features
+
+* **sdk:** expose consistency controls and document v0.4 features ([8d69841](https://github.com/structured-world/coordinode-python/commit/8d69841d158674fe0d5db53d2498399879dd9f9e))
+* **sdk:** update for coordinode-server v0.4.1 ([4b0274b](https://github.com/structured-world/coordinode-python/commit/4b0274bcbc2b80339bc89bc5f7239a5853393bbc)), closes [#46](https://github.com/structured-world/coordinode-python/issues/46)
+* **sdk:** update for coordinode-server v0.4.1 ([#47](https://github.com/structured-world/coordinode-python/issues/47)) ([7b426c0](https://github.com/structured-world/coordinode-python/commit/7b426c04396c789c2d7d6e3915ab320617102bea))
+
+
+### Bug Fixes
+
+* **demo,build,tests:** always pin SDK in Colab, broaden extension ignores, drop created flag ([10ab38d](https://github.com/structured-world/coordinode-python/commit/10ab38d917d440571342a560b8841f124d08d18e))
+* **demo,tests,docs:** guard apt install, proto stub import, README examples, and port-probe fallback ([443b189](https://github.com/structured-world/coordinode-python/commit/443b189e2ad7f28fb378517f10b896b9948b3a16))
+* **demo,tests,docs:** restore embedded adapter wrap, tighten test cleanup, clarify Cypher helpers ([e938194](https://github.com/structured-world/coordinode-python/commit/e938194bf9708cf6da2a4783dff5b9124e848a5f))
+* **demo:** close failed CoordinodeClient before raise; reinstate hard-fail on unhealthy port 7080 ([991f6e7](https://github.com/structured-world/coordinode-python/commit/991f6e760b3180e02fc12ba374196ad34d7fe2d3))
+* **demo:** drop port probe, switch embedded to file-backed persistence ([0b7fd95](https://github.com/structured-world/coordinode-python/commit/0b7fd95245f48eab3ae9ddb3e9499171c68a89f4))
+* **demo:** install protobuf-compiler before embedded build in Colab ([354a32d](https://github.com/structured-world/coordinode-python/commit/354a32dde28dc52c27c56b4c76dc3fd46f39210c))
+* **demo:** pin coordinode SDK in 03 notebook Colab branch, surface unhealthy-port fallback ([4f6a797](https://github.com/structured-world/coordinode-python/commit/4f6a797ae72ae97fdb285aa4312a82b0bc34b15a))
+* **demo:** remove unpinned coordinode override from Colab install block ([c8cea55](https://github.com/structured-world/coordinode-python/commit/c8cea550da63e410a5e6e30f4ebafd9b512ef85a))
+* **demo:** stable DEMO_TAG in embedded mode and portable temp dir ([c2d62b0](https://github.com/structured-world/coordinode-python/commit/c2d62b0595867651df43c2b3d3fdbec4341d6642))
+* **demo:** tighten pin condition and hard-fail on unhealthy gRPC port ([5957b8b](https://github.com/structured-world/coordinode-python/commit/5957b8bb43ce0ee5c47ac2ff5f773cc599566200))
+* **sdk,demo:** tighten consistency validation and pin coordinode SDK in Colab ([4175e96](https://github.com/structured-world/coordinode-python/commit/4175e967a5d935d54ab98b7b7f9035594e0f9e63))
+* **sdk,demo:** validate causal-read precondition; clarify embedded install path ([50ddc08](https://github.com/structured-world/coordinode-python/commit/50ddc08a89a21fca73be007cb22b57a0054225c3))
+* **sdk:** validate after_index type before causal-read precondition check ([d62e53b](https://github.com/structured-world/coordinode-python/commit/d62e53b0c5f64f66f79e3c46e8be0b9fa006120e))
+
+
+### Documentation
+
+* **coordinode:** note CREATE TEXT INDEX prerequisite for hybrid search example ([8f88a67](https://github.com/structured-world/coordinode-python/commit/8f88a67597c8bf0daa7f8076d5f1201d171ac03b))
+* **demo:** expand seed success message to cover embedded + server modes ([2cd87d3](https://github.com/structured-world/coordinode-python/commit/2cd87d3092f5d0112c662f20309846cec38ea793))
+
 ## [0.9.1](https://github.com/structured-world/coordinode-python/compare/v0.9.0...v0.9.1) (2026-04-16)
 
 
