@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/structured-world/coordinode-python/compare/v1.0.0...v1.0.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **embedded:** commit Cargo.lock to pin openraft alpha.17 ([d943955](https://github.com/structured-world/coordinode-python/commit/d943955757a32671607c06ae5a00438990b86357))
+
 ## [1.0.0](https://github.com/structured-world/coordinode-python/compare/v0.9.1...v1.0.0) (2026-04-21)
 
 
