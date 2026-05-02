@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2](https://github.com/structured-world/coordinode-python/compare/v1.0.1...v1.0.2) (2026-05-02)
+
+
+### Bug Fixes
+
+* **release:** handle missing dnf in aarch64 manylinux container ([957d0f5](https://github.com/structured-world/coordinode-python/commit/957d0f5e82bd601b2e7c2457c2e1804ce2fd63e4)), closes [#52](https://github.com/structured-world/coordinode-python/issues/52)
+* **release:** handle missing dnf in aarch64 manylinux container ([#53](https://github.com/structured-world/coordinode-python/issues/53)) ([ffddfef](https://github.com/structured-world/coordinode-python/commit/ffddfefcd09e1494a0b724c0d014d76ed9f2bb72))
+
 ## [1.0.1](https://github.com/structured-world/coordinode-python/compare/v1.0.0...v1.0.1) (2026-05-02)
 
 
