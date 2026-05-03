@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.4](https://github.com/structured-world/coordinode-python/compare/v1.0.3...v1.0.4) (2026-05-03)
+
+
+### Bug Fixes
+
+* **ci:** set PYO3_CROSS_PYTHON_VERSION for aarch64 cross-compilation ([269805e](https://github.com/structured-world/coordinode-python/commit/269805ec52ac4cf968eade9ca7b6f87770b00a34))
+* **ci:** set PYO3_CROSS_PYTHON_VERSION for aarch64 Linux cross-compilation ([#58](https://github.com/structured-world/coordinode-python/issues/58)) ([899bf4a](https://github.com/structured-world/coordinode-python/commit/899bf4a34bccfd156f18e84ef8afc9c7a9d6c94c))
+
 ## [1.0.3](https://github.com/structured-world/coordinode-python/compare/v1.0.2...v1.0.3) (2026-05-03)
 
 
