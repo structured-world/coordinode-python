@@ -73,13 +73,12 @@ jobs:
             manylinux: manylinux_2_28
 
           # Linux aarch64 — AWS Graviton, Raspberry Pi, etc.
-          # Cross-compiled on the x86_64 runner using rust-cross container.
-          # rust-cross/manylinux_2_28-cross has no Python, so PYO3_CROSS_PYTHON_VERSION
-          # tells PyO3 which version to target without needing a Python binary.
+          # Uses the official pypa manylinux_2_28 aarch64 image via QEMU emulation.
+          # The rust-cross container has no Python, so we use the pypa image which has
+          # Python 3.11–3.13 preinstalled. Slower than cross-compilation but correct.
           - os: ubuntu-latest
             target: aarch64
-            manylinux: manylinux_2_28
-            pyo3_cross_python_version: "3.11"
+            manylinux: quay.io/pypa/manylinux_2_28_aarch64
 
           # macOS Apple Silicon (M1/M2/M3)
           # Pin to Python 3.13: macos-latest ships Python 3.14 which PyO3 0.23.x
@@ -135,8 +134,6 @@ jobs:
 
       - name: Build wheels
         uses: PyO3/maturin-action@32307a466a178317e8c2ae343b38e73896a047be  # v1.47.0
-        env:
-          PYO3_CROSS_PYTHON_VERSION: ${{ matrix.pyo3_cross_python_version }}
         with:
           command: build
           args: >-
