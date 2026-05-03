@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.3](https://github.com/structured-world/coordinode-python/compare/v1.0.2...v1.0.3) (2026-05-03)
+
+
+### Bug Fixes
+
+* **release:** use if/else for protoc install, add apt-get update for aarch64 ([e6f17a0](https://github.com/structured-world/coordinode-python/commit/e6f17a0a706626b2dfed4c3321995e2afcec5781)), closes [#55](https://github.com/structured-world/coordinode-python/issues/55)
+* **release:** use if/else for protoc install, add apt-get update for aarch64 ([#56](https://github.com/structured-world/coordinode-python/issues/56)) ([7d7e510](https://github.com/structured-world/coordinode-python/commit/7d7e510abfb9264c75030f5f21ae193b3e45449d))
+
 ## [1.0.2](https://github.com/structured-world/coordinode-python/compare/v1.0.1...v1.0.2) (2026-05-02)
 
 
