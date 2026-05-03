@@ -142,9 +142,11 @@ jobs:
           manylinux: ${{ matrix.manylinux || 'auto' }}
           target: ${{ matrix.target }}
           before-script-linux: |
-            command -v dnf  && dnf  install -y   protobuf-compiler ||
-            command -v yum  && yum  install -y   protobuf-compiler ||
-            command -v apt-get && apt-get install -y -q protobuf-compiler
+            if command -v dnf >/dev/null 2>&1; then
+              dnf install -y protobuf-compiler
+            else
+              apt-get update -q && apt-get install -y -q protobuf-compiler
+            fi
 
       - name: Upload wheels
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
