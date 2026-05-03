@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.6](https://github.com/structured-world/coordinode-python/compare/v1.0.5...v1.0.6) (2026-05-03)
+
+
+### Bug Fixes
+
+* **demo:** install coordinode-embedded from PyPI wheel, drop rustup/Rust build ([5765484](https://github.com/structured-world/coordinode-python/commit/57654849b4b0ac600aac067c5a79ee6c7afb53af))
+* **demo:** install coordinode-embedded from PyPI wheel, drop rustup/Rust build ([#64](https://github.com/structured-world/coordinode-python/issues/64)) ([834edfd](https://github.com/structured-world/coordinode-python/commit/834edfd0e7215d844e6f6a0678f6f32c43b5fd8c))
+* **embedded:** enable abi3-py311 for cross-version wheel compatibility ([52b6599](https://github.com/structured-world/coordinode-python/commit/52b6599e8c0f97f1e4cde61eab50188a85b40fb1)), closes [#65](https://github.com/structured-world/coordinode-python/issues/65)
+* **embedded:** enable abi3-py311 for cross-version wheel compatibility ([#66](https://github.com/structured-world/coordinode-python/issues/66)) ([ef89b4b](https://github.com/structured-world/coordinode-python/commit/ef89b4b8fb026b67b3b7f3e924d83821e9dc3119))
+
+
+### Documentation
+
+* add Try It in Google Colab section to README ([5022676](https://github.com/structured-world/coordinode-python/commit/5022676e65922ebfddc92f4f1ad7f15a8421bfd9))
+* add Try It in Google Colab section to README ([#62](https://github.com/structured-world/coordinode-python/issues/62)) ([9da6f48](https://github.com/structured-world/coordinode-python/commit/9da6f484ff96d99b0eea8890f8c6408a6b157129))
+
 ## [1.0.5](https://github.com/structured-world/coordinode-python/compare/v1.0.4...v1.0.5) (2026-05-03)
 
 
