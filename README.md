@@ -17,6 +17,20 @@ Graph + Vector + Full-Text in a single transactional engine. One client, one que
 | [`langchain-coordinode`](langchain-coordinode/) | [![PyPI](https://img.shields.io/pypi/v/langchain-coordinode?label=langchain-coordinode)](https://pypi.org/project/langchain-coordinode/) | LangChain `GraphStore` + `GraphCypherQAChain` |
 | [`llama-index-graph-stores-coordinode`](llama-index-coordinode/) | [![PyPI](https://img.shields.io/pypi/v/llama-index-graph-stores-coordinode?label=llama-index-graph-stores-coordinode)](https://pypi.org/project/llama-index-graph-stores-coordinode/) | LlamaIndex `PropertyGraphStore` |
 
+## Try It in Google Colab
+
+No setup required — runs entirely in-browser using the embedded engine:
+
+| Notebook | Open |
+|----------|------|
+| 00 · Seed demo knowledge graph | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/00_seed_data.ipynb) |
+| 01 · LlamaIndex PropertyGraph query | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/01_llama_index_property_graph.ipynb) |
+| 02 · LangChain GraphCypherQAChain | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/02_langchain_graph_chain.ipynb) |
+| 03 · LangGraph agent over graph | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) |
+
+> Start with **00** to seed the graph — the other notebooks read from it.
+> The first cell installs `coordinode-embedded` from source (~8 min); subsequent runs are instant.
+
 ## Quick Start
 
 ```bash
