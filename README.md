@@ -29,7 +29,7 @@ No setup required — runs entirely in-browser using the embedded engine:
 | 03 · LangGraph agent over graph | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) |
 
 > Start with **00** to seed the graph — the other notebooks read from it.
-> The first cell installs `coordinode-embedded` from source (~8 min); subsequent runs are instant.
+> The first cell installs pre-built wheels from PyPI (~30 sec).
 
 ## Quick Start
 
