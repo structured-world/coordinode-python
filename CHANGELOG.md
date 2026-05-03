@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.5](https://github.com/structured-world/coordinode-python/compare/v1.0.4...v1.0.5) (2026-05-03)
+
+
+### Bug Fixes
+
+* **ci:** remove PYO3_CROSS_PYTHON_VERSION, use pypa manylinux image for aarch64 ([#60](https://github.com/structured-world/coordinode-python/issues/60)) ([13cbc7d](https://github.com/structured-world/coordinode-python/commit/13cbc7d8e0bdeeabce58151f79a2c96a8bfb434b))
+* **ci:** use container input for pypa aarch64 image, keep manylinux as policy ([5e6ff67](https://github.com/structured-world/coordinode-python/commit/5e6ff67d1b05b321a1815a6d891a8cff418fa979))
+* **ci:** use pypa manylinux_2_28_aarch64 image via QEMU for aarch64 build ([e288ddd](https://github.com/structured-world/coordinode-python/commit/e288ddd8e7b286a2da6ba4061f5c60edfea03698))
+
 ## [1.0.4](https://github.com/structured-world/coordinode-python/compare/v1.0.3...v1.0.4) (2026-05-03)
 
 
