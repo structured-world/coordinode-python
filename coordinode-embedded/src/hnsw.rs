@@ -64,9 +64,14 @@ impl Hnsw {
     ///
     /// # Arguments
     /// * `dim` — embedding dimension (must match the vectors passed to `fit` / `knn_query`).
-    /// * `metric` — distance metric. One of `cosine` / `angular`, `euclidean` / `l2`,
-    ///   `dot` / `inner_product`, `manhattan` / `l1`. Names mirror ann-benchmarks
-    ///   conventions so existing harnesses pass their `space` argument unchanged.
+    /// * `metric` — distance metric. Accepted aliases (all case-insensitive):
+    ///     - cosine similarity: `cosine`, `angular`
+    ///     - Euclidean (L2):    `euclidean`, `l2`
+    ///     - dot product:       `dot`, `dot_product`, `ip`, `inner_product`
+    ///     - Manhattan (L1):    `manhattan`, `l1`
+    ///
+    ///   Spellings track ann-benchmarks and VectorDBBench so existing
+    ///   harnesses pass their `space` argument unchanged.
     /// * `M` — max connections per element per layer (HNSW spec). Default 16.
     /// * `ef_construction` — candidate list size during build. Default 200.
     /// * `max_elements` — hint to pre-allocate node storage. Default 1_000_000.
@@ -208,23 +213,31 @@ impl Hnsw {
 
     /// Number of vectors indexed.
     fn __len__(&self) -> PyResult<usize> {
-        // `next_id` is monotonically incremented per insert, so it doubles
-        // as the count without us reaching into HnswIndex internals.
-        let next = self
-            .next_id
+        // Read the count from the HnswIndex itself, NOT from `next_id`.
+        // `next_id` is bumped under its own mutex before the inserts happen
+        // under `inner`; with the GIL released around the build, a concurrent
+        // `__len__` call would otherwise observe phantom IDs that haven't
+        // actually landed in the index.  Locking `inner` makes the count
+        // reflect committed inserts only.
+        let index = self
+            .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("next_id lock poisoned: {e}")))?;
-        Ok(*next as usize)
+            .map_err(|e| PyRuntimeError::new_err(format!("index lock poisoned: {e}")))?;
+        Ok(index.len())
     }
 
     fn __repr__(&self) -> String {
-        // `__len__` surfaces a poisoned mutex as RuntimeError; `__repr__` can't
-        // raise (Python expects it to always return a string) so we emit a
-        // visible marker instead of silently reporting len=0.  Hiding a poisoned
-        // lock would mask real concurrency bugs during debugging.
-        let len_repr = match self.next_id.lock() {
-            Ok(g) => g.to_string(),
-            Err(_) => "<poisoned>".to_owned(),
+        // `__len__` surfaces a poisoned mutex as RuntimeError; `__repr__`
+        // can't raise (Python expects it to always return a string), so a
+        // poison is rendered as a visible marker rather than a silent
+        // `len=0` that would mask real concurrency bugs during debugging.
+        // `try_lock` is intentional: even when uncontended `__repr__` runs
+        // in the debugger and must not block a concurrent build that holds
+        // the lock — we'd rather show `<busy>` than deadlock the REPL.
+        let len_repr = match self.inner.try_lock() {
+            Ok(idx) => idx.len().to_string(),
+            Err(std::sync::TryLockError::WouldBlock) => "<busy>".to_owned(),
+            Err(std::sync::TryLockError::Poisoned(_)) => "<poisoned>".to_owned(),
         };
         format!("Hnsw(dim={}, len={len_repr})", self.dim)
     }

@@ -14,8 +14,11 @@ ce = pytest.importorskip("coordinode_embedded")
 
 
 def _brute_force_topk(X, q, k: int):
+    # argpartition gives the top-k indices in O(N), vs argsort's O(N log N).
+    # We only need the SET of nearest k, ordering inside the set doesn't
+    # matter for the recall metric.
     dists = ((X - q) ** 2).sum(axis=1)
-    return set(np.argsort(dists)[:k].tolist())
+    return set(np.argpartition(dists, k)[:k].tolist())
 
 
 def test_metric_parsing_and_dim_validation() -> None:
@@ -59,8 +62,10 @@ def test_recall_at_10_geq_0_95() -> None:
     we hold queries out of the training set).
     """
     rng = np.random.default_rng(42)
-    X = rng.standard_normal((10_000, 16)).astype(np.float32)
-    queries = rng.standard_normal((50, 16)).astype(np.float32)
+    # `dtype=` on standard_normal skips the float64-then-astype round-trip,
+    # halving the allocation for this 10K × 16 matrix.
+    X = rng.standard_normal((10_000, 16), dtype=np.float32)
+    queries = rng.standard_normal((50, 16), dtype=np.float32)
 
     idx = ce.Hnsw(dim=16, metric="euclidean", M=16, ef_construction=200)
     idx.fit(X)
