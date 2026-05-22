@@ -21,6 +21,6 @@ Example::
     db.close()
 """
 
-from ._coordinode_embedded import LocalClient
+from ._coordinode_embedded import Hnsw, LocalClient
 
-__all__ = ["LocalClient"]
+__all__ = ["Hnsw", "LocalClient"]

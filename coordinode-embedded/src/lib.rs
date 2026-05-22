@@ -1,3 +1,5 @@
+mod hnsw;
+
 /// CoordiNode embedded Python bindings.
 ///
 /// Exposes `LocalClient` — a `CoordinodeClient`-compatible interface that runs
@@ -313,5 +315,6 @@ impl LocalClient {
 #[pymodule]
 fn _coordinode_embedded(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<LocalClient>()?;
+    m.add_class::<hnsw::Hnsw>()?;
     Ok(())
 }
