@@ -13,7 +13,7 @@ name = "_coordinode_embedded"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
 coordinode-embed = { path = "../coordinode-rs/crates/coordinode-embed" }
 coordinode-core = { path = "../coordinode-rs/crates/coordinode-core" }
 rmpv = "1"
