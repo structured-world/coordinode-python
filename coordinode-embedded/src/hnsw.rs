@@ -16,6 +16,12 @@ use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
+/// All accepted spellings, kept beside [`parse_metric`] so the error message
+/// and the match arms cannot drift.  When this list changes, the parser is
+/// the source of truth — bump both at once.
+const ACCEPTED_METRICS: &str =
+    "cosine, angular, euclidean, l2, dot, dot_product, ip, inner_product, manhattan, l1";
+
 fn parse_metric(s: &str) -> PyResult<VectorMetric> {
     match s.to_ascii_lowercase().as_str() {
         "cosine" | "angular" => Ok(VectorMetric::Cosine),
@@ -23,7 +29,7 @@ fn parse_metric(s: &str) -> PyResult<VectorMetric> {
         "dot" | "dot_product" | "ip" | "inner_product" => Ok(VectorMetric::DotProduct),
         "manhattan" | "l1" => Ok(VectorMetric::L1),
         other => Err(PyValueError::new_err(format!(
-            "unknown metric '{other}' — expected one of: cosine/angular, euclidean/l2, dot, manhattan/l1"
+            "unknown metric '{other}' — accepted: {ACCEPTED_METRICS}"
         ))),
     }
 }
@@ -45,7 +51,7 @@ fn parse_metric(s: &str) -> PyResult<VectorMetric> {
 /// idx.set_ef(80)
 /// labels = idx.knn_query(q, k=10)   # numpy int64 array, shape (10,)
 /// ```
-#[pyclass]
+#[pyclass(module = "coordinode_embedded")]
 pub struct Hnsw {
     inner: Mutex<HnswIndex>,
     next_id: Mutex<u64>,
@@ -212,11 +218,14 @@ impl Hnsw {
     }
 
     fn __repr__(&self) -> String {
-        let n = self
-            .next_id
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0);
-        format!("Hnsw(dim={}, len={})", self.dim, n)
+        // `__len__` surfaces a poisoned mutex as RuntimeError; `__repr__` can't
+        // raise (Python expects it to always return a string) so we emit a
+        // visible marker instead of silently reporting len=0.  Hiding a poisoned
+        // lock would mask real concurrency bugs during debugging.
+        let len_repr = match self.next_id.lock() {
+            Ok(g) => g.to_string(),
+            Err(_) => "<poisoned>".to_owned(),
+        };
+        format!("Hnsw(dim={}, len={len_repr})", self.dim)
     }
 }
