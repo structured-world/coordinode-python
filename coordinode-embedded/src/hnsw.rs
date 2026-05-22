@@ -114,7 +114,15 @@ impl Hnsw {
             )));
         }
         if n == 0 {
-            return Ok((0, 0));
+            // Empty batch is a no-op but must still report the current insertion
+            // point — returning (0, 0) would break the "contiguous range
+            // [first_id, last_id+1) at the actual insertion point" contract once
+            // the index already holds vectors.
+            let next = self
+                .next_id
+                .lock()
+                .map_err(|e| PyRuntimeError::new_err(format!("next_id lock poisoned: {e}")))?;
+            return Ok((*next, *next));
         }
         // Materialise the (id, vec) batch under the GIL, then release the GIL
         // for the build.  Use per-item `insert` rather than `insert_batch`:

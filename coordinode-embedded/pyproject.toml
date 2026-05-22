@@ -22,6 +22,14 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dynamic = ["version"]
+# The compiled extension links against NumPy's C API at runtime (via the Rust
+# `numpy` crate).  `import coordinode_embedded` triggers `import numpy.core`
+# under the hood — without NumPy installed the extension panics on first call.
+# Pin the lower bound to the oldest release that ships matching ABI headers
+# for cp311/312/313/314 wheels.
+dependencies = [
+    "numpy>=1.26",
+]
 
 [project.urls]
 Homepage = "https://coordinode.dev"

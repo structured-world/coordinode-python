@@ -28,12 +28,15 @@ def test_metric_parsing_and_dim_validation() -> None:
     ce.Hnsw(dim=4, metric="cosine", M=4, ef_construction=20)
     ce.Hnsw(dim=4, metric="l1", M=4, ef_construction=20)
     ce.Hnsw(dim=4, metric="dot", M=4, ef_construction=20)
+    # "inner_product" is a documented alias for "dot" — exercise it explicitly
+    # so a future rename in the Rust metric parser can't silently drop it.
+    ce.Hnsw(dim=4, metric="inner_product", M=4, ef_construction=20)
     with pytest.raises(ValueError):
         ce.Hnsw(dim=4, metric="bogus", M=4, ef_construction=20)
 
     # Dimension mismatch on fit / query surfaces as ValueError, not panic.
     with pytest.raises(ValueError):
-        idx.fit(np.zeros((3, 7), dtype=np.float32))   # 7 ≠ 8
+        idx.fit(np.zeros((3, 7), dtype=np.float32))  # 7 ≠ 8
     idx.fit(np.zeros((3, 8), dtype=np.float32))
     with pytest.raises(ValueError):
         idx.knn_query(np.zeros(7, dtype=np.float32), k=3)
@@ -72,9 +75,7 @@ def test_recall_at_10_geq_0_95() -> None:
             ok += len(truths[i] & got)
             total += 10
         recall = ok / total
-        assert recall >= min_recall, (
-            f"recall@10 at ef={ef} = {recall:.3f} (expected ≥ {min_recall})"
-        )
+        assert recall >= min_recall, f"recall@10 at ef={ef} = {recall:.3f} (expected ≥ {min_recall})"
 
 
 def test_knn_query_returns_int64_array() -> None:
@@ -84,4 +85,4 @@ def test_knn_query_returns_int64_array() -> None:
     assert isinstance(out, np.ndarray)
     assert out.dtype == np.int64
     assert out.shape == (3,)
-    assert out[0] == 0    # the eye row most similar to (1,0,0,0)
+    assert out[0] == 0  # the eye row most similar to (1,0,0,0)
