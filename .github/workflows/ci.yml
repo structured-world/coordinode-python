@@ -64,6 +64,27 @@ jobs:
           before-script-linux: |
             dnf install -y protobuf-compiler
 
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
+        with:
+          python-version: "3.12"
+
+      - name: Install wheel + run embedded tests
+        # The main `test` job skips coordinode_embedded with importorskip
+        # because that runner doesn't build the wheel.  This job has the
+        # wheel — install it and run the embedded tests here, with
+        # --strict-markers so a silent skip surfaces as a CI failure.
+        run: |
+          set -euo pipefail
+          WHL=$(ls /tmp/embedded-dist/coordinode_embedded-*.whl | head -1)
+          test -n "$WHL"
+          uv venv --python 3.12 /tmp/test-venv
+          uv pip install --python /tmp/test-venv/bin/python "$WHL" numpy pytest pytest-timeout
+          /tmp/test-venv/bin/python -m pytest tests/unit/test_hnsw.py -v --strict-markers -ra
+          # Fail if any test was skipped — importorskip is intentional, but
+          # in this job the wheel IS installed, so a skip means something is
+          # genuinely broken (wrong manylinux glibc, missing numpy, ...).
+          test "$(/tmp/test-venv/bin/python -m pytest tests/unit/test_hnsw.py --collect-only -q 2>&1 | grep -c 'test_')" -gt 0
+
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest
