@@ -317,8 +317,10 @@ fn _coordinode_embedded(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // No explicit NumPy C-API initialization here.  The `numpy` crate
     // (see crate-level docs: "Loading NumPy is done automatically and on
     // demand") triggers `import numpy.core` lazily the first time a
-    // PyArray operation runs.  An explicit init step would be a no-op
-    // and there is no public initializer in numpy 0.23.
+    // PyArray operation runs.  An explicit init step would be a no-op —
+    // the crate exposes no public initializer (verified against the
+    // 0.23/0.24 lines, and that policy is unlikely to change while the
+    // crate's lazy-import design holds).
     m.add_class::<LocalClient>()?;
     m.add_class::<hnsw::Hnsw>()?;
     Ok(())

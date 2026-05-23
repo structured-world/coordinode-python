@@ -17,6 +17,11 @@ def _brute_force_topk(X, q, k: int):
     # argpartition gives the top-k indices in O(N), vs argsort's O(N log N).
     # We only need the SET of nearest k, ordering inside the set doesn't
     # matter for the recall metric.
+    #
+    # The `k` argument to argpartition is the pivot index, NOT an off-by-one:
+    # numpy places the (k+1)-th smallest at position k, with everything
+    # smaller at positions 0..k-1.  So `[:k]` gives exactly the k smallest
+    # — verified empirically against np.argsort on random vectors.
     dists = ((X - q) ** 2).sum(axis=1)
     return set(np.argpartition(dists, k)[:k].tolist())
 
