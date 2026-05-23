@@ -92,9 +92,18 @@ impl Hnsw {
             return Err(PyValueError::new_err("M must be > 0"));
         }
         let metric = parse_metric(metric)?;
+        // `M * 2` would panic in debug / wrap in release for adversarial M
+        // (M ≥ usize::MAX / 2 + 1).  Reject before the engine sees a broken
+        // config; realistic M values are 4..96, so any overflow here is a
+        // caller error, not a workload to support.
+        let m_max0 = M.checked_mul(2).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "M={M} is too large; M * 2 overflows usize"
+            ))
+        })?;
         let config = HnswConfig {
             m: M,
-            m_max0: M * 2,
+            m_max0,
             ef_construction,
             ef_search: 50,
             metric,
