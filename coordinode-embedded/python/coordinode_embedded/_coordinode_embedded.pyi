@@ -15,9 +15,11 @@ class Hnsw:
     Args:
         dim: Embedding dimension.  Must match the vectors passed to ``fit``
              and ``knn_query``.
-        metric: Distance metric — one of ``"cosine"`` / ``"angular"``,
-                ``"euclidean"`` / ``"l2"``, ``"dot"`` / ``"inner_product"``,
-                ``"manhattan"`` / ``"l1"``.
+        metric: Distance metric. Accepted spellings (case-insensitive):
+                  - cosine similarity: ``"cosine"``, ``"angular"``
+                  - Euclidean (L2):    ``"euclidean"``, ``"l2"``
+                  - dot product:       ``"dot"``, ``"dot_product"``, ``"ip"``, ``"inner_product"``
+                  - Manhattan (L1):    ``"manhattan"``, ``"l1"``
         M: Max connections per element per layer (HNSW spec). Default 16.
         ef_construction: Candidate list size during build. Default 200.
         max_elements: Hint to pre-allocate node storage. Default 1_000_000.

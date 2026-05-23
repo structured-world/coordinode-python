@@ -16,14 +16,11 @@ ce = pytest.importorskip("coordinode_embedded")
 def _brute_force_topk(X, q, k: int):
     # argpartition gives the top-k indices in O(N), vs argsort's O(N log N).
     # We only need the SET of nearest k, ordering inside the set doesn't
-    # matter for the recall metric.
-    #
-    # The `k` argument to argpartition is the pivot index, NOT an off-by-one:
-    # numpy places the (k+1)-th smallest at position k, with everything
-    # smaller at positions 0..k-1.  So `[:k]` gives exactly the k smallest
-    # — verified empirically against np.argsort on random vectors.
+    # matter for the recall metric.  Pivot is k-1 (0-indexed) so the
+    # element at position k-1 lands at its sorted position and everything
+    # smaller is at 0..k-2 — slice [:k] yields the k smallest.
     dists = ((X - q) ** 2).sum(axis=1)
-    return set(np.argpartition(dists, k)[:k].tolist())
+    return set(np.argpartition(dists, k - 1)[:k].tolist())
 
 
 def test_metric_parsing_and_dim_validation() -> None:
