@@ -59,10 +59,45 @@ jobs:
           command: build
           args: >-
             --manifest-path coordinode-embedded/Cargo.toml
-            --out /tmp/embedded-dist
+            --out dist
           manylinux: manylinux_2_28
           before-script-linux: |
             dnf install -y protobuf-compiler
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
+        with:
+          python-version: "3.12"
+
+      - name: Install wheel + run embedded tests
+        # The main `test` job skips coordinode_embedded with importorskip
+        # because that runner doesn't build the wheel.  This job has the
+        # wheel — install it and run the embedded tests here, then assert
+        # nothing was skipped (a skip with the wheel installed means a
+        # broken manylinux glibc / missing numpy / etc., not the expected
+        # "no wheel" condition).
+        # maturin-action runs inside a manylinux container; only paths
+        # under $GITHUB_WORKSPACE are bind-mounted back to the host, so
+        # the wheel goes to ./dist/ (workspace-relative), not /tmp/.
+        run: |
+          set -euo pipefail
+          WHL=$(ls dist/coordinode_embedded-*.whl | head -1)
+          test -n "$WHL"
+          uv venv --python 3.12 /tmp/test-venv
+          uv pip install --python /tmp/test-venv/bin/python "$WHL" numpy pytest pytest-timeout
+          OUTPUT=$(/tmp/test-venv/bin/python -m pytest tests/unit/test_hnsw.py -v --strict-markers -ra 2>&1)
+          echo "$OUTPUT"
+          # `-ra` prints a "SKIPPED [N]" short summary header when anything was
+          # skipped; importorskip-based skip also surfaces this way.  Use the
+          # full output instead of the exit code because pytest treats skips
+          # as success.
+          if echo "$OUTPUT" | grep -qE '^SKIPPED|=+ .* skipped'; then
+            echo "::error::Tests were skipped in build-embedded; the wheel is installed so this is a real failure (broken glibc / missing numpy / etc.)"
+            exit 1
+          fi
+          if ! echo "$OUTPUT" | grep -qE '=+ [0-9]+ passed'; then
+            echo "::error::No tests passed — the module was likely not collected"
+            exit 1
+          fi
 
   test-integration:
     name: Integration tests
