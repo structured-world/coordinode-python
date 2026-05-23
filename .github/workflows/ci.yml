@@ -59,7 +59,7 @@ jobs:
           command: build
           args: >-
             --manifest-path coordinode-embedded/Cargo.toml
-            --out /tmp/embedded-dist
+            --out dist
           manylinux: manylinux_2_28
           before-script-linux: |
             dnf install -y protobuf-compiler
@@ -73,9 +73,12 @@ jobs:
         # because that runner doesn't build the wheel.  This job has the
         # wheel — install it and run the embedded tests here, with
         # --strict-markers so a silent skip surfaces as a CI failure.
+        # maturin-action runs inside a manylinux container; only paths
+        # under $GITHUB_WORKSPACE are bind-mounted back to the host, so
+        # the wheel goes to ./dist/ (workspace-relative), not /tmp/.
         run: |
           set -euo pipefail
-          WHL=$(ls /tmp/embedded-dist/coordinode_embedded-*.whl | head -1)
+          WHL=$(ls dist/coordinode_embedded-*.whl | head -1)
           test -n "$WHL"
           uv venv --python 3.12 /tmp/test-venv
           uv pip install --python /tmp/test-venv/bin/python "$WHL" numpy pytest pytest-timeout
