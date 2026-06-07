@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/structured-world/coordinode-python/compare/v1.0.6...v1.1.0) (2026-06-07)
+
+
+### Features
+
+* **embedded:** add native Hnsw class for ann-benchmarks integration ([#70](https://github.com/structured-world/coordinode-python/issues/70)) ([a2986a6](https://github.com/structured-world/coordinode-python/commit/a2986a62d4b6e52ddbc1b7e7ab06b3ec7e7785f4))
+
 ## [1.0.6](https://github.com/structured-world/coordinode-python/compare/v1.0.5...v1.0.6) (2026-05-03)
 
 
