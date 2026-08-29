@@ -273,18 +273,26 @@ class AsyncCoordinodeClient:
         write_concern: str | None = None,
         read_preference: str | None = None,
         after_index: int | None = None,
+        at_timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts.
 
         Consistency parameters (all optional; server defaults apply when omitted):
 
         - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
-        - ``write_concern``: ``"w0"``, ``"w1"`` (default, leader-ack), ``"majority"``. Required
-          ``"majority"`` when using causal reads (``after_index`` > 0).
+        - ``write_concern``: ``"w0"``, ``"memory"``, ``"cache"``, ``"w1"`` (default, leader-ack),
+          ``"majority"``, in rising order of durability. ``"memory"`` and ``"cache"`` acknowledge
+          before the write reaches Raft, so a leader crash before the background drain loses them;
+          reach for those only where losing recent writes is acceptable. Causal reads
+          (``after_index`` > 0) require ``"majority"``.
         - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
           ``"secondary_preferred"``, ``"nearest"``.
-        - ``after_index``: raft log index for causal reads — returned rows reflect at least
-          the state at this index.
+        - ``after_index``: raft log index for causal reads, a fence. Returned rows reflect at
+          least the state at this index.
+        - ``at_timestamp``: HLC timestamp to read at, a pin rather than a fence. Reads the
+          database exactly as of that version without waiting, for time travel. The timestamp
+          has to fall inside the MVCC retention window; older snapshots are collected and the
+          server answers UNAVAILABLE.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
@@ -310,8 +318,8 @@ class AsyncCoordinodeClient:
             query=query,
             parameters=dict_to_props(params or {}),
         )
-        if read_concern is not None or after_index is not None:
-            req.read_concern.CopyFrom(_make_read_concern(read_concern, after_index))
+        if read_concern is not None or after_index is not None or at_timestamp is not None:
+            req.read_concern.CopyFrom(_make_read_concern(read_concern, after_index, at_timestamp))
         if write_concern is not None:
             req.write_concern.CopyFrom(_make_write_concern(write_concern))
         if read_preference is not None:
@@ -392,6 +400,29 @@ class AsyncCoordinodeClient:
         req = CreateNodeRequest(labels=labels, properties=dict_to_props(properties))
         node = await self._graph_stub.CreateNode(req, timeout=self._timeout)
         return NodeResult(node)
+
+    async def create_nodes_batch(self, nodes: Sequence[tuple[list[str], dict[str, PyValue]]]) -> list[NodeResult]:
+        """Create many nodes in one atomic call, returned in input order.
+
+        Each entry is a ``(labels, properties)`` pair with the same meaning it
+        has in :meth:`create_node`. The server takes its secondary-index write
+        locks once for the whole batch instead of once per node, so seeding data
+        that carries vector or full-text properties is far cheaper this way than
+        through a loop. Either every node is created or none is. An empty
+        sequence is a valid no-op.
+        """
+        from coordinode._proto.coordinode.v1.graph.graph_pb2 import (  # type: ignore[import]
+            CreateNodeRequest,
+            CreateNodesBatchRequest,
+        )
+
+        req = CreateNodesBatchRequest(
+            nodes=[
+                CreateNodeRequest(labels=labels, properties=dict_to_props(properties)) for labels, properties in nodes
+            ]
+        )
+        resp = await self._graph_stub.CreateNodesBatch(req, timeout=self._timeout)
+        return [NodeResult(n) for n in resp.nodes]
 
     async def get_node(self, node_id: int) -> NodeResult:
         from coordinode._proto.coordinode.v1.graph.graph_pb2 import GetNodeRequest  # type: ignore[import]
@@ -890,6 +921,7 @@ class CoordinodeClient:
         write_concern: str | None = None,
         read_preference: str | None = None,
         after_index: int | None = None,
+        at_timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. See :meth:`AsyncCoordinodeClient.cypher` for consistency args."""
         return self._run(
@@ -900,6 +932,7 @@ class CoordinodeClient:
                 write_concern=write_concern,
                 read_preference=read_preference,
                 after_index=after_index,
+                at_timestamp=at_timestamp,
             )
         )
 
@@ -929,6 +962,10 @@ class CoordinodeClient:
 
     def create_node(self, labels: list[str], properties: dict[str, PyValue]) -> NodeResult:
         return self._run(self._async.create_node(labels, properties))
+
+    def create_nodes_batch(self, nodes: Sequence[tuple[list[str], dict[str, PyValue]]]) -> list[NodeResult]:
+        """Create many nodes atomically. See :meth:`AsyncCoordinodeClient.create_nodes_batch`."""
+        return self._run(self._async.create_nodes_batch(nodes))
 
     def get_node(self, node_id: int) -> NodeResult:
         return self._run(self._async.get_node(node_id))
@@ -1021,8 +1058,13 @@ _READ_CONCERN_MAP = {
     "linearizable": "READ_CONCERN_LEVEL_LINEARIZABLE",
     "snapshot": "READ_CONCERN_LEVEL_SNAPSHOT",
 }
+# Durability rises W0 < MEMORY < CACHE < W1 < MAJORITY. Anything below W1
+# acknowledges before the write is replicated through Raft: a leader crash
+# before the background drain loses every in-flight MEMORY or CACHE write.
 _WRITE_CONCERN_MAP = {
     "w0": "WRITE_CONCERN_LEVEL_W0",
+    "memory": "WRITE_CONCERN_LEVEL_MEMORY",
+    "cache": "WRITE_CONCERN_LEVEL_CACHE",
     "w1": "WRITE_CONCERN_LEVEL_W1",
     "majority": "WRITE_CONCERN_LEVEL_MAJORITY",
 }
@@ -1044,7 +1086,7 @@ def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) 
     return enum_name
 
 
-def _make_read_concern(level: str | None, after_index: int | None) -> Any:
+def _make_read_concern(level: str | None, after_index: int | None, at_timestamp: int | None = None) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
     kwargs: dict[str, Any] = {}
@@ -1054,6 +1096,10 @@ def _make_read_concern(level: str | None, after_index: int | None) -> Any:
         if not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0:
             raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
         kwargs["after_index"] = after_index
+    if at_timestamp is not None:
+        if not isinstance(at_timestamp, int) or isinstance(at_timestamp, bool) or at_timestamp < 0:
+            raise ValueError(f"at_timestamp must be a non-negative integer, got {at_timestamp!r}")
+        kwargs["at_timestamp"] = at_timestamp
     return pb.ReadConcern(**kwargs)
 
 

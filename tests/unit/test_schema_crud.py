@@ -334,6 +334,59 @@ class TestCreateLabelSchemaMode:
         asyncio.run(_inner())
 
 
+class TestCreateNodesBatch:
+    """Bulk node creation, added so a seed load takes one index write per index."""
+
+    @staticmethod
+    def _client_returning(nodes):
+        from unittest.mock import AsyncMock
+
+        client = AsyncCoordinodeClient("localhost:0")
+        client._graph_stub = type(
+            "FakeStub",
+            (),
+            {"CreateNodesBatch": AsyncMock(return_value=graph_pb2.CreateNodesBatchResponse(nodes=nodes))},
+        )()
+        return client
+
+    def test_returns_nodes_in_input_order(self):
+        async def _inner() -> None:
+            client = self._client_returning([_node(1, ["A"]), _node(2, ["B"]), _node(3, ["C"])])
+            out = await client.create_nodes_batch(
+                [(["A"], {}), (["B"], {}), (["C"], {})],
+            )
+            assert [n.id for n in out] == [1, 2, 3]
+            assert [n.labels for n in out] == [["A"], ["B"], ["C"]]
+
+        asyncio.run(_inner())
+
+    def test_sends_every_entry(self):
+        async def _inner() -> None:
+            client = self._client_returning([])
+            await client.create_nodes_batch([(["A"], {"x": 1}), (["B"], {"y": "s"})])
+            sent = client._graph_stub.CreateNodesBatch.call_args.args[0]
+            assert len(sent.nodes) == 2
+            assert list(sent.nodes[0].labels) == ["A"]
+            assert list(sent.nodes[1].labels) == ["B"]
+
+        asyncio.run(_inner())
+
+    def test_empty_batch_is_a_no_op(self):
+        async def _inner() -> None:
+            client = self._client_returning([])
+            assert await client.create_nodes_batch([]) == []
+
+        asyncio.run(_inner())
+
+    def test_element_id_survives_the_batch(self):
+        async def _inner() -> None:
+            client = self._client_returning([_node(7, ["A"], element_id="0000000000007")])
+            out = await client.create_nodes_batch([(["A"], {})])
+            assert out[0].element_id == "0000000000007"
+
+        asyncio.run(_inner())
+
+
 class TestTraverseValidation:
     """Unit tests for AsyncCoordinodeClient.traverse() input validation.
 
