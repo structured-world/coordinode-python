@@ -7,8 +7,11 @@ version: "3.9"
 
 services:
   coordinode:
-    image: ghcr.io/structured-world/coordinode:0.4.1
-    container_name: coordinode
+    image: ghcr.io/structured-world/coordinode:0.5.1
+    # Named for this repository rather than plain `coordinode`: the server
+    # repository runs its own compose stack that claims that name, and a bare
+    # name is global to the daemon.
+    container_name: coordinode-sdk
     ports:
       - "7080:7080"   # gRPC
       - "7081:7081"   # REST / HTTP
@@ -20,12 +23,9 @@ services:
       - --addr=[::]:7080
       - --data=/data
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7084/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    # No healthcheck: the image is built FROM scratch, so it has no shell and
+    # no wget for Docker to exec. Probe http://localhost:7084/health from the
+    # host instead.
 
 volumes:
   coordinode_data:

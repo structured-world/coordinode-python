@@ -58,9 +58,7 @@ class Hnsw:
         """Update runtime ``ef_search``. Higher ef = higher recall, lower QPS."""
         ...
 
-    def knn_query(
-        self, query: npt.NDArray[np.float32], k: int
-    ) -> npt.NDArray[np.int64]:
+    def knn_query(self, query: npt.NDArray[np.float32], k: int) -> npt.NDArray[np.int64]:
         """k-NN query.  Returns nearest neighbour IDs, ordered nearest-first."""
         ...
 

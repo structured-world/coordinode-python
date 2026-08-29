@@ -1,7 +1,7 @@
 services:
   coordinode:
     # Keep version in sync with root docker-compose.yml
-    image: ghcr.io/structured-world/coordinode:0.4.1
+    image: ghcr.io/structured-world/coordinode:0.5.1
     container_name: demo-coordinode
     ports:
       - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only
@@ -11,12 +11,11 @@ services:
     environment:
       - COORDINODE_LOG_FORMAT=text
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7084/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
+    # No healthcheck: the server image is built FROM scratch and carries no
+    # shell and no wget, so anything Docker can exec inside it fails by
+    # construction and the container would sit permanently unhealthy. The
+    # jupyter service waits on the endpoint itself instead, from a container
+    # that does have a shell.
 
   jupyter:
     build:
@@ -40,10 +39,11 @@ services:
     # /tmp/install-sdk.sh is copied into the image by Dockerfile.jupyter;
     # it must run after /sdk is mounted (i.e. at runtime, not during build).
     command: >-
-      bash -c "/tmp/install-sdk.sh && exec start-notebook.sh"
+      bash -c "until python -c 'import urllib.request as u; u.urlopen(\"http://coordinode:7084/health\", timeout=2)' 2>/dev/null; do sleep 1; done
+      && /tmp/install-sdk.sh && exec start-notebook.sh"
     depends_on:
       coordinode:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
 volumes:
