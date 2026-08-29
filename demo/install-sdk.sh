@@ -7,6 +7,10 @@ set -e
 # packages declare a dependency on `coordinode` and pip satisfies it from PyPI,
 # overwriting the editable install done a line earlier: the container then runs
 # the published SDK and nothing of the mounted checkout under test.
+# An editable install builds from source by design, so `--only-binary :all:`
+# is not applicable here. The rule guards against running setup code from
+# untrusted packages; these three are this repository, mounted at /sdk.
+# NOSONAR
 pip install --no-cache-dir \
     -e /sdk/coordinode \
     -e /sdk/llama-index-coordinode \
