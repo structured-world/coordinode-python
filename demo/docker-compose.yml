@@ -1,7 +1,9 @@
 services:
   coordinode:
-    # Keep version in sync with root docker-compose.yml
-    image: ghcr.io/structured-world/coordinode:0.5.1
+    # Keep version in sync with root docker-compose.yml. Point
+    # COORDINODE_IMAGE at a locally built tag to try a server build before it
+    # is published.
+    image: ${COORDINODE_IMAGE:-ghcr.io/structured-world/coordinode:0.5.1}
     container_name: demo-coordinode
     ports:
       - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only
@@ -33,7 +35,12 @@ services:
       - COORDINODE_ADDR=coordinode:7080    # internal network address
       - JUPYTER_ENABLE_LAB=yes
       - JUPYTER_TOKEN=demo  # intentional: localhost-only demo stack, documented in README ("token: demo")
-      - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0  # hatch-vcs: skip git, use fixed version
+      # hatch-vcs derives versions from git tags, which the mounted checkout
+      # cannot be relied on to carry. The value has to stay above what the
+      # integration packages require of `coordinode`, or pip decides the
+      # local build cannot satisfy them and quietly pulls a release from
+      # PyPI over the mounted source.
+      - SETUPTOOLS_SCM_PRETEND_VERSION=999.0.0
     # Install SDK packages from the mounted /sdk source at container start,
     # then hand off to the default Jupyter Lab startup script.
     # /tmp/install-sdk.sh is copied into the image by Dockerfile.jupyter;
