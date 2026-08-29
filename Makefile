@@ -4,16 +4,26 @@ PROTO_SRC  := proto
 PROTO_OUT  := coordinode/coordinode/_proto
 PYTHON     ?= python3
 
+# Well-known types that ship with grpc_tools. The proto submodule vendors its
+# own google/protobuf/descriptor.proto so the Rust build works on hosts without
+# protobuf-devel; that copy is older than what this protoc expects and, if it
+# wins the include search, generation dies with "Malformed descriptor.proto
+# doesn't contain google.protobuf.FeatureSet". Searching here first keeps
+# descriptor.proto on protoc's own copy while google/api/* still resolves from
+# the submodule, which is the only place it exists.
+GRPC_INC := $(shell $(PYTHON) -c "import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), '_proto'))")
+
 # Generate gRPC stubs from proto submodule into coordinode/_proto/
 proto:
 	@echo "==> Generating proto stubs..."
 	@mkdir -p $(PROTO_OUT)
 	$(PYTHON) -m grpc_tools.protoc \
+		-I$(GRPC_INC) \
 		-I$(PROTO_SRC) \
 		--python_out=$(PROTO_OUT) \
 		--grpc_python_out=$(PROTO_OUT) \
 		--pyi_out=$(PROTO_OUT) \
-		$$(find $(PROTO_SRC) -name '*.proto')
+		$$(find $(PROTO_SRC) -name '*.proto' -not -path '$(PROTO_SRC)/google/protobuf/*')
 	@# Add __init__.py to every generated package directory
 	@find $(PROTO_OUT) -type d -exec touch {}/__init__.py \;
 	@# Fix absolute imports in all generated pb2 files (grpc_tools generates absolute paths)

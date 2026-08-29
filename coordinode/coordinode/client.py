@@ -68,11 +68,15 @@ class NodeResult:
 
     def __init__(self, proto_node: Any) -> None:
         self.id: int = proto_node.node_id
+        #: Canonical opaque identifier, stable across schema changes, restarts
+        #: and replication. Prefer this over :attr:`id` when referring to a node
+        #: from application code; `id` stays for Neo4j v4 driver compatibility.
+        self.element_id: str = proto_node.element_id
         self.labels: list[str] = list(proto_node.labels)
         self.properties: dict[str, PyValue] = props_to_dict(proto_node.properties)
 
     def __repr__(self) -> str:
-        return f"Node(id={self.id}, labels={self.labels}, properties={self.properties})"
+        return f"Node(id={self.id}, element_id={self.element_id!r}, labels={self.labels}, properties={self.properties})"
 
 
 class EdgeResult:
@@ -83,6 +87,10 @@ class EdgeResult:
         self.type: str = proto_edge.edge_type
         self.source_id: int = proto_edge.source_node_id
         self.target_id: int = proto_edge.target_node_id
+        #: Endpoint identifier, the source and target element ids in canonical
+        #: order. Edges here are typed property bags between two nodes rather
+        #: than first-class entities, so this is not a stable handle to one edge.
+        self.element_id: str = proto_edge.element_id
         self.properties: dict[str, PyValue] = props_to_dict(proto_edge.properties)
 
     def __repr__(self) -> str:
@@ -131,13 +139,17 @@ class LabelInfo:
 
     def __init__(self, proto_label: Any) -> None:
         self.name: str = proto_label.name
-        self.version: int = proto_label.version
+        #: DDL snapshot identity, bumped by every schema change to this label.
+        self.schema_revision: int = proto_label.schema_revision
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
         # schema_mode: 0=unspecified, 1=strict, 2=validated, 3=flexible
-        self.schema_mode: int = getattr(proto_label, "schema_mode", 0)
+        self.schema_mode: int = proto_label.schema_mode
 
     def __repr__(self) -> str:
-        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
+        return (
+            f"LabelInfo(name={self.name!r}, schema_revision={self.schema_revision}, "
+            f"properties={len(self.properties)}, schema_mode={self.schema_mode})"
+        )
 
 
 class EdgeTypeInfo:
@@ -145,12 +157,15 @@ class EdgeTypeInfo:
 
     def __init__(self, proto_edge_type: Any) -> None:
         self.name: str = proto_edge_type.name
-        self.version: int = proto_edge_type.version
+        #: DDL snapshot identity, bumped by every schema change to this edge type.
+        self.schema_revision: int = proto_edge_type.schema_revision
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
-        self.schema_mode: int = getattr(proto_edge_type, "schema_mode", 0)
 
     def __repr__(self) -> str:
-        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
+        return (
+            f"EdgeTypeInfo(name={self.name!r}, schema_revision={self.schema_revision}, "
+            f"properties={len(self.properties)})"
+        )
 
 
 class TraverseResult:
