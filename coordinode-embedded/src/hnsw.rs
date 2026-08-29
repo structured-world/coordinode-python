@@ -97,9 +97,7 @@ impl Hnsw {
         // config; realistic M values are 4..96, so any overflow here is a
         // caller error, not a workload to support.
         let m_max0 = M.checked_mul(2).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "M={M} is too large; M * 2 overflows usize"
-            ))
+            PyValueError::new_err(format!("M={M} is too large; M * 2 overflows usize"))
         })?;
         let config = HnswConfig {
             m: M,

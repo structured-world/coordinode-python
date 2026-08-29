@@ -68,10 +68,42 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
             }
             Ok(d.into_any().unbind())
         }
-        Value::Blob(b) | Value::Binary(b) => {
-            Ok(PyBytes::new(py, &b).into_any().unbind())
-        }
+        Value::Blob(b) | Value::Binary(b) => Ok(PyBytes::new(py, &b).into_any().unbind()),
         Value::Document(doc) => msgpack_to_py(py, doc),
+        // Token-level embeddings: a list of equal-length float rows, mirroring
+        // how a single Vector is exposed.
+        Value::MultiVector(rows) => {
+            let outer = PyList::empty(py);
+            for row in rows {
+                let inner = PyList::empty(py);
+                for x in row {
+                    inner.append(x)?;
+                }
+                outer.append(inner)?;
+            }
+            Ok(outer.into_any().unbind())
+        }
+        // A graph path, shaped like its msgpack form on the wire: the node ids
+        // it runs through and the relationship hops between them.
+        Value::Path(path) => {
+            let d = PyDict::new(py);
+            let nodes = PyList::empty(py);
+            for n in &path.nodes {
+                nodes.append(*n)?;
+            }
+            d.set_item("nodes", nodes)?;
+
+            let rels = PyList::empty(py);
+            for rel in &path.rels {
+                let r = PyDict::new(py);
+                r.set_item("type", rel.edge_type.clone())?;
+                r.set_item("source", rel.source)?;
+                r.set_item("target", rel.target)?;
+                rels.append(r)?;
+            }
+            d.set_item("rels", rels)?;
+            Ok(d.into_any().unbind())
+        }
     }
 }
 
@@ -95,7 +127,7 @@ fn msgpack_to_py(py: Python<'_>, v: MsgpackValue) -> PyResult<PyObject> {
         MsgpackValue::String(s) => match s.into_str() {
             // into_str() → Option<String> in rmpv 1.x
             Some(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
-            None => Ok(py.None()),  // invalid UTF-8 → None
+            None => Ok(py.None()), // invalid UTF-8 → None
         },
         MsgpackValue::Binary(b) => Ok(PyBytes::new(py, &b).into_any().unbind()),
         MsgpackValue::Array(arr) => {
@@ -147,9 +179,9 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(d) = obj.downcast::<PyDict>() {
         let mut map = std::collections::BTreeMap::new();
         for (k, v) in d.iter() {
-            let key = k.extract::<String>().map_err(|_| {
-                PyValueError::new_err("dict keys in params must be strings")
-            })?;
+            let key = k
+                .extract::<String>()
+                .map_err(|_| PyValueError::new_err("dict keys in params must be strings"))?;
             map.insert(key, py_to_value(&v)?);
         }
         return Ok(Value::Map(map));
@@ -226,12 +258,17 @@ impl LocalClient {
             let tmpdir = tempfile::tempdir()
                 .map_err(|e| PyRuntimeError::new_err(format!("failed to create tempdir: {e}")))?;
             let db = Database::open(tmpdir.path()).map_err(db_err)?;
-            DbState::Memory { db, _tmpdir: tmpdir }
+            DbState::Memory {
+                db,
+                _tmpdir: tmpdir,
+            }
         } else {
             let db = Database::open(path).map_err(db_err)?;
             DbState::Persistent(db)
         };
-        Ok(LocalClient { state: Mutex::new(state) })
+        Ok(LocalClient {
+            state: Mutex::new(state),
+        })
     }
 
     /// Execute a Cypher query and return results as a list of dicts.
@@ -257,9 +294,9 @@ impl LocalClient {
             Some(d) => {
                 let mut map: HashMap<String, Value> = HashMap::with_capacity(d.len());
                 for (k, v) in d.iter() {
-                    let key = k.extract::<String>().map_err(|_| {
-                        PyValueError::new_err("param keys must be strings")
-                    })?;
+                    let key = k
+                        .extract::<String>()
+                        .map_err(|_| PyValueError::new_err("param keys must be strings"))?;
                     map.insert(key, py_to_value(&v)?);
                 }
                 db.execute_cypher_with_params(query, map).map_err(db_err)?
@@ -290,12 +327,7 @@ impl LocalClient {
         slf
     }
 
-    fn __exit__(
-        &self,
-        _exc_type: PyObject,
-        _exc_val: PyObject,
-        _exc_tb: PyObject,
-    ) -> bool {
+    fn __exit__(&self, _exc_type: PyObject, _exc_val: PyObject, _exc_tb: PyObject) -> bool {
         self.close();
         false // do not suppress exceptions
     }
