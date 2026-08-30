@@ -289,10 +289,12 @@ class AsyncCoordinodeClient:
           ``"secondary_preferred"``, ``"nearest"``.
         - ``after_index``: raft log index for causal reads, a fence. Returned rows reflect at
           least the state at this index.
-        - ``at_timestamp``: HLC timestamp to read at, a pin rather than a fence. Reads the
-          database exactly as of that version without waiting, for time travel. The timestamp
-          has to fall inside the MVCC retention window; older snapshots are collected and the
-          server answers UNAVAILABLE.
+        - ``at_timestamp``: timestamp to read at, a pin rather than a fence. Reads the
+          database exactly as of that version without waiting, for time travel. Microseconds
+          since the Unix epoch, so ``int(time.time() * 1_000_000)`` is now. Requires
+          ``read_concern="snapshot"``; any other level is rejected with FAILED_PRECONDITION.
+          The timestamp has to fall inside the MVCC retention window; older snapshots are
+          collected and the server answers UNAVAILABLE.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
