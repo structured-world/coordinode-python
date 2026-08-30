@@ -3,7 +3,7 @@ services:
     # Keep version in sync with root docker-compose.yml. Point
     # COORDINODE_IMAGE at a locally built tag to try a server build before it
     # is published.
-    image: ${COORDINODE_IMAGE:-ghcr.io/structured-world/coordinode:0.5.2}
+    image: ${COORDINODE_IMAGE:-ghcr.io/structured-world/coordinode:0.5.3}
     container_name: demo-coordinode
     ports:
       - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only

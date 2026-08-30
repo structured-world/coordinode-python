@@ -104,7 +104,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       coordinode:
-        image: ghcr.io/structured-world/coordinode:latest
+        # Pinned, not latest: the proto submodule pins a server version, and
+        # testing against whatever happens to be newest means a green run says
+        # nothing about the wire contract this checkout was built for. Bump it
+        # together with the submodule.
+        image: ghcr.io/structured-world/coordinode:0.5.3
         ports:
           - 7080:7080
           - 7084:7084
