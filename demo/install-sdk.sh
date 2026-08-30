@@ -14,10 +14,25 @@ set -e
 # one line rather than wrapping.
 pip install --no-cache-dir -e /sdk/coordinode -e /sdk/llama-index-coordinode -e /sdk/langchain-coordinode  # NOSONAR
 
+# The generated proto stubs are gitignored and no build hook produces them, so
+# an editable install of the mounted checkout has none. Every call the notebooks
+# make goes through them, so generate them here, once the build dependencies
+# from the install above are present.
+# PYTHON is overridden because the Makefile defaults to `uv run python`, which
+# is right on a developer's machine and absent in this image; grpcio-tools is
+# installed into the image's own interpreter.
+make -C /sdk proto PYTHON=python
+
 # Fail loudly rather than let the demo quietly exercise a release.
+# An assert would vanish under -O and let the demo run against a release while
+# claiming to test the mount.
 python - <<'PY'
 import coordinode
+
 path = coordinode.__file__
-assert "/sdk/" in path, f"coordinode resolved to {path}, not the mounted source"
+if "/sdk/" not in path:
+    raise RuntimeError(f"coordinode resolved to {path}, not the mounted source")
+import coordinode._proto  # the stubs generated above must be importable
+
 print(f"coordinode from {path}")
 PY

@@ -2,7 +2,10 @@
 
 PROTO_SRC  := proto
 PROTO_OUT  := coordinode/coordinode/_proto
-PYTHON     ?= python3
+# grpcio-tools lives in the synced environment, so both the include-path probe
+# below and the generation itself have to run through the same interpreter.
+# A bare python3 finds neither.
+PYTHON     ?= uv run python
 
 # Well-known types that ship with grpc_tools. The proto submodule vendors its
 # own google/protobuf/descriptor.proto so the Rust build works on hosts without
@@ -18,7 +21,7 @@ proto:
 	@echo "==> Generating proto stubs..."
 	@mkdir -p $(PROTO_OUT)
 	$(PYTHON) -m grpc_tools.protoc \
-		-I$(GRPC_INC) \
+		-I"$(GRPC_INC)" \
 		-I$(PROTO_SRC) \
 		--python_out=$(PROTO_OUT) \
 		--grpc_python_out=$(PROTO_OUT) \
