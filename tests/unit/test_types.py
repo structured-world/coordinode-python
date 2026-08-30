@@ -133,3 +133,27 @@ class TestFromPropertyValue:
                 {"type": "LINK", "source": 8, "target": 9},
             ],
         }
+
+    def test_multi_vector_survives_a_round_trip(self):
+        """Reading a multi-vector and writing it back keeps its wire type.
+
+        Decoding to a plain list of lists loses the distinction: the encoder
+        cannot tell it from an array that happens to hold vectors, so a
+        read-modify-write turned a multi-vector property into a list of
+        vectors and failed validation against the schema.
+        """
+        original = PropertyValue(
+            multi_vector_value=MultiVector(rows=[Vector(values=[0.5, 1.5]), Vector(values=[2.5, 3.5])])
+        )
+        decoded = from_property_value(original)
+        # Still an ordinary sequence to anyone reading it.
+        assert decoded == [pytest.approx([0.5, 1.5]), pytest.approx([2.5, 3.5])]
+
+        re_encoded = to_property_value(decoded)
+        assert re_encoded.WhichOneof("value") == "multi_vector_value", f"re-encoded as {re_encoded.WhichOneof('value')}"
+        assert len(re_encoded.multi_vector_value.rows) == 2
+
+    def test_a_plain_nested_list_is_not_a_multi_vector(self):
+        """Only a value that came back as one re-encodes as one."""
+        pv = to_property_value([[0.5, 1.5], [2.5, 3.5]])
+        assert pv.WhichOneof("value") == "list_value"

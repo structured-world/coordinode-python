@@ -11,6 +11,20 @@ from typing import Any
 PyValue = int | float | str | bool | bytes | list[float] | list[Any] | dict[str, Any] | None
 
 
+class MultiVector(list):
+    """Several equal-width vectors describing one item.
+
+    A plain ``list`` of rows, so it reads and indexes like any other sequence
+    and compares equal to the nested list it looks like. The type exists only
+    to carry the distinction back to the wire: a value that arrived as a
+    multi-vector re-encodes as one, while an ordinary list of vectors stays an
+    ordinary list. Without it a read-modify-write silently changed the property
+    type, which the schema then rejected.
+    """
+
+    __slots__ = ()
+
+
 def to_property_value(py_val: PyValue) -> Any:
     """Convert a Python value to a proto PropertyValue."""
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
@@ -33,6 +47,14 @@ def to_property_value(py_val: PyValue) -> Any:
         pv.string_value = py_val
     elif isinstance(py_val, bytes):
         pv.bytes_value = py_val
+    elif isinstance(py_val, MultiVector):
+        from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
+            MultiVector as MultiVectorProto,
+        )
+
+        pv.multi_vector_value.CopyFrom(
+            MultiVectorProto(rows=[Vector(values=[float(v) for v in row]) for row in py_val])
+        )
     elif isinstance(py_val, list | tuple):
         # Homogeneous float list → Vector; mixed/str list → PropertyList.
         # bool is a subclass of int, so exclude it explicitly — [True, False] must
@@ -82,7 +104,7 @@ def from_property_value(pv: Any) -> PyValue:
         # retrieval models produce. A plain list of lists is the natural Python
         # shape; the wire type is what distinguishes it from an array that
         # happens to hold vectors.
-        return [list(row.values) for row in pv.multi_vector_value.rows]
+        return MultiVector(list(row.values) for row in pv.multi_vector_value.rows)
     elif kind == "path_value":
         # Relationship properties are not carried in the path model, so a hop
         # is its type and its endpoints.
