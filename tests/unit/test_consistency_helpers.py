@@ -59,9 +59,20 @@ class TestAtTimestamp:
         assert rc.level == pb.READ_CONCERN_LEVEL_SNAPSHOT
         assert rc.at_timestamp == 42
 
-    def test_pin_and_fence_are_independent(self) -> None:
-        rc = _make_read_concern(None, 7, 42)
-        assert (rc.after_index, rc.at_timestamp) == (7, 42)
+    def test_rejects_a_fence_together_with_a_pin(self) -> None:
+        """A fence waits for the log to advance; a pin reads a fixed past.
+
+        The server calls the pair mutually exclusive and answers
+        INVALID_ARGUMENT, so asking for both is a mistake worth reporting
+        where it was made rather than one round trip later.
+        """
+        with pytest.raises(ValueError, match="after_index and at_timestamp are mutually exclusive"):
+            _make_read_concern(None, 7, 42)
+
+    def test_allows_a_zero_fence_with_a_pin(self) -> None:
+        """after_index=0 fences on nothing, so it does not conflict."""
+        rc = _make_read_concern(None, 0, 42)
+        assert (rc.after_index, rc.at_timestamp) == (0, 42)
 
     @pytest.mark.parametrize("bad", [-1, True, "42", 1.5])
     def test_rejects_non_negative_integers(self, bad: object) -> None:
