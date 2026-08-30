@@ -32,7 +32,11 @@ import coordinode
 path = coordinode.__file__
 if "/sdk/" not in path:
     raise RuntimeError(f"coordinode resolved to {path}, not the mounted source")
-import coordinode._proto  # the stubs generated above must be importable
+# A real generated message, not the package: `coordinode._proto` is an empty
+# __init__.py that imports fine even when generation produced nothing.
+from coordinode._proto.coordinode.v1.query.cypher_pb2 import ExecuteCypherRequest
+
+ExecuteCypherRequest(query="RETURN 1")
 
 print(f"coordinode from {path}")
 PY

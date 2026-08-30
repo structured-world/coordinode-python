@@ -14,7 +14,9 @@ PYTHON     ?= uv run python
 # doesn't contain google.protobuf.FeatureSet". Searching here first keeps
 # descriptor.proto on protoc's own copy while google/api/* still resolves from
 # the submodule, which is the only place it exists.
-GRPC_INC := $(shell $(PYTHON) -c "import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), '_proto'))")
+# Deferred, not `:=`: an immediate assignment would shell out to $(PYTHON) on
+# every make invocation, including `make clean` on a machine with no uv.
+GRPC_INC = $(shell $(PYTHON) -c "import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), '_proto'))")
 
 # Generate gRPC stubs from proto submodule into coordinode/_proto/
 proto:
@@ -47,12 +49,14 @@ install:
 	uv sync
 	$(MAKE) proto
 
-# Install using pip (alternative — works without uv)
+# Install using pip (alternative that works without uv).
+# proto runs through plain python3 here: the whole point of this target is to
+# work on a machine that has no uv, and the default PYTHON goes through it.
 install-pip:
 	pip install -e "coordinode[dev]"
 	pip install -e langchain-coordinode/
 	pip install -e llama-index-coordinode/
-	$(MAKE) proto
+	$(MAKE) proto PYTHON=python3
 
 test: proto-check test-unit
 
