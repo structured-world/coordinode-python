@@ -4,8 +4,8 @@ services:
     # COORDINODE_IMAGE at a locally built tag to try a server build before it
     # is published.
     # Digest-pinned so a re-pushed tag cannot change the demo underneath
-    # you; this one is 0.5.3. Override COORDINODE_IMAGE to try another.
-    image: ${COORDINODE_IMAGE:-ghcr.io/structured-world/coordinode@sha256:c79a2b6448cd76e9af4a772a324e586a739fb8d241d899b252206a0bde593a11}
+    # you; this one is 0.5.4. Override COORDINODE_IMAGE to try another.
+    image: ${COORDINODE_IMAGE:-ghcr.io/structured-world/coordinode@sha256:b658e07ca1c03fb4a8e92929d35f0640677b219c3d6b73ff9efd68543be0a323}
     container_name: demo-coordinode
     ports:
       - "127.0.0.1:37080:7080"   # gRPC (native API) — localhost-only
