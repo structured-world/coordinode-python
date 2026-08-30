@@ -180,3 +180,32 @@ class TestKeywordSearch:
         out = graph.keyword_search("query")
 
         assert out == []
+
+
+# ── Tests: GraphStore schema contract ─────────────────────────────────────────
+
+
+class TestGraphStoreSchemaContract:
+    """The two accessors LangChain itself reads, not the ones we named.
+
+    ``GraphCypherQAChain.from_llm`` builds its prompt from
+    ``graph.get_structured_schema``. Implementing only ``schema`` and
+    ``structured_schema`` left those inherited from the abstract base, where
+    they evaluate to None, and the chain died in ``construct_schema`` on
+    ``'NoneType' object has no attribute 'get'`` before reaching the LLM.
+    """
+
+    def test_get_schema_matches_schema(self) -> None:
+        graph = CoordinodeGraph(client=_ClientWithoutTextSearch())
+
+        assert graph.get_schema == graph.schema
+
+    def test_get_structured_schema_is_a_mapping(self) -> None:
+        graph = CoordinodeGraph(client=_ClientWithoutTextSearch())
+
+        structured = graph.get_structured_schema
+
+        assert isinstance(structured, dict)
+        assert structured == graph.structured_schema
+        # The exact call that used to raise.
+        assert isinstance(structured.get("node_props", {}), dict)

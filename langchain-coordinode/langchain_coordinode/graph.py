@@ -25,7 +25,7 @@ class CoordinodeGraph(GraphStore):
     Example::
 
         from langchain_coordinode import CoordinodeGraph
-        from langchain.chains import GraphCypherQAChain
+        from langchain_classic.chains import GraphCypherQAChain
         from langchain_openai import ChatOpenAI
 
         graph = CoordinodeGraph("localhost:7080")
@@ -81,6 +81,21 @@ class CoordinodeGraph(GraphStore):
         if self._structured_schema is None:
             self.refresh_schema()
         return self._structured_schema or {}
+
+    # ``schema`` / ``structured_schema`` read naturally; ``get_schema`` /
+    # ``get_structured_schema`` are the names GraphStore declares and the ones
+    # GraphCypherQAChain actually reads. They are properties, not methods, on
+    # that interface. Leaving them to the abstract base made them evaluate to
+    # None and took the chain down inside construct_schema.
+    @property
+    def get_schema(self) -> str:
+        """Schema string, under the name the GraphStore interface declares."""
+        return self.schema
+
+    @property
+    def get_structured_schema(self) -> dict[str, Any]:
+        """Structured schema, under the name the GraphStore interface declares."""
+        return self.structured_schema
 
     def refresh_schema(self) -> None:
         """Fetch current schema from CoordiNode.
