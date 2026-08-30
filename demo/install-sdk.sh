@@ -10,11 +10,9 @@ set -e
 # An editable install builds from source by design, so `--only-binary :all:`
 # is not applicable here. The rule guards against running setup code from
 # untrusted packages; these three are this repository, mounted at /sdk.
-# NOSONAR
-pip install --no-cache-dir \
-    -e /sdk/coordinode \
-    -e /sdk/llama-index-coordinode \
-    -e /sdk/langchain-coordinode
+# The suppression has to sit on the pip line itself, so the command stays on
+# one line rather than wrapping.
+pip install --no-cache-dir -e /sdk/coordinode -e /sdk/llama-index-coordinode -e /sdk/langchain-coordinode  # NOSONAR
 
 # Fail loudly rather than let the demo quietly exercise a release.
 python - <<'PY'
