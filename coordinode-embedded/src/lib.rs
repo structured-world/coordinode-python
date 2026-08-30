@@ -26,6 +26,19 @@ use rmpv::Value as MsgpackValue;
 
 // ── Value → PyObject conversion ──────────────────────────────────────────────
 
+/// The `MultiVector` tag from the `coordinode` package, when it is installed.
+///
+/// A list subclass, so a tagged value reads and compares exactly like the
+/// nested list it replaces; the type exists only to survive a round trip. This
+/// package does not depend on `coordinode` (the embedded engine is usable on
+/// its own), so a missing import is an ordinary outcome and the caller falls
+/// back to a plain list, which is what this returned before the tag existed.
+fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
+    py.import("coordinode._types")
+        .and_then(|m| m.getattr("MultiVector"))
+        .ok()
+}
+
 fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
     match v {
         Value::Null => Ok(py.None()),
@@ -71,7 +84,10 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
         Value::Blob(b) | Value::Binary(b) => Ok(PyBytes::new(py, &b).into_any().unbind()),
         Value::Document(doc) => msgpack_to_py(py, doc),
         // Token-level embeddings: a list of equal-length float rows, mirroring
-        // how a single Vector is exposed.
+        // how a single Vector is exposed, but tagged so a value read here and
+        // written straight back keeps its type. An untagged nested list is
+        // indistinguishable from an array that happens to hold vectors, and
+        // the write turns the property into one.
         Value::MultiVector(rows) => {
             let outer = PyList::empty(py);
             for row in rows {
@@ -81,7 +97,10 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
                 }
                 outer.append(inner)?;
             }
-            Ok(outer.into_any().unbind())
+            match multi_vector_type(py) {
+                Some(cls) => Ok(cls.call1((outer,))?.unbind()),
+                None => Ok(outer.into_any().unbind()),
+            }
         }
         // A graph path, shaped like its msgpack form on the wire: the node ids
         // it runs through and the relationship hops between them.
@@ -173,6 +192,21 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::String(s));
     }
     if let Ok(list) = obj.downcast::<PyList>() {
+        // A tagged multi-vector before the generic list branch: it IS a list,
+        // so the branch below would take it and write back an array, changing
+        // the property's type on a read-modify-write.
+        if let Some(cls) = multi_vector_type(obj.py()) {
+            if obj.is_instance(&cls).unwrap_or(false) {
+                let rows: Vec<Vec<f32>> = list
+                    .iter()
+                    .map(|row| row.extract::<Vec<f32>>())
+                    .collect::<PyResult<_>>()
+                    .map_err(|_| {
+                        PyValueError::new_err("MultiVector rows must be lists of numbers")
+                    })?;
+                return Ok(Value::MultiVector(rows));
+            }
+        }
         let items: PyResult<Vec<Value>> = list.iter().map(|x| py_to_value(&x)).collect();
         return Ok(Value::Array(items?));
     }
