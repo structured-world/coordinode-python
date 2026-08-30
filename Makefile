@@ -50,13 +50,20 @@ install:
 	$(MAKE) proto
 
 # Install using pip (alternative that works without uv).
-# proto runs through plain python3 here: the whole point of this target is to
-# work on a machine that has no uv, and the default PYTHON goes through it.
+#
+# PIP_PYTHON, not a bare `pip`: the whole point of this target is a machine
+# with no uv, and there `pip` and `python3` can be two different interpreters
+# (a pip from 3.11 on PATH ahead of a 3.13 python3, say). Installing through
+# one and generating stubs with the other puts grpcio-tools in an environment
+# the generation step cannot see. Everything below goes through the same
+# interpreter, and `make install-pip PIP_PYTHON=python3.12` picks another.
+PIP_PYTHON ?= python3
+
 install-pip:
-	pip install -e "coordinode[dev]"
-	pip install -e langchain-coordinode/
-	pip install -e llama-index-coordinode/
-	$(MAKE) proto PYTHON=python3
+	$(PIP_PYTHON) -m pip install -e "coordinode[dev]"
+	$(PIP_PYTHON) -m pip install -e langchain-coordinode/
+	$(PIP_PYTHON) -m pip install -e llama-index-coordinode/
+	$(MAKE) proto PYTHON="$(PIP_PYTHON)"
 
 test: proto-check test-unit
 
