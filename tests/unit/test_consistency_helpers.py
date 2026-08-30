@@ -68,6 +68,26 @@ class TestAtTimestamp:
         with pytest.raises(ValueError, match="at_timestamp must be a non-negative integer"):
             _make_read_concern(None, None, bad)  # type: ignore[arg-type]
 
+    def test_defaults_the_level_to_snapshot(self) -> None:
+        """A pinned read is a snapshot read, and the server enforces that.
+
+        Sending a timestamp with the level left UNSPECIFIED gets the request
+        refused with FAILED_PRECONDITION, so the documented time-travel call
+        could not work as written.
+        """
+        rc = _make_read_concern(None, None, 42)
+        assert rc.level == pb.READ_CONCERN_LEVEL_SNAPSHOT
+
+    def test_keeps_an_explicit_snapshot_level(self) -> None:
+        rc = _make_read_concern("snapshot", None, 42)
+        assert rc.level == pb.READ_CONCERN_LEVEL_SNAPSHOT
+
+    @pytest.mark.parametrize("level", ["local", "majority", "linearizable"])
+    def test_rejects_a_level_the_server_will_refuse(self, level: str) -> None:
+        """Fail here rather than after a round trip to a server that says no."""
+        with pytest.raises(ValueError, match="at_timestamp requires read_concern='snapshot'"):
+            _make_read_concern(level, None, 42)
+
 
 class TestWriteConcern:
     @pytest.mark.parametrize(

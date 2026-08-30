@@ -1092,6 +1092,15 @@ def _make_read_concern(level: str | None, after_index: int | None, at_timestamp:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
     kwargs: dict[str, Any] = {}
+    if at_timestamp is not None:
+        # Reading at a pinned version IS a snapshot read: the server refuses
+        # any other level with FAILED_PRECONDITION. Default to it when the
+        # caller said nothing, and reject an explicit level it will refuse
+        # rather than spending a round trip to be told.
+        if level is None:
+            level = "snapshot"
+        elif _normalize_consistency_key(level, "read_concern", _READ_CONCERN_MAP) != ("READ_CONCERN_LEVEL_SNAPSHOT"):
+            raise ValueError(f"at_timestamp requires read_concern='snapshot', got {level!r}")
     if level is not None:
         kwargs["level"] = getattr(pb, _normalize_consistency_key(level, "read_concern", _READ_CONCERN_MAP))
     if after_index is not None:
