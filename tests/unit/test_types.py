@@ -6,7 +6,13 @@ to the PropertyValue oneof shows up here rather than in user code.
 
 import pytest
 
-from coordinode._proto.coordinode.v1.common.types_pb2 import PropertyValue, Vector
+from coordinode._proto.coordinode.v1.common.types_pb2 import (
+    MultiVector,
+    Path,
+    PathRel,
+    PropertyValue,
+    Vector,
+)
 from coordinode._types import from_property_value, to_property_value
 
 # Proto generation is part of `make install`, so a missing stub is a broken
@@ -96,3 +102,34 @@ class TestFromPropertyValue:
     def test_none_kind_returns_none(self):
         pv = PropertyValue()
         assert from_property_value(pv) is None
+
+    def test_multi_vector(self):
+        """A multi-vector arrives as its own wire type, not a list of vectors.
+
+        The server gained a dedicated variant for it; before that a caller
+        could not tell one item's token embeddings from an array that happened
+        to hold vectors, and this conversion returned None for the new case.
+        """
+        pv = PropertyValue(multi_vector_value=MultiVector(rows=[Vector(values=[0.5, 1.5]), Vector(values=[2.5, 3.5])]))
+        result = from_property_value(pv)
+        assert result == [pytest.approx([0.5, 1.5]), pytest.approx([2.5, 3.5])]
+
+    def test_path(self):
+        """A path arrives as its own wire type, not a map of nodes and rels."""
+        pv = PropertyValue(
+            path_value=Path(
+                nodes=[7, 8, 9],
+                rels=[
+                    PathRel(edge_type="LINK", source=7, target=8),
+                    PathRel(edge_type="LINK", source=8, target=9),
+                ],
+            )
+        )
+        result = from_property_value(pv)
+        assert result == {
+            "nodes": [7, 8, 9],
+            "rels": [
+                {"type": "LINK", "source": 7, "target": 8},
+                {"type": "LINK", "source": 8, "target": 9},
+            ],
+        }

@@ -77,6 +77,20 @@ def from_property_value(pv: Any) -> PyValue:
         return [from_property_value(v) for v in pv.list_value.values]
     elif kind == "map_value":
         return {k: from_property_value(v) for k, v in pv.map_value.entries.items()}
+    elif kind == "multi_vector_value":
+        # Several equal-width vectors describing one item, as late-interaction
+        # retrieval models produce. A plain list of lists is the natural Python
+        # shape; the wire type is what distinguishes it from an array that
+        # happens to hold vectors.
+        return [list(row.values) for row in pv.multi_vector_value.rows]
+    elif kind == "path_value":
+        # Relationship properties are not carried in the path model, so a hop
+        # is its type and its endpoints.
+        path = pv.path_value
+        return {
+            "nodes": list(path.nodes),
+            "rels": [{"type": r.edge_type, "source": r.source, "target": r.target} for r in path.rels],
+        }
     else:
         return None
 
