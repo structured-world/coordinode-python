@@ -55,11 +55,13 @@ with CoordinodeClient("localhost:7080") as db:
 import asyncio
 from coordinode import AsyncCoordinodeClient
 
+
 async def main():
     async with AsyncCoordinodeClient("localhost:7080") as db:
         rows = await db.cypher("MATCH (n:Concept) RETURN n.name AS name LIMIT 5")
         for row in rows:
             print(row["name"])
+
 
 asyncio.run(main())
 ```
@@ -128,7 +130,8 @@ db.create_text_index("idx_doc_body", "Doc", "body")
 
 # Reciprocal Rank Fusion of text + vector. Projecting `d AS doc_id` returns the
 # internal node id (an integer) — fetch properties explicitly when needed.
-rows = db.cypher("""
+rows = db.cypher(
+    """
     MATCH (d:Doc)
     WHERE text_match(d, $q) OR d.embedding IS NOT NULL
     RETURN d AS doc_id,
@@ -138,7 +141,9 @@ rows = db.cypher("""
                vec_score(d.embedding, $vec)
            ) AS score
     ORDER BY score DESC LIMIT 10
-""", params={"q": "graph neural network", "vec": [0.1] * 384})
+""",
+    params={"q": "graph neural network", "vec": [0.1] * 384},
+)
 # Full node properties: db.get_node(rows[0]["doc_id"]).
 ```
 
@@ -152,10 +157,8 @@ Python side.
 Promote a nested property to a graph node (and back):
 
 ```python
-db.cypher("MATCH (a:Article {id: $id}) DETACH DOCUMENT a.body AS (d:Body)",
-          params={"id": 1})
-db.cypher("MATCH (a:Article {id: $id})-[:HAS_BODY]->(d:Body) "
-          "ATTACH DOCUMENT d INTO a.body", params={"id": 1})
+db.cypher("MATCH (a:Article {id: $id}) DETACH DOCUMENT a.body AS (d:Body)", params={"id": 1})
+db.cypher("MATCH (a:Article {id: $id})-[:HAS_BODY]->(d:Body) ATTACH DOCUMENT d INTO a.body", params={"id": 1})
 ```
 
 ## Consistency Controls
