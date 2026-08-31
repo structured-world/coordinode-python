@@ -7,7 +7,10 @@ version: "3.9"
 
 services:
   coordinode:
-    image: ghcr.io/structured-world/coordinode:0.5.3
+    # The same 0.5.5 digest the demo stack and the integration job run, so the
+    # quick start does not hand a newcomer an older server than everything else
+    # here is tested against. Pinned by digest because a tag can be re-pushed.
+    image: ghcr.io/structured-world/coordinode@sha256:8d3554be7680aa2cea7b6e773037aee97513865f4698b6df0ffc2daf845c42b8
     # Named for this repository rather than plain `coordinode`: the server
     # repository runs its own compose stack that claims that name, and a bare
     # name is global to the daemon.
