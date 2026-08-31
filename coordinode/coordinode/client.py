@@ -34,6 +34,37 @@ _HOST_PORT_RE = re.compile(r"^(\[.+\]|[^:]+):(\d+)$")
 # names/labels/properties into DDL strings to surface clear errors early.
 _CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# gRPC codes that do NOT prove the server processed the request: the request or
+# its reply was lost somewhere in transit. Every other code is the server
+# answering, and an answered failure on a transaction consumes its handle
+# server-side. The split matters twice: a lost statement leaves the transaction
+# alive on the server (worth a cleanup rollback), and a lost commit reply
+# leaves the outcome unknown (never to be reported as an abort).
+_AMBIGUOUS_RPC_CODES = frozenset(
+    {
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.CANCELLED,
+        grpc.StatusCode.UNKNOWN,
+    }
+)
+
+
+def _rpc_outcome_is_ambiguous(exc: grpc.RpcError) -> bool:
+    """Whether this failure leaves the server's state unknowable.
+
+    A code outside the ambiguous set is an answer, so the transaction's fate is
+    decided. An error that cannot even report a code proves nothing either way
+    and is read as ambiguous, because the two mistakes are not symmetric: a
+    needless cleanup rollback is answered "unknown transaction id" and costs
+    one RPC, while a wrongly claimed abort after a commit invites a retry that
+    duplicates every write.
+    """
+    try:
+        return exc.code() in _AMBIGUOUS_RPC_CODES
+    except Exception:
+        return True
+
 
 def _validate_cypher_identifier(value: str, param_name: str) -> None:
     """Raise :exc:`ValueError` if *value* is not a valid Cypher identifier."""
@@ -214,21 +245,26 @@ class AsyncTransaction:
     than at the statement.
 
     Two properties of the server matter before holding one open. The handle
-    lives in the memory of the node that served the begin, so every statement
-    and the commit have to reach that same node; a client pointed at a load
-    balancer in front of several replicas must pin one connection for the
-    transaction's lifetime. And an idle transaction is reaped, after 30 seconds
-    by default, swept when some other transaction begins rather than on a timer,
-    so a long pause between statements can lose the handle without a wall-clock
-    guarantee of when.
+    lives in the memory of the node that served the begin, so every request of
+    the transaction has to reach that same node: connect to a node's own
+    address, or through a balancer configured for backend affinity. A balancer
+    that routes each request independently breaks this even through a single
+    client, since a reconnection can land on another backend mid-transaction,
+    and the next statement then fails with an unknown transaction id. And an
+    idle transaction is reaped, after 30 seconds by default, swept when some
+    other transaction begins rather than on a timer, so a long pause between
+    statements can lose the handle without a wall-clock guarantee of when.
     """
 
     def __init__(self, client: AsyncCoordinodeClient, transaction_id: int) -> None:
         self._client = client
         self._id = transaction_id
-        # open -> committed | rolled_back | aborted. "aborted" is the server
-        # having closed the transaction under us, which it does on any statement
-        # error and on a failed commit.
+        # open -> committed | rolled_back | aborted | indeterminate.
+        # "aborted" is the server having closed the transaction under us, which
+        # it does on any statement error and on a rejected commit.
+        # "indeterminate" is a commit whose reply was lost in transit: the
+        # writes may all be applied or none may be, and nothing on the client
+        # can tell which.
         self._state = "open"
 
     def __repr__(self) -> str:
@@ -253,7 +289,32 @@ class AsyncTransaction:
                 "server, which discards its buffered writes. Nothing was applied; begin "
                 "a new transaction to retry."
             )
+        if self._state == "indeterminate":
+            raise RuntimeError(
+                f"Cannot {action} this transaction: the commit's reply was lost and the "
+                "outcome is unknown. The writes may or may not be applied; verify the "
+                "data before retrying, since a blind retry can duplicate them."
+            )
         raise RuntimeError(f"Cannot {action} this transaction: it was already {self._state.replace('_', ' ')}.")
+
+    async def _best_effort_rollback(self) -> None:
+        """Ask the server to drop the transaction, ignoring every failure.
+
+        Used where the rollback is cleanup rather than the caller's request: a
+        transaction that may or may not still exist server-side. When it does
+        exist this frees its buffered writes now instead of at the idle sweep;
+        when it does not, the server answers "unknown transaction id" and there
+        was nothing to free. Neither answer changes what the caller is told.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            RollbackTransactionRequest,
+        )
+
+        with suppress(Exception):
+            await self._client._cypher_stub.RollbackTransaction(
+                RollbackTransactionRequest(transaction_id=self._id),
+                timeout=self._client._timeout,
+            )
 
     async def cypher(
         self,
@@ -289,8 +350,15 @@ class AsyncTransaction:
         )
         try:
             resp = await self._client._cypher_stub.ExecuteCypher(req, timeout=self._client._timeout)
-        except grpc.RpcError:
+        except grpc.RpcError as exc:
             self._state = "aborted"
+            if _rpc_outcome_is_ambiguous(exc):
+                # The statement may never have reached the server, in which
+                # case the transaction is still open there, holding its
+                # buffered writes until the idle sweep. Free it now. "aborted"
+                # stays truthful either way: no commit was sent, so none of
+                # this transaction's writes can ever apply.
+                await self._best_effort_rollback()
             raise
         return _rows_to_dicts(resp)
 
@@ -302,8 +370,16 @@ class AsyncTransaction:
         observe these writes.
 
         Raises if another transaction has written the same data since this one
-        began: conflicts are detected here, not at the statement. A failed
+        began: conflicts are detected here, not at the statement. A rejected
         commit applies nothing and closes the transaction.
+
+        One failure is different from the rest: a commit whose reply is lost in
+        transit (a deadline, an unavailable channel). The server may have
+        applied everything before the failure, or never received the request,
+        and nothing on the client can tell which. The transaction is then
+        marked indeterminate rather than aborted, and every later call on it
+        says so: retrying such a commit blindly can duplicate the writes, so
+        the data has to be verified first.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             CommitTransactionRequest,
@@ -314,21 +390,39 @@ class AsyncTransaction:
             resp = await self._client._cypher_stub.CommitTransaction(
                 CommitTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
             )
-        except grpc.RpcError:
-            # A rejected commit consumes the handle server-side too, so the
-            # transaction is gone either way and a follow-up rollback would find
-            # nothing.
-            self._state = "aborted"
+        except grpc.RpcError as exc:
+            if _rpc_outcome_is_ambiguous(exc):
+                self._state = "indeterminate"
+            else:
+                # An answered rejection (a write conflict, most commonly): the
+                # server consumed the handle and applied nothing, so a
+                # follow-up rollback would find nothing to discard.
+                self._state = "aborted"
             raise
         self._state = "committed"
         return int(resp.applied_index)
 
     async def rollback(self) -> None:
-        """Discard every buffered write. Nothing reaches the database."""
+        """Discard every buffered write. Nothing reaches the database.
+
+        After a commit whose reply was lost, that promise cannot be made: the
+        writes may already be applied. This then sends the rollback anyway, in
+        case the commit never arrived, and still raises, so nobody walks away
+        believing the discard is certain.
+        """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             RollbackTransactionRequest,
         )
 
+        if self._state == "indeterminate":
+            # If the commit never reached the server this frees the
+            # transaction; if it was applied, nothing can un-apply it.
+            await self._best_effort_rollback()
+            raise RuntimeError(
+                "Cannot promise a rollback: the commit's reply was lost, so its writes "
+                "may already be applied. A rollback request was sent in case the commit "
+                "never arrived, but verify the data rather than assuming either outcome."
+            )
         if self._state == "aborted":
             # The failure that closed the transaction already discarded the
             # writes, so this call's contract is met. Asking the server would

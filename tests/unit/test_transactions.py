@@ -24,7 +24,12 @@ from coordinode.client import AsyncCoordinodeClient, CoordinodeClient
 
 
 class _ServerRejected(grpc.RpcError):
-    """Stand-in for a gRPC failure, which is what the server sends on a rejection."""
+    """Stand-in for an ANSWERED gRPC failure: the server processed the request
+    and refused it, so it carries a definitive status code the way a real
+    rejection does. Transit losses are modelled by `_TransportError` below."""
+
+    def code(self):
+        return grpc.StatusCode.INVALID_ARGUMENT
 
 
 def _execute_response(columns=(), rows=()):
@@ -349,3 +354,174 @@ class TestSyncClient:
         tx.commit()
         with pytest.raises(RuntimeError, match="already committed"):
             tx.cypher("MATCH (n) RETURN n")
+
+
+# -- Transport failures that prove nothing ------------------------------------
+#
+# A gRPC error is only sometimes an answer. DEADLINE_EXCEEDED, UNAVAILABLE,
+# CANCELLED and UNKNOWN mean the request or its reply was lost somewhere on the
+# way, so the server may have processed the call or may never have seen it.
+# Treating those like a server rejection produced two bugs: a lost statement
+# left the server holding the transaction until the idle sweep, and a lost
+# commit reply told the caller nothing was applied when it may all have been.
+
+
+class _TransportError(grpc.RpcError):
+    """A gRPC failure with a status code, like the real client raises."""
+
+    def __init__(self, code):
+        self._code = code
+
+    def code(self):
+        return self._code
+
+
+class TestAmbiguousStatementFailure:
+    @staticmethod
+    def _client_with_lost_statement():
+        from unittest.mock import AsyncMock
+
+        return _async_client(ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)))
+
+    def test_sends_a_best_effort_rollback(self):
+        """The statement may never have arrived, leaving the transaction open on
+        the server with its buffered writes until the idle sweep. A rollback
+        frees it now; if the statement did arrive and abort it, the server
+        answers "unknown transaction id" and there was nothing to free."""
+
+        async def _inner() -> None:
+            client = self._client_with_lost_statement()
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("CREATE (:Person)")
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+            assert tx.is_open is False
+
+        asyncio.run(_inner())
+
+    def test_manual_rollback_after_it_is_a_no_op(self):
+        """The cleanup already happened; a second RollbackTransaction would only
+        collect an "unknown transaction id" answer."""
+
+        async def _inner() -> None:
+            client = self._client_with_lost_statement()
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("CREATE (:Person)")
+            await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+
+        asyncio.run(_inner())
+
+    def test_a_failed_cleanup_does_not_mask_the_statement_error(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.UNAVAILABLE)),
+                RollbackTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.UNAVAILABLE)),
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("CREATE (:Person)")
+
+        asyncio.run(_inner())
+
+    def test_an_answered_rejection_sends_no_rollback(self):
+        """INVALID_ARGUMENT is the server speaking: it processed the statement,
+        discarded the transaction and consumed the handle. A rollback after
+        that could only be answered "unknown transaction id"."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.INVALID_ARGUMENT))
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("RETURN (")
+            assert client._cypher_stub.RollbackTransaction.await_count == 0
+
+        asyncio.run(_inner())
+
+
+class TestIndeterminateCommit:
+    @staticmethod
+    def _client_with_lost_commit_reply():
+        from unittest.mock import AsyncMock
+
+        return _async_client(
+            CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED))
+        )
+
+    def test_outcome_is_recorded_as_unknown_not_aborted(self):
+        """The server may have applied every buffered write before the reply
+        was lost, or never seen the commit. Claiming an abort would invite a
+        retry that duplicates the writes."""
+
+        async def _inner() -> None:
+            client = self._client_with_lost_commit_reply()
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.commit()
+            assert tx.is_open is False
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.cypher("RETURN 1")
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.commit()
+
+        asyncio.run(_inner())
+
+    def test_rollback_attempts_cleanup_but_refuses_to_promise_a_discard(self):
+        """If the commit never arrived, the rollback frees the transaction; if
+        it was applied, nothing can un-apply it. So the request is sent and the
+        call still raises, because "nothing reached the database" cannot be
+        promised either way."""
+
+        async def _inner() -> None:
+            client = self._client_with_lost_commit_reply()
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.commit()
+            with pytest.raises(RuntimeError, match="may already be applied"):
+                await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+
+        asyncio.run(_inner())
+
+    def test_an_answered_commit_rejection_is_still_a_plain_abort(self):
+        """A conflict is a real answer: the server consumed the handle and
+        applied nothing, so no indeterminacy is involved."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.ABORTED)))
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.commit()
+            with pytest.raises(RuntimeError, match="an earlier failure closed it"):
+                await tx.cypher("RETURN 1")
+            await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count == 0
+
+        asyncio.run(_inner())
+
+    def test_an_error_that_cannot_report_a_code_is_read_as_ambiguous(self):
+        """The two misreadings are not symmetric: a needless cleanup rollback
+        costs one RPC answered "unknown transaction id", while a wrongly
+        claimed abort invites a retry that duplicates every write. So an error
+        proving nothing gets the careful reading, not the convenient one."""
+        from unittest.mock import AsyncMock
+
+        class _Codeless(grpc.RpcError):
+            pass
+
+        async def _inner() -> None:
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=_Codeless()))
+            tx = await client.begin_transaction()
+            with pytest.raises(_Codeless):
+                await tx.commit()
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.commit()
+
+        asyncio.run(_inner())
