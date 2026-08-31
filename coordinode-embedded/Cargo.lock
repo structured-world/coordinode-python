@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-embedded"
-version = "0.1.0"
+version = "1.0.6"
 dependencies = [
  "coordinode-core",
  "coordinode-embed",

@@ -5,9 +5,17 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
-      "_comment": "Single shared version for all three workspace packages (coordinode, langchain-coordinode, llama-index-graph-stores-coordinode). release.yml builds and publishes all three from one tag.",
+      "_comment": "Single shared version for every package this repo ships: the three Python packages (coordinode, langchain-coordinode, llama-index-graph-stores-coordinode) and the compiled extension coordinode-embedded. release.yml builds and publishes all four from one tag.",
       "component": "sdk",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "_extra_files_comment": "The Python packages read their version from the tag through hatch-vcs. maturin has no equivalent: it takes the wheel version from Cargo.toml, so that file has to carry the release version and the release PR is what writes it.",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "coordinode-embedded/Cargo.toml",
+          "jsonpath": "$.package.version"
+        }
+      ]
     }
   },
   "versioning": "default",
