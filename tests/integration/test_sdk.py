@@ -728,11 +728,16 @@ def test_cypher_rejects_invalid_consistency_values(client):
         client.cypher("RETURN 1", read_preference="leader")
     with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
         client.cypher("RETURN 1", after_index=-1)
-    # Causal reads (after_index > 0) require write_concern='majority'.
-    with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
+    # Causal reads (after_index > 0) require read_concern='majority'. This
+    # asserted write_concern until the guard was corrected: the server's own
+    # refusal names the read concern, and a majority write concern alone was
+    # accepted here and then rejected by the server.
+    with pytest.raises(ValueError, match="after_index > 0 requires read_concern='majority'"):
         client.cypher("RETURN 1", after_index=42)
-    with pytest.raises(ValueError, match="after_index > 0 requires write_concern='majority'"):
-        client.cypher("RETURN 1", after_index=42, write_concern="w1")
+    with pytest.raises(ValueError, match="after_index > 0 requires read_concern='majority'"):
+        client.cypher("RETURN 1", after_index=42, read_concern="local")
+    with pytest.raises(ValueError, match="after_index > 0 requires read_concern='majority'"):
+        client.cypher("RETURN 1", after_index=42, write_concern="majority")
     # Type validation runs before the causal-read check so bools/strings
     # surface the non-negative-integer error rather than a misleading one.
     with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
@@ -828,15 +833,27 @@ def test_statement_error_reports_itself_and_leaves_nothing(client):
         client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
 
 
-def test_commit_returns_a_usable_applied_index(client):
-    """The index a causal read can be fenced on."""
+def test_commit_returns_an_index_a_read_can_be_fenced_on(client):
+    """Use the index for what the docstring promises, rather than type-checking it.
+
+    `isinstance(applied_index, int)` cannot fail, since commit() returns
+    `int(...)`, and `> 0` passes for any non-zero field. The claim worth
+    testing is that the value fences a causal read: passing it as `after_index`
+    must return the write the commit carried.
+    """
     tag = uid()
     try:
         tx = client.begin_transaction()
         tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
         applied_index = tx.commit()
-        assert isinstance(applied_index, int)
-        assert applied_index > 0
+
+        rows = client.cypher(
+            "MATCH (n:TxDemo {tag: $tag}) RETURN n.name AS name",
+            params={"tag": tag},
+            after_index=applied_index,
+            read_concern="majority",
+        )
+        assert [r["name"] for r in rows] == ["Alice"]
     finally:
         client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
 

@@ -80,39 +80,55 @@ The same surface is on `AsyncCoordinodeClient`, with `async with` and awaited
 statements. When the commit point sits outside a block, drive it by hand:
 
 ```python
+from contextlib import suppress
+
 tx = db.begin_transaction()
 try:
     tx.cypher("MERGE (n:Entity {name: $n})", params={"n": "Alice"})
     applied_index = tx.commit()
 except Exception:
-    tx.rollback()
+    # Suppressed so a failing rollback cannot replace the error that caused it.
+    with suppress(Exception):
+        tx.rollback()
     raise
 ```
+
+Requires a CoordiNode server of **v0.5.0 or newer**. The transaction RPCs
+arrived in that release, and `health()` exercises a different service, so an
+older server passes the health check and then refuses `transaction()`.
 
 Each statement reads the snapshot taken when the transaction began, so the
 transaction sees a stable view of the database plus its own uncommitted writes,
 which nobody else can see until the commit. A conflict with another transaction
 that wrote the same data is reported by `commit()`, not by the statement, and a
 rejected commit applies nothing. `commit()` returns the Raft applied index, which
-a later read can pass as `after_index` (with `write_concern="majority"`) when it
+a later read can pass as `after_index` (with `read_concern="majority"`) when it
 must observe these writes.
 
 `tx.cypher()` takes no consistency arguments, unlike `db.cypher()`: the snapshot
 is already fixed and durability is decided once at the commit, so a per-statement
 read or write concern has nothing left to mean.
 
-Two constraints are worth knowing before holding a transaction open:
+Three constraints are worth knowing before holding a transaction open:
 
 - **It belongs to one node.** The handle lives in the memory of the server that
-  opened it, so every statement and the commit must reach that same node. One
-  client instance holds one connection and satisfies this; pointing several
-  clients at a load balancer in front of replicas does not.
+  opened it, so every request of the transaction must reach that same node.
+  Connect to a node's own address, or through a proxy configured for backend
+  affinity. A single client is *not* by itself a guarantee: against a layer-7
+  or per-request gRPC balancer the calls can be spread across backends, and a
+  reconnection can move to another backend mid-transaction, after which the
+  next statement fails with an unknown transaction id.
 - **Idle transactions are collected.** The server reaps one that has been idle
   (30 seconds by default), and it sweeps when another transaction begins rather
   than on a timer, so a long pause between statements can lose the handle. A
   failed statement also ends the transaction outright: its writes are discarded
   and the handle is closed, so reusing it raises rather than reporting a
   confusing error from the server.
+- **A lost reply is not an abort.** If the connection drops or a deadline
+  expires while committing, the server may have applied everything or nothing,
+  and the client cannot tell. The transaction is marked indeterminate: later
+  calls on it say so, and `rollback()` raises instead of promising a discard.
+  Verify the data rather than blindly retrying, which can duplicate the writes.
 
 ## LangChain — GraphRAG Pipeline
 

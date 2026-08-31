@@ -588,3 +588,43 @@ class TestRowDecoding:
                 await client.cypher("MATCH (n) RETURN n.a AS a")
 
         asyncio.run(_inner())
+
+
+class TestCausalReadValidation:
+    """The client guard for `after_index` checked the wrong field entirely.
+
+    The server refuses a causal read unless the READ concern is majority (its
+    message: "readConcern=LOCAL is incompatible with afterClusterTime"). The
+    guard demanded a majority WRITE concern instead, so it rejected valid calls
+    and waved through invalid ones.
+    """
+
+    def test_a_majority_read_concern_is_accepted(self):
+        """This is the call the server actually wants; the guard used to refuse it."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(ExecuteCypher=AsyncMock(return_value=_execute_response()))
+            await client.cypher("MATCH (n) RETURN n", after_index=7, read_concern="majority")
+            sent = client._cypher_stub.ExecuteCypher.call_args.args[0]
+            assert sent.read_concern.after_index == 7
+
+        asyncio.run(_inner())
+
+    def test_a_majority_write_concern_alone_is_refused(self):
+        """The guard used to accept this and let the server reject it instead."""
+
+        async def _inner() -> None:
+            client = _async_client()
+            with pytest.raises(ValueError, match="read_concern='majority'"):
+                await client.cypher("MATCH (n) RETURN n", after_index=7, write_concern="majority")
+
+        asyncio.run(_inner())
+
+    def test_no_concern_at_all_is_refused(self):
+        async def _inner() -> None:
+            client = _async_client()
+            with pytest.raises(ValueError, match="read_concern='majority'"):
+                await client.cypher("MATCH (n) RETURN n", after_index=7)
+
+        asyncio.run(_inner())

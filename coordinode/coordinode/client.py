@@ -366,7 +366,7 @@ class AsyncTransaction:
         """Apply every buffered write as one unit.
 
         Returns the Raft applied index of the commit, which a later read can
-        pass as ``after_index`` (with ``write_concern="majority"``) when it must
+        pass as ``after_index`` (with ``read_concern="majority"``) when it must
         observe these writes.
 
         Raises if another transaction has written the same data since this one
@@ -518,15 +518,17 @@ class AsyncCoordinodeClient:
         Consistency parameters (all optional; server defaults apply when omitted):
 
         - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
+          Causal reads (``after_index`` > 0) require ``"majority"`` here.
         - ``write_concern``: ``"w0"``, ``"memory"``, ``"cache"``, ``"w1"`` (default, leader-ack),
           ``"majority"``, in rising order of durability. ``"memory"`` and ``"cache"`` acknowledge
           before the write reaches Raft, so a leader crash before the background drain loses them;
-          reach for those only where losing recent writes is acceptable. Causal reads
-          (``after_index`` > 0) require ``"majority"``.
+          reach for those only where losing recent writes is acceptable.
         - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
           ``"secondary_preferred"``, ``"nearest"``.
         - ``after_index``: raft log index for causal reads, a fence. Returned rows reflect at
-          least the state at this index.
+          least the state at this index. Needs ``read_concern="majority"``: the fence is about
+          which replica may answer, so it is the read's concern that has to be raised, not the
+          write's.
         - ``at_timestamp``: timestamp to read at, a pin rather than a fence. Reads the
           database exactly as of that version without waiting, for time travel. Microseconds
           since the Unix epoch, so ``int(time.time() * 1_000_000)`` is now. Requires
@@ -549,13 +551,16 @@ class AsyncCoordinodeClient:
             not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0
         ):
             raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
-        # Causal reads (after_index > 0) are only satisfiable when writes were
-        # acknowledged by a majority; otherwise the referenced index may never
-        # replicate and the read would hang. Mirror the server's rejection.
-        if after_index is not None and after_index > 0 and (write_concern or "").strip().lower() != "majority":
+        # Causal reads (after_index > 0) need a majority READ concern: the
+        # server refuses the pair otherwise, with "readConcern=LOCAL is
+        # incompatible with afterClusterTime". The concern that matters is the
+        # read's, not the write's, because the fence is about which replicas
+        # may answer, not about how the referenced write was acknowledged.
+        if after_index is not None and after_index > 0 and (read_concern or "").strip().lower() != "majority":
             raise ValueError(
-                "after_index > 0 requires write_concern='majority' — causal reads "
-                "depend on majority-committed writes. Pass write_concern='majority'."
+                "after_index > 0 requires read_concern='majority': a causal read has to be "
+                "answered by a majority-acknowledged replica, or the referenced index may "
+                "not be there yet. Pass read_concern='majority'."
             )
         req = ExecuteCypherRequest(
             query=query,
