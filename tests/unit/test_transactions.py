@@ -206,15 +206,19 @@ class TestAbort:
 
         asyncio.run(_inner())
 
-    def test_no_rollback_is_sent_for_a_transaction_the_server_already_dropped(self):
-        """Sending one would answer "unknown transaction id" and say nothing useful."""
+    def test_exactly_one_cleanup_is_sent_and_never_a_commit(self):
+        """This asserted that no rollback was sent, back when the statement path
+        classified failures. It does send one now, unconditionally, because
+        classifying was how an unprocessed statement leaked a transaction for
+        the idle timeout. What still must not happen is a second cleanup from
+        the context manager on the way out, or a commit."""
 
         async def _inner() -> None:
             client = self._client_whose_statement_fails()
             with pytest.raises(_ServerRejected):
                 async with client.transaction() as tx:
                     await tx.cypher("RETURN nonsense(")
-            assert client._cypher_stub.RollbackTransaction.await_count == 0
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
             assert client._cypher_stub.CommitTransaction.await_count == 0
 
         asyncio.run(_inner())
@@ -231,16 +235,18 @@ class TestAbort:
 
         asyncio.run(_inner())
 
-    def test_rollback_after_an_aborted_statement_succeeds_without_a_call(self):
-        """Its contract is met: the writes are already discarded."""
+    def test_rollback_after_an_aborted_statement_adds_no_second_call(self):
+        """The failing statement already sent the cleanup, so an explicit
+        rollback has nothing left to do and must not repeat the request."""
 
         async def _inner() -> None:
             client = self._client_whose_statement_fails()
             tx = await client.begin_transaction()
             with pytest.raises(_ServerRejected):
                 await tx.cypher("RETURN nonsense(")
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
             await tx.rollback()
-            assert client._cypher_stub.RollbackTransaction.await_count == 0
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
             assert tx.is_open is False
 
         asyncio.run(_inner())
@@ -427,20 +433,27 @@ class TestAmbiguousStatementFailure:
 
         asyncio.run(_inner())
 
-    def test_an_answered_rejection_sends_no_rollback(self):
+    def test_an_answered_rejection_still_reaches_the_caller_unchanged(self):
         """INVALID_ARGUMENT is the server speaking: it processed the statement,
-        discarded the transaction and consumed the handle. A rollback after
-        that could only be answered "unknown transaction id"."""
+        discarded the transaction and consumed the handle, so the cleanup this
+        path now sends is answered "unknown transaction id" and swallowed.
+
+        This asserted no rollback was sent, back when statement failures were
+        classified by code. The classification is gone because it decided,
+        wrongly, for codes the server never acted on. What matters here is what
+        the caller sees: their own error, and a closed handle."""
         from unittest.mock import AsyncMock
 
         async def _inner() -> None:
             client = _async_client(
-                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.INVALID_ARGUMENT))
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.INVALID_ARGUMENT)),
+                RollbackTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.NOT_FOUND)),
             )
             tx = await client.begin_transaction()
-            with pytest.raises(_TransportError):
+            with pytest.raises(_TransportError) as caught:
                 await tx.cypher("RETURN (")
-            assert client._cypher_stub.RollbackTransaction.await_count == 0
+            assert caught.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+            assert tx.is_open is False
 
         asyncio.run(_inner())
 
@@ -626,5 +639,85 @@ class TestCausalReadValidation:
             client = _async_client()
             with pytest.raises(ValueError, match="read_concern='majority'"):
                 await client.cypher("MATCH (n) RETURN n", after_index=7)
+
+        asyncio.run(_inner())
+
+
+# -- Failures that are not gRPC errors, and cleanup that must not be skipped ---
+
+
+class TestCommitCancellation:
+    def test_a_cancelled_commit_is_indeterminate_not_open(self):
+        """`asyncio.CancelledError` is a BaseException, so `except grpc.RpcError`
+        never sees it. The RPC may still have reached the server and applied
+        everything, so leaving the transaction open invites exactly the retry
+        the indeterminate state exists to prevent."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=asyncio.CancelledError()))
+            tx = await client.begin_transaction()
+            with pytest.raises(asyncio.CancelledError):
+                await tx.commit()
+            assert tx.is_open is False
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.commit()
+
+        asyncio.run(_inner())
+
+    def test_a_cancelled_statement_closes_the_transaction(self):
+        """No commit was sent, so nothing of this transaction can ever apply;
+        the handle is closed rather than left open for reuse."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=asyncio.CancelledError()))
+            tx = await client.begin_transaction()
+            with pytest.raises(asyncio.CancelledError):
+                await tx.cypher("CREATE (:Person)")
+            assert tx.is_open is False
+
+        asyncio.run(_inner())
+
+
+class TestRollbackTransportFailure:
+    def test_a_lost_rollback_still_closes_the_transaction(self):
+        """The request may not have landed, so the server may still hold the
+        transaction until the idle sweep. What is certain is that no commit was
+        ever sent, so nothing can apply: the discard promise holds and the
+        handle must not stay usable."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                RollbackTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.UNAVAILABLE))
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.rollback()
+            assert tx.is_open is False
+            with pytest.raises(RuntimeError, match="already rolled back"):
+                await tx.cypher("CREATE (:Person)")
+
+        asyncio.run(_inner())
+
+
+class TestStatementCleanupIsUnconditional:
+    def test_a_client_side_size_failure_still_cleans_up(self):
+        """RESOURCE_EXHAUSTED is raised by the client when the response exceeds
+        its receive limit, after the server has executed the statement and kept
+        the transaction open. Classifying codes missed this one; cleanup for
+        statements is now unconditional, so the next unclassified code cannot
+        leak a transaction either."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.RESOURCE_EXHAUSTED))
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("MATCH (n) RETURN n")
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
 
         asyncio.run(_inner())

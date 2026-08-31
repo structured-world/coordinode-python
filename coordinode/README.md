@@ -171,17 +171,22 @@ db.cypher(
     read_concern="majority",
 )
 
-# Majority write (required for causal reads)
+# Durable write, acknowledged by a majority of the cluster
 db.cypher("CREATE (n:Event {t: timestamp()})", write_concern="majority")
 
-# Causal read: see at least state at raft index 42
-db.cypher("MATCH (n) RETURN count(n) AS total", after_index=42)
+# Causal read: see at least the state at raft index 42. The fence is about
+# which replica may answer, so it is the READ concern that has to be majority.
+db.cypher(
+    "MATCH (n) RETURN count(n) AS total",
+    after_index=42,
+    read_concern="majority",
+)
 ```
 
 Accepted values:
 
-- ``read_concern``: ``local`` (default) · ``majority`` · ``linearizable`` · ``snapshot``
-- ``write_concern``: ``w0`` · ``w1`` (default) · ``majority``
+- ``read_concern``: ``local`` (default) · ``majority`` · ``linearizable`` · ``snapshot``. Causal reads (``after_index`` > 0) require ``majority`` here.
+- ``write_concern``: ``w0`` · ``memory`` · ``cache`` · ``w1`` (default) · ``majority``
 - ``read_preference``: ``primary`` (default) · ``primary_preferred`` · ``secondary`` · ``secondary_preferred`` · ``nearest``
 
 ## Related Packages

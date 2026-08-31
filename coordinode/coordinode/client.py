@@ -36,10 +36,13 @@ _CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # gRPC codes that do NOT prove the server processed the request: the request or
 # its reply was lost somewhere in transit. Every other code is the server
-# answering, and an answered failure on a transaction consumes its handle
-# server-side. The split matters twice: a lost statement leaves the transaction
-# alive on the server (worth a cleanup rollback), and a lost commit reply
-# leaves the outcome unknown (never to be reported as an abort).
+# answering, and an answered failure consumes the transaction's handle.
+#
+# This is consulted for the COMMIT only, where the question is "were the writes
+# applied", which no follow-up request can answer. Statement failures do not
+# consult it: there the only question is whether server-side state needs
+# freeing, and asking for that is harmless whatever the answer, so the
+# statement path cleans up unconditionally rather than risk misjudging a code.
 _AMBIGUOUS_RPC_CODES = frozenset(
     {
         grpc.StatusCode.DEADLINE_EXCEEDED,
@@ -53,11 +56,11 @@ _AMBIGUOUS_RPC_CODES = frozenset(
 def _rpc_outcome_is_ambiguous(exc: grpc.RpcError) -> bool:
     """Whether this failure leaves the server's state unknowable.
 
-    A code outside the ambiguous set is an answer, so the transaction's fate is
+    A code outside the ambiguous set is an answer, so the commit's fate is
     decided. An error that cannot even report a code proves nothing either way
-    and is read as ambiguous, because the two mistakes are not symmetric: a
-    needless cleanup rollback is answered "unknown transaction id" and costs
-    one RPC, while a wrongly claimed abort after a commit invites a retry that
+    and is read as ambiguous, because the two mistakes are not symmetric:
+    warning about an outcome that turned out to be a clean rejection costs the
+    caller one verification, while a wrongly claimed abort invites a retry that
     duplicates every write.
     """
     try:
@@ -350,15 +353,29 @@ class AsyncTransaction:
         )
         try:
             resp = await self._client._cypher_stub.ExecuteCypher(req, timeout=self._client._timeout)
-        except grpc.RpcError as exc:
+        except grpc.RpcError:
+            # Always attempt the cleanup, without classifying the failure.
+            # Whether the server processed the statement decides only whether
+            # the rollback finds anything: if it aborted the transaction the
+            # request is answered "unknown transaction id" and swallowed, and
+            # if it kept the transaction open (a lost request, or a limit the
+            # CLIENT hit while receiving an oversized reply) the buffered
+            # writes are freed now instead of at the idle sweep.
+            #
+            # Classifying here was a way to miss cases: every code judged
+            # "answered" that the server did not actually act on leaks a
+            # transaction for the idle timeout. The cost of not classifying is
+            # one wasted RPC on a path that is already failing.
             self._state = "aborted"
-            if _rpc_outcome_is_ambiguous(exc):
-                # The statement may never have reached the server, in which
-                # case the transaction is still open there, holding its
-                # buffered writes until the idle sweep. Free it now. "aborted"
-                # stays truthful either way: no commit was sent, so none of
-                # this transaction's writes can ever apply.
-                await self._best_effort_rollback()
+            await self._best_effort_rollback()
+            raise
+        except asyncio.CancelledError:
+            # Cancellation is a BaseException, so the handler above never sees
+            # it. No commit was sent, so nothing of this transaction can apply;
+            # the handle is closed rather than left open for reuse. No cleanup
+            # is attempted, since an await during cancellation would only be
+            # cancelled again.
+            self._state = "aborted"
             raise
         return _rows_to_dicts(resp)
 
@@ -399,6 +416,15 @@ class AsyncTransaction:
                 # follow-up rollback would find nothing to discard.
                 self._state = "aborted"
             raise
+        except asyncio.CancelledError:
+            # Cancellation is a BaseException, so the gRPC handler above never
+            # sees it, and a deadline enforced by `asyncio.timeout()` arrives
+            # this way rather than as DEADLINE_EXCEEDED. The request may have
+            # reached the server and applied everything, which is exactly the
+            # case the indeterminate state exists for: leaving the transaction
+            # open here would invite the retry that duplicates the writes.
+            self._state = "indeterminate"
+            raise
         self._state = "committed"
         return int(resp.applied_index)
 
@@ -431,10 +457,18 @@ class AsyncTransaction:
             self._state = "rolled_back"
             return
         self._require_open("roll back")
+        # Terminal before the call, not after it. If the request is lost the
+        # server may hold the transaction until the idle sweep, but no commit
+        # was ever sent, so nothing of it can apply and the discard this method
+        # promises still holds. What must not happen is the handle staying
+        # usable: a caller who asked to discard should not be able to add
+        # another statement, or commit, because their rollback did not land.
+        # The failure still propagates, so they know the request did not
+        # arrive.
+        self._state = "rolled_back"
         await self._client._cypher_stub.RollbackTransaction(
             RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
         )
-        self._state = "rolled_back"
 
 
 class AsyncCoordinodeClient:
