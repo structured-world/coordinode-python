@@ -19,7 +19,7 @@ Graph + Vector + Full-Text in a single transactional engine. One client, one que
 
 ## Try It in Google Colab
 
-No setup required — runs entirely in-browser using the embedded engine:
+The first four need no setup and run entirely in-browser on the embedded engine:
 
 | Notebook | Open |
 |----------|------|
@@ -27,9 +27,16 @@ No setup required — runs entirely in-browser using the embedded engine:
 | 01 · LlamaIndex PropertyGraph query | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/01_llama_index_property_graph.ipynb) |
 | 02 · LangChain GraphCypherQAChain | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/02_langchain_graph_chain.ipynb) |
 | 03 · LangGraph agent over graph | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) |
+| 04 · What 0.5 added, transactions included | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/04_whats_new_in_0_5.ipynb) |
 
-> Start with **00** to seed the graph — the other notebooks read from it.
+> Start with **00** to seed the graph, which the other notebooks read from.
 > The first cell installs pre-built wheels from PyPI (~30 sec).
+>
+> **04 is the exception:** batch writes, consistency levels, time travel and
+> transactions are distribution and durability features, so it needs a server
+> rather than the embedded engine. Point `COORDINODE_ADDR` at one, or run the
+> Docker Compose stack in `demo/`. Without it the notebook stops with an
+> explanation instead of failing cell by cell.
 
 ## Quick Start
 
