@@ -65,10 +65,27 @@ def _to_path_proto(path: Path) -> Any:
     )
 
 
+def _set_sequence(pv: Any, values: Any) -> None:
+    """Encode a Python sequence into the field that matches what it holds.
+
+    A non-empty run of plain numbers is a Vector; anything else is a list of
+    values. bool is a subclass of int, so it is excluded explicitly: [True,
+    False] is a list of booleans, not a Vector of 1.0 and 0.0.
+    """
+    from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
+        PropertyList,
+        Vector,
+    )
+
+    if values and all(isinstance(v, int | float) and not isinstance(v, bool) for v in values):
+        pv.vector_value.CopyFrom(Vector(values=[float(v) for v in values]))
+    else:
+        pv.list_value.CopyFrom(PropertyList(values=[to_property_value(v) for v in values]))
+
+
 def to_property_value(py_val: PyValue) -> Any:
     """Convert a Python value to a proto PropertyValue."""
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
-        PropertyList,
         PropertyMap,
         PropertyValue,
         Vector,
@@ -96,17 +113,9 @@ def to_property_value(py_val: PyValue) -> Any:
             MultiVectorProto(rows=[Vector(values=[float(v) for v in row]) for row in py_val])
         )
     elif isinstance(py_val, list | tuple):
-        # Homogeneous float list → Vector; mixed/str list → PropertyList.
-        # bool is a subclass of int, so exclude it explicitly — [True, False] must
-        # not be serialised as a Vector of 1.0/0.0 but as a PropertyList.
         # list | tuple union syntax is valid in isinstance() for Python ≥3.10 (PEP 604).
         # This project targets Python ≥3.11 (pyproject.toml: requires-python = ">=3.11").
-        if py_val and all(isinstance(v, int | float) and not isinstance(v, bool) for v in py_val):
-            vec = Vector(values=[float(v) for v in py_val])
-            pv.vector_value.CopyFrom(vec)
-        else:
-            pl = PropertyList(values=[to_property_value(v) for v in py_val])
-            pv.list_value.CopyFrom(pl)
+        _set_sequence(pv, py_val)
     elif isinstance(py_val, Path):
         # Before the dict branch below, which would otherwise take it: Path is
         # a dict, and encoding it as a map changes the property's wire type on
