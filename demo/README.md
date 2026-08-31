@@ -9,7 +9,7 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/00_seed_data.ipynb) **Seed Data** | Build a tech-industry knowledge graph (~35 relationships) | nothing |
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/01_llama_index_property_graph.ipynb) **LlamaIndex** | `CoordinodePropertyGraphStore`: upsert, triplets, structured query | nothing |
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/02_langchain_graph_chain.ipynb) **LangChain** | `CoordinodeGraph`: add_graph_documents, schema, GraphCypherQAChain | nothing |
-| [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) **LangGraph** | Agent with CoordiNode as graph memory (save/query/traverse) | a current `coordinode-embedded` |
+| [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) **LangGraph** | Agent with CoordiNode as graph memory (save/query/traverse) | nothing |
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/04_whats_new_in_0_5.ipynb) **What 0.5 Added** | Batch insert, `element_id`, schema revision, write/read concerns, time travel | a server (`COORDINODE_ADDR`) |
 
 > **Note:** **LangGraph** runs the engine in-process rather than against a
@@ -30,11 +30,9 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 > until `COORDINODE_ADDR` points at a server. Run it against the Docker Compose
 > stack below.
 >
-> In the Compose stack, **LangGraph** needs `coordinode-embedded` in the Jupyter
-> image. The wheel currently on PyPI predates the path syntax `find_related`
-> uses, so the image does not install it yet; run that notebook in Colab or
-> locally until a release publishes a current wheel. The other four use the
-> server and are unaffected.
+> In the Compose stack, **LangGraph** installs `coordinode-embedded` from PyPI
+> the first time its install cell runs, and keeps its graph in the container's
+> own file. The other four talk to the server beside it.
 
 ## Run locally (Docker Compose)
 
