@@ -2,18 +2,33 @@
 
 PROTO_SRC  := proto
 PROTO_OUT  := coordinode/coordinode/_proto
-PYTHON     ?= python3
+# grpcio-tools lives in the synced environment, so both the include-path probe
+# below and the generation itself have to run through the same interpreter.
+# A bare python3 finds neither.
+PYTHON     ?= uv run python
+
+# Well-known types that ship with grpc_tools. The proto submodule vendors its
+# own google/protobuf/descriptor.proto so the Rust build works on hosts without
+# protobuf-devel; that copy is older than what this protoc expects and, if it
+# wins the include search, generation dies with "Malformed descriptor.proto
+# doesn't contain google.protobuf.FeatureSet". Searching here first keeps
+# descriptor.proto on protoc's own copy while google/api/* still resolves from
+# the submodule, which is the only place it exists.
+# Deferred, not `:=`: an immediate assignment would shell out to $(PYTHON) on
+# every make invocation, including `make clean` on a machine with no uv.
+GRPC_INC = $(shell $(PYTHON) -c "import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), '_proto'))")
 
 # Generate gRPC stubs from proto submodule into coordinode/_proto/
 proto:
 	@echo "==> Generating proto stubs..."
 	@mkdir -p $(PROTO_OUT)
 	$(PYTHON) -m grpc_tools.protoc \
+		-I"$(GRPC_INC)" \
 		-I$(PROTO_SRC) \
 		--python_out=$(PROTO_OUT) \
 		--grpc_python_out=$(PROTO_OUT) \
 		--pyi_out=$(PROTO_OUT) \
-		$$(find $(PROTO_SRC) -name '*.proto')
+		$$(find $(PROTO_SRC) -name '*.proto' -not -path '$(PROTO_SRC)/google/protobuf/*')
 	@# Add __init__.py to every generated package directory
 	@find $(PROTO_OUT) -type d -exec touch {}/__init__.py \;
 	@# Fix absolute imports in all generated pb2 files (grpc_tools generates absolute paths)
@@ -34,12 +49,21 @@ install:
 	uv sync
 	$(MAKE) proto
 
-# Install using pip (alternative — works without uv)
+# Install using pip (alternative that works without uv).
+#
+# PIP_PYTHON, not a bare `pip`: the whole point of this target is a machine
+# with no uv, and there `pip` and `python3` can be two different interpreters
+# (a pip from 3.11 on PATH ahead of a 3.13 python3, say). Installing through
+# one and generating stubs with the other puts grpcio-tools in an environment
+# the generation step cannot see. Everything below goes through the same
+# interpreter, and `make install-pip PIP_PYTHON=python3.12` picks another.
+PIP_PYTHON ?= python3
+
 install-pip:
-	pip install -e "coordinode[dev]"
-	pip install -e langchain-coordinode/
-	pip install -e llama-index-coordinode/
-	$(MAKE) proto
+	$(PIP_PYTHON) -m pip install -e "coordinode[dev]"
+	$(PIP_PYTHON) -m pip install -e langchain-coordinode/
+	$(PIP_PYTHON) -m pip install -e llama-index-coordinode/
+	$(MAKE) proto PYTHON="$(PIP_PYTHON)"
 
 test: proto-check test-unit
 

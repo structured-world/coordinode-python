@@ -22,18 +22,23 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+# Floors track the generated stubs shipped in the wheel, which are not
+# backward compatible with older runtimes: the pb2 modules call
+# ValidateProtobufRuntimeVersion(7.35.1) and the grpc stubs refuse to import
+# below their own generated version. A lower floor here resolves happily and
+# then fails at first import.
 dependencies = [
-    "grpcio>=1.60",
-    "protobuf>=4.25",
-    "googleapis-common-protos>=1.62",
+    "grpcio>=1.83.1",
+    "protobuf>=7.35.1",
+    "googleapis-common-protos>=1.74.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "grpcio-tools>=1.60",
-    "pytest>=8",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.4",
+    "grpcio-tools>=1.83.1",
+    "pytest>=9",
+    "pytest-asyncio>=1.4",
+    "ruff>=0.16",
 ]
 
 [project.urls]

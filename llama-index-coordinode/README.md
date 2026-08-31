@@ -159,7 +159,7 @@ store = CoordinodePropertyGraphStore("localhost:7080", timeout=60.0)
 | Relationship map traversal | ✅ |
 | Schema inspection | ✅ |
 | Direct Cypher (`structured_query`) | ✅ |
-| Vector similarity queries | ✅ (returns empty until HNSW index wiring — v0.4) |
+| Vector similarity queries | ✅ (server-side HNSW; falls back to empty when the injected client has no `vector_search`) |
 | Async support | via `AsyncCoordinodeClient` |
 
 ## Related Packages

@@ -22,5 +22,6 @@ Example::
 """
 
 from ._coordinode_embedded import Hnsw, LocalClient
+from ._types import MultiVector, Path
 
-__all__ = ["Hnsw", "LocalClient"]
+__all__ = ["Hnsw", "LocalClient", "MultiVector", "Path"]

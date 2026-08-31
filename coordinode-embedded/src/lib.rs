@@ -17,14 +17,72 @@ mod hnsw;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use coordinode_core::graph::types::{GeoValue, Value};
+use coordinode_core::graph::types::{GeoValue, PathRel, PathValue, Value};
 use coordinode_embed::{Database, DatabaseError};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rmpv::Value as MsgpackValue;
 
 // ── Value → PyObject conversion ──────────────────────────────────────────────
+
+/// The `MultiVector` tag, from this package's own `_types` module.
+///
+/// A list subclass, so a tagged value reads and compares exactly like the
+/// nested list it replaces; the type exists only to survive a round trip,
+/// since an untagged nested list re-encodes as an array and changes the
+/// property's type. That module re-exports `coordinode`'s definition when that
+/// package is installed and defines an equivalent when it is not, so the tag
+/// holds for a standalone install of the embedded engine too.
+/// Resolved once per process rather than per value: `value_to_py` runs for
+/// every column of every row, and the import machinery plus the attribute
+/// fetch are the same two lookups every time.
+///
+/// Only a success is remembered. Caching a failure would let one bad lookup
+/// decide the wire type of every value for the rest of the process, and the
+/// error is discarded here rather than inspected, so it is not ours to call
+/// permanent. Retrying costs the two lookups again on a path that only runs
+/// when the module is missing, which cannot happen while it ships in this
+/// package.
+static MULTI_VECTOR_TYPE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+
+fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
+    tag_type(py, &MULTI_VECTOR_TYPE, "MultiVector")
+}
+
+/// The `Path` tag, from this package's own `_types` module.
+///
+/// A dict subclass, for the same reason as [`multi_vector_type`]: without the
+/// tag a path read back is an ordinary mapping, and writing it out again would
+/// store a map.
+/// Resolved and remembered on the same terms as [`MULTI_VECTOR_TYPE`].
+static PATH_TYPE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+
+fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
+    tag_type(py, &PATH_TYPE, "Path")
+}
+
+/// Fetch a tag class from this package's `_types`, remembering it in `cell`.
+///
+/// The cell holds successes only, so a lookup that fails is retried on the
+/// next value rather than deciding the wire type for the rest of the process.
+fn tag_type<'py>(
+    py: Python<'py>,
+    cell: &GILOnceCell<Py<PyAny>>,
+    name: &str,
+) -> Option<Bound<'py, PyAny>> {
+    if let Some(tag) = cell.get(py) {
+        return Some(tag.bind(py).clone());
+    }
+    let tag = py
+        .import("coordinode_embedded._types")
+        .and_then(|module| module.getattr(name))
+        .ok()?;
+    // A racing thread may have set it first; either value is the same class.
+    let _ = cell.set(py, tag.clone().unbind());
+    Some(tag)
+}
 
 fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
     match v {
@@ -37,13 +95,11 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
         Value::String(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
         // Timestamp: expose as raw microseconds; callers use datetime.fromtimestamp(ts/1e6)
         Value::Timestamp(ts) => Ok(ts.into_pyobject(py)?.into_any().unbind()),
-        Value::Vector(v) => {
-            let list = PyList::empty(py);
-            for x in v {
-                list.append(x)?;
-            }
-            Ok(list.into_any().unbind())
-        }
+        // Sized from the vector's length in one go. Growing by append costs a
+        // reallocation every time the list outgrows its capacity, and an
+        // embedding is the one value here that routinely runs to hundreds or
+        // thousands of elements.
+        Value::Vector(v) => Ok(PyList::new(py, v)?.into_any().unbind()),
         Value::Array(arr) => {
             let list = PyList::empty(py);
             for item in arr {
@@ -68,10 +124,49 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
             }
             Ok(d.into_any().unbind())
         }
-        Value::Blob(b) | Value::Binary(b) => {
-            Ok(PyBytes::new(py, &b).into_any().unbind())
-        }
+        Value::Blob(b) | Value::Binary(b) => Ok(PyBytes::new(py, &b).into_any().unbind()),
         Value::Document(doc) => msgpack_to_py(py, doc),
+        // Token-level embeddings: a list of equal-length float rows, mirroring
+        // how a single Vector is exposed, but tagged so a value read here and
+        // written straight back keeps its type. An untagged nested list is
+        // indistinguishable from an array that happens to hold vectors, and
+        // the write turns the property into one.
+        Value::MultiVector(rows) => {
+            let outer = PyList::empty(py);
+            for row in rows {
+                // Each row's width is known, so the list is sized once.
+                outer.append(PyList::new(py, row)?)?;
+            }
+            match multi_vector_type(py) {
+                Some(cls) => Ok(cls.call1((outer,))?.unbind()),
+                None => Ok(outer.into_any().unbind()),
+            }
+        }
+        // A graph path, shaped like its msgpack form on the wire: the node ids
+        // it runs through and the relationship hops between them.
+        Value::Path(path) => {
+            let d = PyDict::new(py);
+            // Sized from the length that is already known, rather than grown
+            // by repeated append.
+            d.set_item("nodes", PyList::new(py, path.nodes)?)?;
+
+            let rels = PyList::empty(py);
+            for rel in path.rels {
+                let r = PyDict::new(py);
+                // The path is owned here and dropped on the way out, so the
+                // type moves into the Python string instead of being copied
+                // once per hop for it.
+                r.set_item("type", rel.edge_type)?;
+                r.set_item("source", rel.source)?;
+                r.set_item("target", rel.target)?;
+                rels.append(r)?;
+            }
+            d.set_item("rels", rels)?;
+            match path_type(py) {
+                Some(cls) => Ok(cls.call1((d,))?.unbind()),
+                None => Ok(d.into_any().unbind()),
+            }
+        }
     }
 }
 
@@ -95,7 +190,7 @@ fn msgpack_to_py(py: Python<'_>, v: MsgpackValue) -> PyResult<PyObject> {
         MsgpackValue::String(s) => match s.into_str() {
             // into_str() → Option<String> in rmpv 1.x
             Some(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
-            None => Ok(py.None()),  // invalid UTF-8 → None
+            None => Ok(py.None()), // invalid UTF-8 → None
         },
         MsgpackValue::Binary(b) => Ok(PyBytes::new(py, &b).into_any().unbind()),
         MsgpackValue::Array(arr) => {
@@ -123,6 +218,52 @@ fn msgpack_to_py(py: Python<'_>, v: MsgpackValue) -> PyResult<PyObject> {
 
 // ── PyObject → Value conversion (for params) ─────────────────────────────────
 
+/// Rebuild a [`PathValue`] from the mapping `value_to_py` produces for one.
+///
+/// The keys mirror that shape exactly: `nodes` is the id sequence and `rels`
+/// the hops, each carrying its type and its endpoints. A missing or misshapen
+/// field is reported rather than skipped: the value is on its way into a
+/// property, and a silently truncated path stores as a valid path.
+fn py_dict_to_path(d: &Bound<'_, PyDict>) -> PyResult<PathValue> {
+    let bad = |what: &str| PyValueError::new_err(format!("Path {what}"));
+    let nodes: Vec<u64> = d
+        .get_item("nodes")?
+        .ok_or_else(|| bad("is missing 'nodes'"))?
+        .extract()
+        .map_err(|_| bad("'nodes' must be a list of node ids"))?;
+
+    let rels_obj = d
+        .get_item("rels")?
+        .ok_or_else(|| bad("is missing 'rels'"))?;
+    let rels_list = rels_obj
+        .downcast::<PyList>()
+        .map_err(|_| bad("'rels' must be a list"))?;
+    let mut rels = Vec::with_capacity(rels_list.len());
+    for item in rels_list.iter() {
+        let hop = item
+            .downcast::<PyDict>()
+            .map_err(|_| bad("hops must be dicts"))?;
+        let field = |key: &str| {
+            hop.get_item(key)
+                .ok()
+                .flatten()
+                .ok_or_else(|| bad(&format!("hop is missing '{key}'")))
+        };
+        rels.push(PathRel {
+            edge_type: field("type")?
+                .extract()
+                .map_err(|_| bad("hop 'type' must be a string"))?,
+            source: field("source")?
+                .extract()
+                .map_err(|_| bad("hop 'source' must be a node id"))?,
+            target: field("target")?
+                .extract()
+                .map_err(|_| bad("hop 'target' must be a node id"))?,
+        });
+    }
+    Ok(PathValue { nodes, rels })
+}
+
 fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if obj.is_none() {
         return Ok(Value::Null);
@@ -141,15 +282,38 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::String(s));
     }
     if let Ok(list) = obj.downcast::<PyList>() {
+        // A tagged multi-vector before the generic list branch: it IS a list,
+        // so the branch below would take it and write back an array, changing
+        // the property's type on a read-modify-write.
+        if let Some(cls) = multi_vector_type(obj.py()) {
+            if obj.is_instance(&cls).unwrap_or(false) {
+                let rows: Vec<Vec<f32>> = list
+                    .iter()
+                    .map(|row| row.extract::<Vec<f32>>())
+                    .collect::<PyResult<_>>()
+                    .map_err(|_| {
+                        PyValueError::new_err("MultiVector rows must be lists of numbers")
+                    })?;
+                return Ok(Value::MultiVector(rows));
+            }
+        }
         let items: PyResult<Vec<Value>> = list.iter().map(|x| py_to_value(&x)).collect();
         return Ok(Value::Array(items?));
     }
     if let Ok(d) = obj.downcast::<PyDict>() {
+        // A tagged path before the generic dict branch, for the same reason as
+        // the multi-vector above: it IS a dict, so the map branch would take it
+        // and rewrite the property as a map.
+        if let Some(cls) = path_type(obj.py()) {
+            if obj.is_instance(&cls).unwrap_or(false) {
+                return Ok(Value::Path(py_dict_to_path(d)?));
+            }
+        }
         let mut map = std::collections::BTreeMap::new();
         for (k, v) in d.iter() {
-            let key = k.extract::<String>().map_err(|_| {
-                PyValueError::new_err("dict keys in params must be strings")
-            })?;
+            let key = k
+                .extract::<String>()
+                .map_err(|_| PyValueError::new_err("dict keys in params must be strings"))?;
             map.insert(key, py_to_value(&v)?);
         }
         return Ok(Value::Map(map));
@@ -226,12 +390,17 @@ impl LocalClient {
             let tmpdir = tempfile::tempdir()
                 .map_err(|e| PyRuntimeError::new_err(format!("failed to create tempdir: {e}")))?;
             let db = Database::open(tmpdir.path()).map_err(db_err)?;
-            DbState::Memory { db, _tmpdir: tmpdir }
+            DbState::Memory {
+                db,
+                _tmpdir: tmpdir,
+            }
         } else {
             let db = Database::open(path).map_err(db_err)?;
             DbState::Persistent(db)
         };
-        Ok(LocalClient { state: Mutex::new(state) })
+        Ok(LocalClient {
+            state: Mutex::new(state),
+        })
     }
 
     /// Execute a Cypher query and return results as a list of dicts.
@@ -257,9 +426,9 @@ impl LocalClient {
             Some(d) => {
                 let mut map: HashMap<String, Value> = HashMap::with_capacity(d.len());
                 for (k, v) in d.iter() {
-                    let key = k.extract::<String>().map_err(|_| {
-                        PyValueError::new_err("param keys must be strings")
-                    })?;
+                    let key = k
+                        .extract::<String>()
+                        .map_err(|_| PyValueError::new_err("param keys must be strings"))?;
                     map.insert(key, py_to_value(&v)?);
                 }
                 db.execute_cypher_with_params(query, map).map_err(db_err)?
@@ -290,12 +459,7 @@ impl LocalClient {
         slf
     }
 
-    fn __exit__(
-        &self,
-        _exc_type: PyObject,
-        _exc_val: PyObject,
-        _exc_tb: PyObject,
-    ) -> bool {
+    fn __exit__(&self, _exc_type: PyObject, _exc_val: PyObject, _exc_tb: PyObject) -> bool {
         self.close();
         false // do not suppress exceptions
     }

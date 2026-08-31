@@ -68,11 +68,15 @@ class NodeResult:
 
     def __init__(self, proto_node: Any) -> None:
         self.id: int = proto_node.node_id
+        #: Canonical opaque identifier, stable across schema changes, restarts
+        #: and replication. Prefer this over :attr:`id` when referring to a node
+        #: from application code; `id` stays for Neo4j v4 driver compatibility.
+        self.element_id: str = proto_node.element_id
         self.labels: list[str] = list(proto_node.labels)
         self.properties: dict[str, PyValue] = props_to_dict(proto_node.properties)
 
     def __repr__(self) -> str:
-        return f"Node(id={self.id}, labels={self.labels}, properties={self.properties})"
+        return f"Node(id={self.id}, element_id={self.element_id!r}, labels={self.labels}, properties={self.properties})"
 
 
 class EdgeResult:
@@ -83,6 +87,10 @@ class EdgeResult:
         self.type: str = proto_edge.edge_type
         self.source_id: int = proto_edge.source_node_id
         self.target_id: int = proto_edge.target_node_id
+        #: Endpoint identifier, the source and target element ids in canonical
+        #: order. Edges here are typed property bags between two nodes rather
+        #: than first-class entities, so this is not a stable handle to one edge.
+        self.element_id: str = proto_edge.element_id
         self.properties: dict[str, PyValue] = props_to_dict(proto_edge.properties)
 
     def __repr__(self) -> str:
@@ -131,13 +139,17 @@ class LabelInfo:
 
     def __init__(self, proto_label: Any) -> None:
         self.name: str = proto_label.name
-        self.version: int = proto_label.version
+        #: DDL snapshot identity, bumped by every schema change to this label.
+        self.schema_revision: int = proto_label.schema_revision
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
         # schema_mode: 0=unspecified, 1=strict, 2=validated, 3=flexible
-        self.schema_mode: int = getattr(proto_label, "schema_mode", 0)
+        self.schema_mode: int = proto_label.schema_mode
 
     def __repr__(self) -> str:
-        return f"LabelInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
+        return (
+            f"LabelInfo(name={self.name!r}, schema_revision={self.schema_revision}, "
+            f"properties={len(self.properties)}, schema_mode={self.schema_mode})"
+        )
 
 
 class EdgeTypeInfo:
@@ -145,12 +157,15 @@ class EdgeTypeInfo:
 
     def __init__(self, proto_edge_type: Any) -> None:
         self.name: str = proto_edge_type.name
-        self.version: int = proto_edge_type.version
+        #: DDL snapshot identity, bumped by every schema change to this edge type.
+        self.schema_revision: int = proto_edge_type.schema_revision
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
-        self.schema_mode: int = getattr(proto_edge_type, "schema_mode", 0)
 
     def __repr__(self) -> str:
-        return f"EdgeTypeInfo(name={self.name!r}, version={self.version}, properties={len(self.properties)}, schema_mode={self.schema_mode})"
+        return (
+            f"EdgeTypeInfo(name={self.name!r}, schema_revision={self.schema_revision}, "
+            f"properties={len(self.properties)})"
+        )
 
 
 class TraverseResult:
@@ -258,18 +273,31 @@ class AsyncCoordinodeClient:
         write_concern: str | None = None,
         read_preference: str | None = None,
         after_index: int | None = None,
+        at_timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts.
 
         Consistency parameters (all optional; server defaults apply when omitted):
 
         - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
-        - ``write_concern``: ``"w0"``, ``"w1"`` (default, leader-ack), ``"majority"``. Required
-          ``"majority"`` when using causal reads (``after_index`` > 0).
+        - ``write_concern``: ``"w0"``, ``"memory"``, ``"cache"``, ``"w1"`` (default, leader-ack),
+          ``"majority"``, in rising order of durability. ``"memory"`` and ``"cache"`` acknowledge
+          before the write reaches Raft, so a leader crash before the background drain loses them;
+          reach for those only where losing recent writes is acceptable. Causal reads
+          (``after_index`` > 0) require ``"majority"``.
         - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
           ``"secondary_preferred"``, ``"nearest"``.
-        - ``after_index``: raft log index for causal reads — returned rows reflect at least
-          the state at this index.
+        - ``after_index``: raft log index for causal reads, a fence. Returned rows reflect at
+          least the state at this index.
+        - ``at_timestamp``: timestamp to read at, a pin rather than a fence. Reads the
+          database exactly as of that version without waiting, for time travel. Microseconds
+          since the Unix epoch, so ``int(time.time() * 1_000_000)`` is now. Requires
+          ``read_concern="snapshot"``; any other level is rejected with FAILED_PRECONDITION.
+          The timestamp has to fall inside the MVCC retention window; older snapshots are
+          collected and the server answers UNAVAILABLE. It cannot be combined with a
+          non-zero ``after_index``: waiting for a new write and reading a fixed past are
+          opposite requests, and the pair is rejected. Zero is rejected too: it is how the
+          wire says "no pin", so it cannot also ask for one.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
@@ -295,8 +323,8 @@ class AsyncCoordinodeClient:
             query=query,
             parameters=dict_to_props(params or {}),
         )
-        if read_concern is not None or after_index is not None:
-            req.read_concern.CopyFrom(_make_read_concern(read_concern, after_index))
+        if read_concern is not None or after_index is not None or at_timestamp is not None:
+            req.read_concern.CopyFrom(_make_read_concern(read_concern, after_index, at_timestamp))
         if write_concern is not None:
             req.write_concern.CopyFrom(_make_write_concern(write_concern))
         if read_preference is not None:
@@ -377,6 +405,29 @@ class AsyncCoordinodeClient:
         req = CreateNodeRequest(labels=labels, properties=dict_to_props(properties))
         node = await self._graph_stub.CreateNode(req, timeout=self._timeout)
         return NodeResult(node)
+
+    async def create_nodes_batch(self, nodes: Sequence[tuple[list[str], dict[str, PyValue]]]) -> list[NodeResult]:
+        """Create many nodes in one atomic call, returned in input order.
+
+        Each entry is a ``(labels, properties)`` pair with the same meaning it
+        has in :meth:`create_node`. The server takes its secondary-index write
+        locks once for the whole batch instead of once per node, so seeding data
+        that carries vector or full-text properties is far cheaper this way than
+        through a loop. Either every node is created or none is. An empty
+        sequence is a valid no-op.
+        """
+        from coordinode._proto.coordinode.v1.graph.graph_pb2 import (  # type: ignore[import]
+            CreateNodeRequest,
+            CreateNodesBatchRequest,
+        )
+
+        req = CreateNodesBatchRequest(
+            nodes=[
+                CreateNodeRequest(labels=labels, properties=dict_to_props(properties)) for labels, properties in nodes
+            ]
+        )
+        resp = await self._graph_stub.CreateNodesBatch(req, timeout=self._timeout)
+        return [NodeResult(n) for n in resp.nodes]
 
     async def get_node(self, node_id: int) -> NodeResult:
         from coordinode._proto.coordinode.v1.graph.graph_pb2 import GetNodeRequest  # type: ignore[import]
@@ -484,6 +535,12 @@ class AsyncCoordinodeClient:
         Shared by :meth:`create_label` and :meth:`create_edge_type` to avoid
         duplicating the type-map and validation logic.
         """
+        # A 1:1 mirror of the wire enum, which is the whole list of types a
+        # property can be *declared* as. Multi-vector and path are not among
+        # them: they are shapes a value takes on its way in or out, carried on
+        # PropertyValue, and no declarable type corresponds to either. Adding
+        # a key here for one of them would name an enum member that does not
+        # exist. Extend this only when the enum itself grows.
         type_map = {
             "int64": property_type_cls.PROPERTY_TYPE_INT64,
             "float64": property_type_cls.PROPERTY_TYPE_FLOAT64,
@@ -875,6 +932,7 @@ class CoordinodeClient:
         write_concern: str | None = None,
         read_preference: str | None = None,
         after_index: int | None = None,
+        at_timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. See :meth:`AsyncCoordinodeClient.cypher` for consistency args."""
         return self._run(
@@ -885,6 +943,7 @@ class CoordinodeClient:
                 write_concern=write_concern,
                 read_preference=read_preference,
                 after_index=after_index,
+                at_timestamp=at_timestamp,
             )
         )
 
@@ -914,6 +973,10 @@ class CoordinodeClient:
 
     def create_node(self, labels: list[str], properties: dict[str, PyValue]) -> NodeResult:
         return self._run(self._async.create_node(labels, properties))
+
+    def create_nodes_batch(self, nodes: Sequence[tuple[list[str], dict[str, PyValue]]]) -> list[NodeResult]:
+        """Create many nodes atomically. See :meth:`AsyncCoordinodeClient.create_nodes_batch`."""
+        return self._run(self._async.create_nodes_batch(nodes))
 
     def get_node(self, node_id: int) -> NodeResult:
         return self._run(self._async.get_node(node_id))
@@ -1006,8 +1069,13 @@ _READ_CONCERN_MAP = {
     "linearizable": "READ_CONCERN_LEVEL_LINEARIZABLE",
     "snapshot": "READ_CONCERN_LEVEL_SNAPSHOT",
 }
+# Durability rises W0 < MEMORY < CACHE < W1 < MAJORITY. Anything below W1
+# acknowledges before the write is replicated through Raft: a leader crash
+# before the background drain loses every in-flight MEMORY or CACHE write.
 _WRITE_CONCERN_MAP = {
     "w0": "WRITE_CONCERN_LEVEL_W0",
+    "memory": "WRITE_CONCERN_LEVEL_MEMORY",
+    "cache": "WRITE_CONCERN_LEVEL_CACHE",
     "w1": "WRITE_CONCERN_LEVEL_W1",
     "majority": "WRITE_CONCERN_LEVEL_MAJORITY",
 }
@@ -1029,16 +1097,44 @@ def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) 
     return enum_name
 
 
-def _make_read_concern(level: str | None, after_index: int | None) -> Any:
+def _make_read_concern(level: str | None, after_index: int | None, at_timestamp: int | None = None) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
     kwargs: dict[str, Any] = {}
+    if at_timestamp is not None:
+        # Reading at a pinned version IS a snapshot read: the server refuses
+        # any other level with FAILED_PRECONDITION. Default to it when the
+        # caller said nothing, and reject an explicit level it will refuse
+        # rather than spending a round trip to be told.
+        if level is None:
+            level = "snapshot"
+        elif _normalize_consistency_key(level, "read_concern", _READ_CONCERN_MAP) != ("READ_CONCERN_LEVEL_SNAPSHOT"):
+            raise ValueError(f"at_timestamp requires read_concern='snapshot', got {level!r}")
     if level is not None:
         kwargs["level"] = getattr(pb, _normalize_consistency_key(level, "read_concern", _READ_CONCERN_MAP))
     if after_index is not None:
         if not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0:
             raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
         kwargs["after_index"] = after_index
+    if at_timestamp is not None:
+        # Positive, not merely non-negative: the field is a plain proto3 scalar
+        # with no presence, so zero is not put on the wire and the server reads
+        # it as "no pin". A request to read as of the epoch would come back as
+        # a current read, which is the one answer time travel must not give.
+        if not isinstance(at_timestamp, int) or isinstance(at_timestamp, bool) or at_timestamp < 1:
+            raise ValueError(
+                f"at_timestamp must be a positive integer (microseconds since the epoch), got {at_timestamp!r}"
+            )
+        # A fence waits for the log to reach an index; a pin reads a fixed
+        # point in the past. The server calls the pair mutually exclusive and
+        # answers INVALID_ARGUMENT, so say so here rather than a round trip
+        # later. A zero fence waits for nothing and does not conflict.
+        if after_index:
+            raise ValueError(
+                "after_index and at_timestamp are mutually exclusive: a causal fence "
+                "waits for new writes, a pinned read asks for a fixed past"
+            )
+        kwargs["at_timestamp"] = at_timestamp
     return pb.ReadConcern(**kwargs)
 
 

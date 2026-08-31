@@ -1,14 +1,15 @@
-"""Unit tests for R-SDK3 additions: LabelInfo, EdgeTypeInfo, TraverseResult.
+"""Unit tests for the schema and traversal result wrappers.
 
-All tests are mock-based — no proto stubs or running server required.
-Pattern mirrors test_types.py: fake proto objects with the same attribute
-interface that real generated messages provide.
+These build the real generated proto messages rather than stand-ins, so a
+field rename or removal in the proto submodule fails here instead of reaching
+users as an AttributeError at runtime.
 """
 
 import asyncio
 
 import pytest
 
+from coordinode._proto.coordinode.v1.graph import graph_pb2, schema_pb2
 from coordinode.client import (
     AsyncCoordinodeClient,
     EdgeResult,
@@ -19,65 +20,48 @@ from coordinode.client import (
     TraverseResult,
 )
 
-# ── Fake proto stubs ─────────────────────────────────────────────────────────
+# ── Real proto message builders ──────────────────────────────────────────────
 
 
-class _FakePropDef:
-    """Matches proto PropertyDefinition shape."""
-
-    def __init__(self, name: str, type_: int, required: bool = False, unique: bool = False) -> None:
-        self.name = name
-        self.type = type_
-        self.required = required
-        self.unique = unique
+def _prop_def(name: str, type_: int, required: bool = False, unique: bool = False):
+    return schema_pb2.PropertyDefinition(name=name, type=type_, required=required, unique=unique)
 
 
-class _FakeLabel:
-    """Matches proto Label shape."""
-
-    def __init__(self, name: str, version: int = 1, properties=None, schema_mode: int = 0) -> None:
-        self.name = name
-        self.version = version
-        self.properties = properties or []
-        self.schema_mode = schema_mode
-
-
-class _FakeEdgeType:
-    """Matches proto EdgeType shape."""
-
-    def __init__(self, name: str, version: int = 1, properties=None, schema_mode: int = 0) -> None:
-        self.name = name
-        self.version = version
-        self.properties = properties or []
-        self.schema_mode = schema_mode
+def _label(name: str, schema_revision: int = 1, properties=None, schema_mode: int = 0):
+    return schema_pb2.Label(
+        name=name,
+        schema_revision=schema_revision,
+        properties=properties or [],
+        schema_mode=schema_mode,
+    )
 
 
-class _FakeNode:
-    """Matches proto Node shape."""
-
-    def __init__(self, node_id: int, labels=None, properties=None) -> None:
-        self.node_id = node_id
-        self.labels = labels or []
-        self.properties = properties or {}
+def _edge_type(name: str, schema_revision: int = 1, properties=None):
+    return schema_pb2.EdgeType(name=name, schema_revision=schema_revision, properties=properties or [])
 
 
-class _FakeEdge:
-    """Matches proto Edge shape."""
-
-    def __init__(self, edge_id: int, edge_type: str, source: int, target: int, properties=None) -> None:
-        self.edge_id = edge_id
-        self.edge_type = edge_type
-        self.source_node_id = source
-        self.target_node_id = target
-        self.properties = properties or {}
+def _node(node_id: int, labels=None, properties=None, element_id: str = ""):
+    return graph_pb2.Node(
+        node_id=node_id,
+        labels=labels or [],
+        properties=properties or {},
+        element_id=element_id,
+    )
 
 
-class _FakeTraverseResponse:
-    """Matches proto TraverseResponse shape."""
+def _edge(edge_id: int, edge_type: str, source: int, target: int, properties=None, element_id: str = ""):
+    return graph_pb2.Edge(
+        edge_id=edge_id,
+        edge_type=edge_type,
+        source_node_id=source,
+        target_node_id=target,
+        properties=properties or {},
+        element_id=element_id,
+    )
 
-    def __init__(self, nodes=None, edges=None) -> None:
-        self.nodes = nodes or []
-        self.edges = edges or []
+
+def _traverse_response(nodes=None, edges=None):
+    return graph_pb2.TraverseResponse(nodes=nodes or [], edges=edges or [])
 
 
 # ── PropertyDefinitionInfo ───────────────────────────────────────────────────
@@ -86,18 +70,18 @@ class _FakeTraverseResponse:
 class TestPropertyDefinitionInfo:
     def test_fields_are_mapped(self):
         # type=3 = PROPERTY_TYPE_STRING (int value from proto enum)
-        p = PropertyDefinitionInfo(_FakePropDef("name", 3, required=True, unique=False))
+        p = PropertyDefinitionInfo(_prop_def("name", 3, required=True, unique=False))
         assert p.name == "name"
         assert p.type == 3
         assert p.required is True
         assert p.unique is False
 
     def test_repr_contains_name(self):
-        p = PropertyDefinitionInfo(_FakePropDef("age", 1))
+        p = PropertyDefinitionInfo(_prop_def("age", 1))
         assert "age" in repr(p)
 
     def test_optional_flags_default_false(self):
-        p = PropertyDefinitionInfo(_FakePropDef("x", 2))
+        p = PropertyDefinitionInfo(_prop_def("x", 2))
         assert p.required is False
         assert p.unique is False
 
@@ -107,57 +91,47 @@ class TestPropertyDefinitionInfo:
 
 class TestLabelInfo:
     def test_empty_properties(self):
-        label = LabelInfo(_FakeLabel("Person", version=2))
+        label = LabelInfo(_label("Person", schema_revision=2))
         assert label.name == "Person"
-        assert label.version == 2
+        assert label.schema_revision == 2
         assert label.properties == []
 
     def test_properties_are_wrapped(self):
-        props = [_FakePropDef("name", 3), _FakePropDef("age", 1)]
-        label = LabelInfo(_FakeLabel("User", properties=props))
+        props = [_prop_def("name", 3), _prop_def("age", 1)]
+        label = LabelInfo(_label("User", properties=props))
         assert len(label.properties) == 2
         assert all(isinstance(p, PropertyDefinitionInfo) for p in label.properties)
         assert label.properties[0].name == "name"
         assert label.properties[1].name == "age"
 
     def test_repr_contains_name(self):
-        label = LabelInfo(_FakeLabel("Movie"))
+        label = LabelInfo(_label("Movie"))
         assert "Movie" in repr(label)
 
-    def test_version_zero(self):
-        # Schema registry may return version=0 for newly created labels.
-        label = LabelInfo(_FakeLabel("Draft", version=0))
-        assert label.version == 0
+    def test_schema_revision_zero(self):
+        # Schema registry may return revision 0 for a newly created label.
+        label = LabelInfo(_label("Draft", schema_revision=0))
+        assert label.schema_revision == 0
 
     def test_schema_mode_defaults_to_zero(self):
-        label = LabelInfo(_FakeLabel("Person"))
+        label = LabelInfo(_label("Person"))
         assert label.schema_mode == 0
 
     def test_schema_mode_strict(self):
-        label = LabelInfo(_FakeLabel("Person", schema_mode=1))
+        label = LabelInfo(_label("Person", schema_mode=1))
         assert label.schema_mode == 1
 
     def test_schema_mode_validated(self):
-        label = LabelInfo(_FakeLabel("Person", schema_mode=2))
+        label = LabelInfo(_label("Person", schema_mode=2))
         assert label.schema_mode == 2
 
     def test_schema_mode_flexible(self):
-        label = LabelInfo(_FakeLabel("Person", schema_mode=3))
+        label = LabelInfo(_label("Person", schema_mode=3))
         assert label.schema_mode == 3
 
     def test_schema_mode_in_repr(self):
-        label = LabelInfo(_FakeLabel("Person", schema_mode=1))
+        label = LabelInfo(_label("Person", schema_mode=1))
         assert "schema_mode" in repr(label)
-
-    def test_schema_mode_missing_from_proto_defaults_zero(self):
-        # Proto objects without schema_mode attribute (older server) → 0.
-        class _OldLabel:
-            name = "Legacy"
-            version = 1
-            properties = []
-
-        label = LabelInfo(_OldLabel())
-        assert label.schema_mode == 0
 
 
 # ── EdgeTypeInfo ─────────────────────────────────────────────────────────────
@@ -167,37 +141,47 @@ class TestEdgeTypeInfo:
     PROPERTY_TYPE_TIMESTAMP = 6
 
     def test_basic_fields(self):
-        et = EdgeTypeInfo(_FakeEdgeType("KNOWS", version=1))
+        et = EdgeTypeInfo(_edge_type("KNOWS", schema_revision=1))
         assert et.name == "KNOWS"
-        assert et.version == 1
+        assert et.schema_revision == 1
         assert et.properties == []
 
     def test_properties_are_wrapped(self):
-        props = [_FakePropDef("since", self.PROPERTY_TYPE_TIMESTAMP)]
-        et = EdgeTypeInfo(_FakeEdgeType("FOLLOWS", properties=props))
+        props = [_prop_def("since", self.PROPERTY_TYPE_TIMESTAMP)]
+        et = EdgeTypeInfo(_edge_type("FOLLOWS", properties=props))
         assert len(et.properties) == 1
         assert et.properties[0].name == "since"
 
     def test_repr_contains_name(self):
-        et = EdgeTypeInfo(_FakeEdgeType("RATED"))
+        et = EdgeTypeInfo(_edge_type("RATED"))
         assert "RATED" in repr(et)
 
-    def test_schema_mode_defaults_to_zero(self):
-        et = EdgeTypeInfo(_FakeEdgeType("KNOWS"))
-        assert et.schema_mode == 0
 
-    def test_schema_mode_propagated(self):
-        et = EdgeTypeInfo(_FakeEdgeType("KNOWS", schema_mode=2))
-        assert et.schema_mode == 2
+# ── element_id ───────────────────────────────────────────────────────────────
 
-    def test_schema_mode_missing_from_proto_defaults_zero(self):
-        class _OldEdgeType:
-            name = "LEGACY"
-            version = 1
-            properties = []
 
-        et = EdgeTypeInfo(_OldEdgeType())
-        assert et.schema_mode == 0
+class TestElementId:
+    """The canonical opaque identifier the server added alongside the raw ids."""
+
+    def test_node_exposes_element_id(self):
+        n = NodeResult(_node(42, ["Person"], element_id="0000000000012"))
+        assert n.element_id == "0000000000012"
+        # The raw id stays available for Neo4j v4 driver compatibility.
+        assert n.id == 42
+
+    def test_node_element_id_is_empty_when_server_omits_it(self):
+        assert NodeResult(_node(1, ["Person"])).element_id == ""
+
+    def test_node_element_id_in_repr(self):
+        assert "0000000000012" in repr(NodeResult(_node(42, element_id="0000000000012")))
+
+    def test_edge_exposes_endpoint_element_id(self):
+        e = EdgeResult(_edge(10, "KNOWS", 1, 2, element_id="00000000000010000000000002"))
+        assert e.element_id == "00000000000010000000000002"
+        assert (e.source_id, e.target_id) == (1, 2)
+
+    def test_edge_element_id_is_empty_when_server_omits_it(self):
+        assert EdgeResult(_edge(10, "KNOWS", 1, 2)).element_id == ""
 
 
 # ── TraverseResult ───────────────────────────────────────────────────────────
@@ -205,21 +189,21 @@ class TestEdgeTypeInfo:
 
 class TestTraverseResult:
     def test_empty_response(self):
-        result = TraverseResult(_FakeTraverseResponse())
+        result = TraverseResult(_traverse_response())
         assert result.nodes == []
         assert result.edges == []
 
     def test_nodes_are_wrapped_as_node_results(self):
-        nodes = [_FakeNode(1, ["Person"]), _FakeNode(2, ["Movie"])]
-        result = TraverseResult(_FakeTraverseResponse(nodes=nodes))
+        nodes = [_node(1, ["Person"]), _node(2, ["Movie"])]
+        result = TraverseResult(_traverse_response(nodes=nodes))
         assert len(result.nodes) == 2
         assert all(isinstance(n, NodeResult) for n in result.nodes)
         assert result.nodes[0].id == 1
         assert result.nodes[1].id == 2
 
     def test_edges_are_wrapped_as_edge_results(self):
-        edges = [_FakeEdge(10, "KNOWS", source=1, target=2)]
-        result = TraverseResult(_FakeTraverseResponse(edges=edges))
+        edges = [_edge(10, "KNOWS", source=1, target=2)]
+        result = TraverseResult(_traverse_response(edges=edges))
         assert len(result.edges) == 1
         assert isinstance(result.edges[0], EdgeResult)
         assert result.edges[0].id == 10
@@ -228,18 +212,18 @@ class TestTraverseResult:
         assert result.edges[0].type == "KNOWS"
 
     def test_mixed_nodes_and_edges(self):
-        nodes = [_FakeNode(1, ["A"]), _FakeNode(2, ["B"]), _FakeNode(3, ["C"])]
+        nodes = [_node(1, ["A"]), _node(2, ["B"]), _node(3, ["C"])]
         edges = [
-            _FakeEdge(10, "REL", 1, 2),
-            _FakeEdge(11, "REL", 2, 3),
+            _edge(10, "REL", 1, 2),
+            _edge(11, "REL", 2, 3),
         ]
-        result = TraverseResult(_FakeTraverseResponse(nodes=nodes, edges=edges))
+        result = TraverseResult(_traverse_response(nodes=nodes, edges=edges))
         assert len(result.nodes) == 3
         assert len(result.edges) == 2
 
     def test_repr_shows_counts(self):
-        nodes = [_FakeNode(1, [])]
-        result = TraverseResult(_FakeTraverseResponse(nodes=nodes))
+        nodes = [_node(1, [])]
+        result = TraverseResult(_traverse_response(nodes=nodes))
         r = repr(result)
         assert "nodes=1" in r
         assert "edges=0" in r
@@ -341,11 +325,64 @@ class TestCreateLabelSchemaMode:
             client._schema_stub = type(
                 "FakeStub",
                 (),
-                {"CreateLabel": AsyncMock(return_value=_FakeLabel("Foo"))},
+                {"CreateLabel": AsyncMock(return_value=_label("Foo"))},
             )()
             # ' STRICT ' must normalise cleanly (strip + lower) and NOT raise ValueError.
             info = await client.create_label("Foo", schema_mode=" STRICT ")
             assert info.name == "Foo"
+
+        asyncio.run(_inner())
+
+
+class TestCreateNodesBatch:
+    """Bulk node creation, added so a seed load takes one index write per index."""
+
+    @staticmethod
+    def _client_returning(nodes):
+        from unittest.mock import AsyncMock
+
+        client = AsyncCoordinodeClient("localhost:0")
+        client._graph_stub = type(
+            "FakeStub",
+            (),
+            {"CreateNodesBatch": AsyncMock(return_value=graph_pb2.CreateNodesBatchResponse(nodes=nodes))},
+        )()
+        return client
+
+    def test_returns_nodes_in_input_order(self):
+        async def _inner() -> None:
+            client = self._client_returning([_node(1, ["A"]), _node(2, ["B"]), _node(3, ["C"])])
+            out = await client.create_nodes_batch(
+                [(["A"], {}), (["B"], {}), (["C"], {})],
+            )
+            assert [n.id for n in out] == [1, 2, 3]
+            assert [n.labels for n in out] == [["A"], ["B"], ["C"]]
+
+        asyncio.run(_inner())
+
+    def test_sends_every_entry(self):
+        async def _inner() -> None:
+            client = self._client_returning([])
+            await client.create_nodes_batch([(["A"], {"x": 1}), (["B"], {"y": "s"})])
+            sent = client._graph_stub.CreateNodesBatch.call_args.args[0]
+            assert len(sent.nodes) == 2
+            assert list(sent.nodes[0].labels) == ["A"]
+            assert list(sent.nodes[1].labels) == ["B"]
+
+        asyncio.run(_inner())
+
+    def test_empty_batch_is_a_no_op(self):
+        async def _inner() -> None:
+            client = self._client_returning([])
+            assert await client.create_nodes_batch([]) == []
+
+        asyncio.run(_inner())
+
+    def test_element_id_survives_the_batch(self):
+        async def _inner() -> None:
+            client = self._client_returning([_node(7, ["A"], element_id="0000000000007")])
+            out = await client.create_nodes_batch([(["A"], {})])
+            assert out[0].element_id == "0000000000007"
 
         asyncio.run(_inner())
 

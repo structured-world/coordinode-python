@@ -1,30 +1,32 @@
 """Unit tests for CoordinodeGraph (langchain-coordinode).
 
-All tests use mock clients — no proto stubs or running server required.
+The client is a stand-in, but the results it hands back are real TextResult
+objects built from generated proto messages, so wire-level types (a 32-bit
+score, for one) behave here as they do against a live server.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+from coordinode._proto.coordinode.v1.query import text_pb2
+from coordinode.client import TextResult
 from langchain_coordinode import CoordinodeGraph
 
-# ── Fake client helpers ───────────────────────────────────────────────────────
+# ── Client stand-ins ───────────────────────────────────────────────────────
 
 
-class _FakeTextResult:
-    """Matches coordinode.client.TextResult shape."""
-
-    def __init__(self, node_id: int, score: float, snippet: str = "") -> None:
-        self.node_id = node_id
-        self.score = score
-        self.snippet = snippet
+def _text_result(node_id: int, score: float, snippet: str = "") -> TextResult:
+    """Build a real TextResult from the generated proto message."""
+    return TextResult(text_pb2.TextResult(node_id=node_id, score=score, snippet=snippet))
 
 
 class _ClientWithTextSearch:
     """Minimal fake client that implements text_search()."""
 
-    def __init__(self, results: list[_FakeTextResult]) -> None:
+    def __init__(self, results: list[TextResult]) -> None:
         self._results = results
         self.last_call: dict[str, Any] = {}
 
@@ -39,7 +41,7 @@ class _ClientWithTextSearch:
         limit: int = 10,
         fuzzy: bool = False,
         language: str = "",
-    ) -> list[_FakeTextResult]:
+    ) -> list[TextResult]:
         self.last_call = {
             "label": label,
             "query": query,
@@ -86,8 +88,8 @@ class TestKeywordSearch:
     def test_returns_list_of_dicts(self) -> None:
         """keyword_search returns list[dict] with id/score/snippet keys."""
         results = [
-            _FakeTextResult(node_id=1, score=0.95, snippet="<b>machine</b> learning"),
-            _FakeTextResult(node_id=2, score=0.72, snippet=""),
+            _text_result(node_id=1, score=0.95, snippet="<b>machine</b> learning"),
+            _text_result(node_id=2, score=0.72, snippet=""),
         ]
         client = _ClientWithTextSearch(results)
         graph = CoordinodeGraph(client=client)
@@ -95,8 +97,13 @@ class TestKeywordSearch:
         out = graph.keyword_search("machine learning", k=5, label="Article")
 
         assert len(out) == 2
-        assert out[0] == {"id": 1, "score": 0.95, "snippet": "<b>machine</b> learning"}
-        assert out[1] == {"id": 2, "score": 0.72, "snippet": ""}
+        # `score` is a 32-bit float on the wire, so compare it approximately.
+        assert out[0]["id"] == 1
+        assert out[0]["score"] == pytest.approx(0.95)
+        assert out[0]["snippet"] == "<b>machine</b> learning"
+        assert out[1]["id"] == 2
+        assert out[1]["score"] == pytest.approx(0.72)
+        assert out[1]["snippet"] == ""
 
     def test_passes_params_to_client(self) -> None:
         """keyword_search forwards label, query, k, fuzzy, language to client.text_search."""
@@ -157,7 +164,7 @@ class TestKeywordSearch:
 
     def test_empty_snippet_preserved(self) -> None:
         """snippet key is always present even when the server returns empty string."""
-        results = [_FakeTextResult(node_id=42, score=0.5)]  # snippet defaults to ""
+        results = [_text_result(node_id=42, score=0.5)]  # snippet defaults to ""
         client = _ClientWithTextSearch(results)
         graph = CoordinodeGraph(client=client)
 
@@ -173,3 +180,32 @@ class TestKeywordSearch:
         out = graph.keyword_search("query")
 
         assert out == []
+
+
+# ── Tests: GraphStore schema contract ─────────────────────────────────────────
+
+
+class TestGraphStoreSchemaContract:
+    """The two accessors LangChain itself reads, not the ones we named.
+
+    ``GraphCypherQAChain.from_llm`` builds its prompt from
+    ``graph.get_structured_schema``. Implementing only ``schema`` and
+    ``structured_schema`` left those inherited from the abstract base, where
+    they evaluate to None, and the chain died in ``construct_schema`` on
+    ``'NoneType' object has no attribute 'get'`` before reaching the LLM.
+    """
+
+    def test_get_schema_matches_schema(self) -> None:
+        graph = CoordinodeGraph(client=_ClientWithoutTextSearch())
+
+        assert graph.get_schema == graph.schema
+
+    def test_get_structured_schema_is_a_mapping(self) -> None:
+        graph = CoordinodeGraph(client=_ClientWithoutTextSearch())
+
+        structured = graph.get_structured_schema
+
+        assert isinstance(structured, dict)
+        assert structured == graph.structured_schema
+        # The exact call that used to raise.
+        assert isinstance(structured.get("node_props", {}), dict)

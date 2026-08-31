@@ -28,7 +28,7 @@ uv add langchain-coordinode
 
 ```python
 from langchain_coordinode import CoordinodeGraph
-from langchain.chains import GraphCypherQAChain
+from langchain_classic.chains import GraphCypherQAChain
 from langchain_openai import ChatOpenAI
 
 # Connect to CoordiNode

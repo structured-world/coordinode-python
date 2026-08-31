@@ -16,9 +16,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: uv sync
-      - run: uv run ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
-      - run: uv run ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      # --locked fails the job when uv.lock does not match pyproject, so CI
+      # resolves exactly what a developer resolved rather than picking up a
+      # newer release mid-run. --no-build installs from wheels only, which
+      # keeps a dependency's setup.py from executing on the runner.
+      #
+      # The editable workspace members install regardless: --no-build refuses
+      # source distributions of dependencies, not a local editable install.
+      # Verified both ways, since the flag reads as though it would block them:
+      # a sync with an empty UV_CACHE_DIR into a fresh environment installs
+      # coordinode, langchain-coordinode and llama-index-graph-stores-coordinode
+      # and imports them, and every job below has run green with the flag on a
+      # clean runner. Remove it only with evidence, not on the wording.
+      - run: uv sync --locked --no-build
+      - run: uv run --locked --no-build ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv run --locked --no-build ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -37,13 +49,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-packages
+        run: uv sync --locked --no-build --all-packages
 
       - name: Generate proto stubs
-        run: uv run make proto
+        run: uv run --locked --no-build make proto
 
       - name: Unit tests
-        run: uv run pytest tests/unit/ -v
+        run: uv run --locked --no-build pytest tests/unit/ -v
 
   build-embedded:
     name: Build embedded (CI check)
@@ -83,8 +95,17 @@ jobs:
           WHL=$(ls dist/coordinode_embedded-*.whl | head -1)
           test -n "$WHL"
           uv venv --python 3.12 /tmp/test-venv
-          uv pip install --python /tmp/test-venv/bin/python "$WHL" numpy pytest pytest-timeout
-          OUTPUT=$(/tmp/test-venv/bin/python -m pytest tests/unit/test_hnsw.py -v --strict-markers -ra 2>&1)
+          # Pinned to the versions uv.lock already resolves for the workspace,
+          # so this throwaway venv tests against the same stack as the other
+          # jobs instead of whatever is newest on PyPI that morning.
+          uv pip install --python /tmp/test-venv/bin/python "$WHL" \
+            numpy==2.4.6 pytest==9.1.1 pytest-timeout==2.4.0
+          # Every test file that needs the extension belongs here: the main
+          # `test` job skips them all for want of a wheel, so a file left out
+          # of this list runs in no job at all.
+          OUTPUT=$(/tmp/test-venv/bin/python -m pytest \
+            tests/unit/test_hnsw.py tests/unit/test_embedded_values.py \
+            -v --strict-markers -ra 2>&1)
           echo "$OUTPUT"
           # `-ra` prints a "SKIPPED [N]" short summary header when anything was
           # skipped; importorskip-based skip also surfaces this way.  Use the
@@ -104,7 +125,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       coordinode:
-        image: ghcr.io/structured-world/coordinode:latest
+        # Pinned by digest, not by tag: the proto submodule pins a server
+        # version, and a tag can be re-pushed, so `:0.5.5` alone does not name
+        # one fixed server. The digest below is 0.5.5; bump both together with
+        # the submodule.
+        image: ghcr.io/structured-world/coordinode@sha256:8d3554be7680aa2cea7b6e773037aee97513865f4698b6df0ffc2daf845c42b8
         ports:
           - 7080:7080
           - 7084:7084
@@ -134,10 +159,10 @@ jobs:
 
       - name: Install + generate proto
         run: |
-          uv sync --all-packages
-          uv run make proto
+          uv sync --locked --no-build --all-packages
+          uv run --locked --no-build make proto
 
       - name: Integration tests
         env:
           COORDINODE_ADDR: "localhost:7080"
-        run: uv run pytest tests/integration/ -v --timeout=30
+        run: uv run --locked --no-build pytest tests/integration/ -v --timeout=30
