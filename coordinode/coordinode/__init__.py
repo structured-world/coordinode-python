@@ -1,5 +1,5 @@
 """
-CoordiNode Python SDK — graph + vector + full-text in one query.
+CoordiNode Python SDK: graph + vector + full-text in one query.
 
 Quick start::
 
@@ -21,6 +21,7 @@ Async::
 from coordinode._types import MultiVector, Path
 from coordinode.client import (
     AsyncCoordinodeClient,
+    AsyncTransaction,
     CoordinodeClient,
     EdgeResult,
     EdgeTypeInfo,
@@ -29,6 +30,7 @@ from coordinode.client import (
     PropertyDefinitionInfo,
     TextIndexInfo,
     TextResult,
+    Transaction,
     TraverseResult,
     VectorResult,
 )
@@ -40,6 +42,11 @@ except ImportError:
 __all__ = [
     "CoordinodeClient",
     "AsyncCoordinodeClient",
+    # Handles for a group of statements that commits or rolls back as one.
+    # Exported for type annotations; both come from a client, never built
+    # directly, since only the server can hand out the transaction id.
+    "Transaction",
+    "AsyncTransaction",
     # Values whose wire type only a tag can carry: a plain nested list encodes
     # as a list and a plain dict as a map, so sending either of these types
     # requires the constructor, not just the shape.

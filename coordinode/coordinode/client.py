@@ -1,5 +1,5 @@
 """
-CoordinodeClient — synchronous and asynchronous gRPC client for CoordiNode.
+CoordinodeClient: synchronous and asynchronous gRPC client for CoordiNode.
 """
 
 from __future__ import annotations
@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager, suppress
 from typing import Any
 
 import grpc
@@ -199,6 +200,149 @@ class TextIndexInfo:
 # ── Async client ─────────────────────────────────────────────────────────────
 
 
+class AsyncTransaction:
+    """One interactive transaction, held open across several statements.
+
+    Obtained from :meth:`AsyncCoordinodeClient.begin_transaction`, or from
+    :meth:`AsyncCoordinodeClient.transaction`, which commits on a clean exit and
+    rolls back on an exception.
+
+    Every statement reads the snapshot pinned when the transaction began, and
+    its writes buffer on the server until :meth:`commit`. So the transaction
+    sees a stable view of the database plus its own writes, and a conflict with
+    another transaction that touched the same data surfaces at the commit rather
+    than at the statement.
+
+    Two properties of the server matter before holding one open. The handle
+    lives in the memory of the node that served the begin, so every statement
+    and the commit have to reach that same node; a client pointed at a load
+    balancer in front of several replicas must pin one connection for the
+    transaction's lifetime. And an idle transaction is reaped, after 30 seconds
+    by default, swept when some other transaction begins rather than on a timer,
+    so a long pause between statements can lose the handle without a wall-clock
+    guarantee of when.
+    """
+
+    def __init__(self, client: AsyncCoordinodeClient, transaction_id: int) -> None:
+        self._client = client
+        self._id = transaction_id
+        # open -> committed | rolled_back | aborted. "aborted" is the server
+        # having closed the transaction under us, which it does on any statement
+        # error and on a failed commit.
+        self._state = "open"
+
+    def __repr__(self) -> str:
+        return f"AsyncTransaction(id={self._id}, state={self._state})"
+
+    @property
+    def transaction_id(self) -> int:
+        """Server-side handle for this transaction. Non-zero while it exists."""
+        return self._id
+
+    @property
+    def is_open(self) -> bool:
+        """True while the transaction can still take statements and be committed."""
+        return self._state == "open"
+
+    def _require_open(self, action: str) -> None:
+        if self._state == "open":
+            return
+        if self._state == "aborted":
+            raise RuntimeError(
+                f"Cannot {action} this transaction: an earlier failure closed it on the "
+                "server, which discards its buffered writes. Nothing was applied; begin "
+                "a new transaction to retry."
+            )
+        raise RuntimeError(f"Cannot {action} this transaction: it was already {self._state.replace('_', ' ')}.")
+
+    async def cypher(
+        self,
+        query: str,
+        params: dict[str, PyValue] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run one statement inside this transaction and return its rows.
+
+        The write is buffered rather than applied, so it is visible to later
+        statements of this transaction and to nobody else until :meth:`commit`.
+
+        This deliberately takes no consistency arguments, unlike
+        :meth:`AsyncCoordinodeClient.cypher`. Read concern, write concern, read
+        preference and ``after_index`` describe a single self-contained
+        statement; here the snapshot was already fixed at the begin and
+        durability is decided once at the commit, so the server ignores them.
+        Accepting them would only let a caller believe otherwise.
+
+        A statement that fails on the server ends the transaction: the buffered
+        writes are discarded and the handle is consumed. The failure propagates
+        as-is, and any later use of this object raises instead of reporting the
+        server's "unknown transaction id".
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            ExecuteCypherRequest,
+        )
+
+        self._require_open("run a statement in")
+        req = ExecuteCypherRequest(
+            query=query,
+            parameters=dict_to_props(params or {}),
+            transaction_id=self._id,
+        )
+        try:
+            resp = await self._client._cypher_stub.ExecuteCypher(req, timeout=self._client._timeout)
+        except grpc.RpcError:
+            self._state = "aborted"
+            raise
+        return _rows_to_dicts(resp)
+
+    async def commit(self) -> int:
+        """Apply every buffered write as one unit.
+
+        Returns the Raft applied index of the commit, which a later read can
+        pass as ``after_index`` (with ``write_concern="majority"``) when it must
+        observe these writes.
+
+        Raises if another transaction has written the same data since this one
+        began: conflicts are detected here, not at the statement. A failed
+        commit applies nothing and closes the transaction.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            CommitTransactionRequest,
+        )
+
+        self._require_open("commit")
+        try:
+            resp = await self._client._cypher_stub.CommitTransaction(
+                CommitTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
+            )
+        except grpc.RpcError:
+            # A rejected commit consumes the handle server-side too, so the
+            # transaction is gone either way and a follow-up rollback would find
+            # nothing.
+            self._state = "aborted"
+            raise
+        self._state = "committed"
+        return int(resp.applied_index)
+
+    async def rollback(self) -> None:
+        """Discard every buffered write. Nothing reaches the database."""
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            RollbackTransactionRequest,
+        )
+
+        if self._state == "aborted":
+            # The failure that closed the transaction already discarded the
+            # writes, so this call's contract is met. Asking the server would
+            # only get "unknown transaction id" for a transaction that is
+            # correctly gone.
+            self._state = "rolled_back"
+            return
+        self._require_open("roll back")
+        await self._client._cypher_stub.RollbackTransaction(
+            RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
+        )
+        self._state = "rolled_back"
+
+
 class AsyncCoordinodeClient:
     """
     Async gRPC client for CoordiNode.
@@ -330,8 +474,55 @@ class AsyncCoordinodeClient:
         if read_preference is not None:
             req.read_preference = _make_read_preference(read_preference)
         resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
-        columns = list(resp.columns)
-        return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
+        return _rows_to_dicts(resp)
+
+    async def begin_transaction(self) -> AsyncTransaction:
+        """Open an interactive transaction and return its handle.
+
+        Prefer :meth:`transaction`, which cannot leave one open. Reach for this
+        when the commit point is decided somewhere the ``async with`` block
+        cannot follow.
+
+        The caller owns the outcome: a transaction left neither committed nor
+        rolled back holds its buffered writes on the server until the idle
+        sweep collects it.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            BeginTransactionRequest,
+        )
+
+        resp = await self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
+        return AsyncTransaction(self, resp.transaction_id)
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[AsyncTransaction]:
+        """Run a block of statements as one transaction.
+
+        Commits when the block finishes, rolls back when it raises::
+
+            async with client.transaction() as tx:
+                await tx.cypher("CREATE (:Person {name: $n})", {"n": "Alice"})
+                await tx.cypher("CREATE (:Person {name: $n})", {"n": "Bob"})
+
+        Committing or rolling back inside the block is allowed; this then leaves
+        the finished transaction alone rather than committing it twice.
+
+        An exception from the block propagates unchanged. A rollback that itself
+        fails on the way out is swallowed, since the failure being reported is
+        the one the caller needs and the server drops an unresolved transaction
+        on its own.
+        """
+        tx = await self.begin_transaction()
+        try:
+            yield tx
+        except BaseException:
+            if tx.is_open:
+                with suppress(Exception):
+                    await tx.rollback()
+            raise
+        else:
+            if tx.is_open:
+                await tx.commit()
 
     async def vector_search(
         self,
@@ -875,6 +1066,48 @@ class AsyncCoordinodeClient:
 # ── Sync client (wraps async) ─────────────────────────────────────────────────
 
 
+class Transaction:
+    """Synchronous view of an :class:`AsyncTransaction`.
+
+    Same semantics throughout, including the node affinity and the idle sweep
+    described there. Obtained from :meth:`CoordinodeClient.transaction` or
+    :meth:`CoordinodeClient.begin_transaction`.
+    """
+
+    def __init__(self, client: CoordinodeClient, inner: AsyncTransaction) -> None:
+        self._client = client
+        self._inner = inner
+
+    def __repr__(self) -> str:
+        return f"Transaction(id={self._inner.transaction_id}, state={self._inner._state})"
+
+    @property
+    def transaction_id(self) -> int:
+        """Server-side handle for this transaction. Non-zero while it exists."""
+        return self._inner.transaction_id
+
+    @property
+    def is_open(self) -> bool:
+        """True while the transaction can still take statements and be committed."""
+        return self._inner.is_open
+
+    def cypher(
+        self,
+        query: str,
+        params: dict[str, PyValue] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run one statement inside this transaction. See :meth:`AsyncTransaction.cypher`."""
+        return self._client._run(self._inner.cypher(query, params))  # type: ignore[no-any-return]
+
+    def commit(self) -> int:
+        """Apply every buffered write as one unit. See :meth:`AsyncTransaction.commit`."""
+        return self._client._run(self._inner.commit())  # type: ignore[no-any-return]
+
+    def rollback(self) -> None:
+        """Discard every buffered write. See :meth:`AsyncTransaction.rollback`."""
+        self._client._run(self._inner.rollback())
+
+
 class CoordinodeClient:
     """
     Synchronous gRPC client for CoordiNode.
@@ -946,6 +1179,34 @@ class CoordinodeClient:
                 at_timestamp=at_timestamp,
             )
         )
+
+    def begin_transaction(self) -> Transaction:
+        """Open an interactive transaction. See :meth:`AsyncCoordinodeClient.begin_transaction`."""
+        return Transaction(self, self._run(self._async.begin_transaction()))
+
+    @contextmanager
+    def transaction(self) -> Iterator[Transaction]:
+        """Run a block of statements as one transaction.
+
+        Commits when the block finishes, rolls back when it raises::
+
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:Person {name: $n})", {"n": "Alice"})
+                tx.cypher("CREATE (:Person {name: $n})", {"n": "Bob"})
+
+        See :meth:`AsyncCoordinodeClient.transaction` for the details.
+        """
+        tx = self.begin_transaction()
+        try:
+            yield tx
+        except BaseException:
+            if tx.is_open:
+                with suppress(Exception):
+                    tx.rollback()
+            raise
+        else:
+            if tx.is_open:
+                tx.commit()
 
     def vector_search(
         self,
@@ -1086,6 +1347,17 @@ _READ_PREFERENCE_MAP = {
     "secondary_preferred": "READ_PREFERENCE_SECONDARY_PREFERRED",
     "nearest": "READ_PREFERENCE_NEAREST",
 }
+
+
+def _rows_to_dicts(resp: Any) -> list[dict[str, Any]]:
+    """Decode an ExecuteCypher response into one dict per row.
+
+    Shared by the auto-commit path and the in-transaction one: both answer with
+    the same message, and a second copy of this loop is a second place for a
+    decoding fix to be forgotten.
+    """
+    columns = list(resp.columns)
+    return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
 
 
 def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) -> str:
