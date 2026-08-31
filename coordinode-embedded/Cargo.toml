@@ -5,7 +5,7 @@ name = "coordinode-embedded"
 # through hatch-vcs. maturin has no equivalent and takes the wheel version from
 # here, so this line has to move with the release or the wheel keeps the name it
 # had last time and PyPI refuses it as a duplicate.
-version = "1.0.6"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.90"
 description = "CoordiNode embedded Python bindings — in-process graph database, no server required"

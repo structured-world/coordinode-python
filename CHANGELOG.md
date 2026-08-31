@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.0.0](https://github.com/structured-world/coordinode-python/compare/v1.0.6...v2.0.0) (2026-08-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** LabelInfo.version and EdgeTypeInfo.version are now schema_revision, and EdgeTypeInfo.schema_mode is removed.
+
+### Features
+
+* **client:** track CoordiNode 0.5.5 and make the demo stack real ([#80](https://github.com/structured-world/coordinode-python/issues/80)) ([9bb3a00](https://github.com/structured-world/coordinode-python/commit/9bb3a0033ed8382b6363de870c9149b0975843a6))
+* **embedded:** add native Hnsw class for ann-benchmarks integration ([#70](https://github.com/structured-world/coordinode-python/issues/70)) ([a2986a6](https://github.com/structured-world/coordinode-python/commit/a2986a62d4b6e52ddbc1b7e7ab06b3ec7e7785f4))
+
+
+### Bug Fixes
+
+* **ci:** drop the uv flags that block every release ([#86](https://github.com/structured-world/coordinode-python/issues/86)) ([2b55f8f](https://github.com/structured-world/coordinode-python/commit/2b55f8f4e58b4227d0f64a7f8e9a41daafb5c470))
+
 ## [1.0.6](https://github.com/structured-world/coordinode-python/compare/v1.0.5...v1.0.6) (2026-05-03)
 
 
