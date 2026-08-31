@@ -17,7 +17,7 @@ mod hnsw;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use coordinode_core::graph::types::{GeoValue, Value};
+use coordinode_core::graph::types::{GeoValue, PathRel, PathValue, Value};
 use coordinode_embed::{Database, DatabaseError};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -36,6 +36,17 @@ use rmpv::Value as MsgpackValue;
 fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
     py.import("coordinode._types")
         .and_then(|m| m.getattr("MultiVector"))
+        .ok()
+}
+
+/// The `Path` tag from the `coordinode` package, when it is installed.
+///
+/// A dict subclass, for the same reason and with the same fallback as
+/// [`multi_vector_type`]: without the tag a path read back is an ordinary
+/// mapping, and writing it out again would store a map.
+fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
+    py.import("coordinode._types")
+        .and_then(|m| m.getattr("Path"))
         .ok()
 }
 
@@ -121,7 +132,10 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
                 rels.append(r)?;
             }
             d.set_item("rels", rels)?;
-            Ok(d.into_any().unbind())
+            match path_type(py) {
+                Some(cls) => Ok(cls.call1((d,))?.unbind()),
+                None => Ok(d.into_any().unbind()),
+            }
         }
     }
 }
@@ -174,6 +188,52 @@ fn msgpack_to_py(py: Python<'_>, v: MsgpackValue) -> PyResult<PyObject> {
 
 // ── PyObject → Value conversion (for params) ─────────────────────────────────
 
+/// Rebuild a [`PathValue`] from the mapping `value_to_py` produces for one.
+///
+/// The keys mirror that shape exactly: `nodes` is the id sequence and `rels`
+/// the hops, each carrying its type and its endpoints. A missing or misshapen
+/// field is reported rather than skipped: the value is on its way into a
+/// property, and a silently truncated path stores as a valid path.
+fn py_dict_to_path(d: &Bound<'_, PyDict>) -> PyResult<PathValue> {
+    let bad = |what: &str| PyValueError::new_err(format!("Path {what}"));
+    let nodes: Vec<u64> = d
+        .get_item("nodes")?
+        .ok_or_else(|| bad("is missing 'nodes'"))?
+        .extract()
+        .map_err(|_| bad("'nodes' must be a list of node ids"))?;
+
+    let rels_obj = d
+        .get_item("rels")?
+        .ok_or_else(|| bad("is missing 'rels'"))?;
+    let rels_list = rels_obj
+        .downcast::<PyList>()
+        .map_err(|_| bad("'rels' must be a list"))?;
+    let mut rels = Vec::with_capacity(rels_list.len());
+    for item in rels_list.iter() {
+        let hop = item
+            .downcast::<PyDict>()
+            .map_err(|_| bad("hops must be dicts"))?;
+        let field = |key: &str| {
+            hop.get_item(key)
+                .ok()
+                .flatten()
+                .ok_or_else(|| bad(&format!("hop is missing '{key}'")))
+        };
+        rels.push(PathRel {
+            edge_type: field("type")?
+                .extract()
+                .map_err(|_| bad("hop 'type' must be a string"))?,
+            source: field("source")?
+                .extract()
+                .map_err(|_| bad("hop 'source' must be a node id"))?,
+            target: field("target")?
+                .extract()
+                .map_err(|_| bad("hop 'target' must be a node id"))?,
+        });
+    }
+    Ok(PathValue { nodes, rels })
+}
+
 fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if obj.is_none() {
         return Ok(Value::Null);
@@ -211,6 +271,14 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::Array(items?));
     }
     if let Ok(d) = obj.downcast::<PyDict>() {
+        // A tagged path before the generic dict branch, for the same reason as
+        // the multi-vector above: it IS a dict, so the map branch would take it
+        // and rewrite the property as a map.
+        if let Some(cls) = path_type(obj.py()) {
+            if obj.is_instance(&cls).unwrap_or(false) {
+                return Ok(Value::Path(py_dict_to_path(d)?));
+            }
+        }
         let mut map = std::collections::BTreeMap::new();
         for (k, v) in d.iter() {
             let key = k

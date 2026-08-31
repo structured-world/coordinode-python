@@ -157,3 +157,30 @@ class TestFromPropertyValue:
         """Only a value that came back as one re-encodes as one."""
         pv = to_property_value([[0.5, 1.5], [2.5, 3.5]])
         assert pv.WhichOneof("value") == "list_value"
+
+    def test_path_survives_a_round_trip(self):
+        """Reading a path and writing it back keeps its wire type.
+
+        The same trap as the multi-vector above, one type over: a path decoded
+        to a plain dict is indistinguishable from a map with those keys, so a
+        read-modify-write stored the property as a map.
+        """
+        original = PropertyValue(
+            path_value=Path(
+                nodes=[7, 8],
+                rels=[PathRel(edge_type="LINK", source=7, target=8)],
+            )
+        )
+        decoded = from_property_value(original)
+        # Still an ordinary mapping to anyone reading it.
+        assert decoded == {"nodes": [7, 8], "rels": [{"type": "LINK", "source": 7, "target": 8}]}
+
+        re_encoded = to_property_value(decoded)
+        assert re_encoded.WhichOneof("value") == "path_value", f"re-encoded as {re_encoded.WhichOneof('value')}"
+        assert list(re_encoded.path_value.nodes) == [7, 8]
+        assert re_encoded.path_value.rels[0].edge_type == "LINK"
+
+    def test_a_plain_dict_is_not_a_path(self):
+        """Only a value that came back as one re-encodes as one."""
+        pv = to_property_value({"nodes": [1, 2], "rels": []})
+        assert pv.WhichOneof("value") == "map_value"

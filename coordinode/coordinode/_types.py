@@ -25,6 +25,19 @@ class MultiVector(list):
     __slots__ = ()
 
 
+class Path(dict):
+    """A graph path: the node ids it runs through, and the hops between them.
+
+    A plain ``dict`` with ``nodes`` and ``rels`` keys, so it reads, indexes and
+    compares exactly like the mapping it looks like. As with
+    :class:`MultiVector`, the type exists only to carry the distinction back to
+    the wire: a value that arrived as a path re-encodes as one, while an
+    ordinary dict that happens to hold those keys stays a map.
+    """
+
+    __slots__ = ()
+
+
 def to_property_value(py_val: PyValue) -> Any:
     """Convert a Python value to a proto PropertyValue."""
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
@@ -67,6 +80,30 @@ def to_property_value(py_val: PyValue) -> Any:
         else:
             pl = PropertyList(values=[to_property_value(v) for v in py_val])
             pv.list_value.CopyFrom(pl)
+    elif isinstance(py_val, Path):
+        # Before the dict branch below, which would otherwise take it: Path is
+        # a dict, and encoding it as a map changes the property's wire type on
+        # a read-modify-write.
+        from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
+            Path as PathProto,
+        )
+        from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
+            PathRel as PathRelProto,
+        )
+
+        pv.path_value.CopyFrom(
+            PathProto(
+                nodes=[int(n) for n in py_val.get("nodes", [])],
+                rels=[
+                    PathRelProto(
+                        edge_type=str(rel["type"]),
+                        source=int(rel["source"]),
+                        target=int(rel["target"]),
+                    )
+                    for rel in py_val.get("rels", [])
+                ],
+            )
+        )
     elif isinstance(py_val, dict):
         pm = PropertyMap(entries={k: to_property_value(v) for k, v in py_val.items()})
         pv.map_value.CopyFrom(pm)
@@ -109,10 +146,10 @@ def from_property_value(pv: Any) -> PyValue:
         # Relationship properties are not carried in the path model, so a hop
         # is its type and its endpoints.
         path = pv.path_value
-        return {
-            "nodes": list(path.nodes),
-            "rels": [{"type": r.edge_type, "source": r.source, "target": r.target} for r in path.rels],
-        }
+        return Path(
+            nodes=list(path.nodes),
+            rels=[{"type": r.edge_type, "source": r.source, "target": r.target} for r in path.rels],
+        )
     else:
         return None
 
