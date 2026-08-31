@@ -38,6 +38,33 @@ class Path(dict):
     __slots__ = ()
 
 
+def _to_path_proto(path: Path) -> Any:
+    """Build the wire Path from the mapping a decoded path presents.
+
+    Kept out of :func:`to_property_value` so that adding a value type does not
+    grow the branch it sits in: the encoding of one type belongs with that type,
+    not inside the dispatch over all of them.
+    """
+    from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
+        Path as PathProto,
+    )
+    from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
+        PathRel as PathRelProto,
+    )
+
+    return PathProto(
+        nodes=[int(n) for n in path.get("nodes", [])],
+        rels=[
+            PathRelProto(
+                edge_type=str(rel["type"]),
+                source=int(rel["source"]),
+                target=int(rel["target"]),
+            )
+            for rel in path.get("rels", [])
+        ],
+    )
+
+
 def to_property_value(py_val: PyValue) -> Any:
     """Convert a Python value to a proto PropertyValue."""
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
@@ -84,26 +111,7 @@ def to_property_value(py_val: PyValue) -> Any:
         # Before the dict branch below, which would otherwise take it: Path is
         # a dict, and encoding it as a map changes the property's wire type on
         # a read-modify-write.
-        from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
-            Path as PathProto,
-        )
-        from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
-            PathRel as PathRelProto,
-        )
-
-        pv.path_value.CopyFrom(
-            PathProto(
-                nodes=[int(n) for n in py_val.get("nodes", [])],
-                rels=[
-                    PathRelProto(
-                        edge_type=str(rel["type"]),
-                        source=int(rel["source"]),
-                        target=int(rel["target"]),
-                    )
-                    for rel in py_val.get("rels", [])
-                ],
-            )
-        )
+        pv.path_value.CopyFrom(_to_path_proto(py_val))
     elif isinstance(py_val, dict):
         pm = PropertyMap(entries={k: to_property_value(v) for k, v in py_val.items()})
         pv.map_value.CopyFrom(pm)
