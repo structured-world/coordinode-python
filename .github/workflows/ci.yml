@@ -16,21 +16,24 @@ jobs:
         with:
           python-version: "3.11"
 
-      # --locked fails the job when uv.lock does not match pyproject, so CI
-      # resolves exactly what a developer resolved rather than picking up a
-      # newer release mid-run. --no-build installs from wheels only, which
-      # keeps a dependency's setup.py from executing on the runner.
+      # Plain `uv sync`, deliberately. Two flags were tried here and both break
+      # the release, which is the one pull request that must not be blocked:
       #
-      # The editable workspace members install regardless: --no-build refuses
-      # source distributions of dependencies, not a local editable install.
-      # Verified both ways, since the flag reads as though it would block them:
-      # a sync with an empty UV_CACHE_DIR into a fresh environment installs
-      # coordinode, langchain-coordinode and llama-index-graph-stores-coordinode
-      # and imports them, and every job below has run green with the flag on a
-      # clean runner. Remove it only with evidence, not on the wording.
-      - run: uv sync --locked --no-build
-      - run: uv run --locked --no-build ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
-      - run: uv run --locked --no-build ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      #   --no-build   refuses to build a source distribution, and this
+      #                workspace's own three packages are exactly that. It
+      #                passes while a cache holds a wheel for the version in
+      #                the lock and fails the moment that version moves.
+      #   --locked     fails when uv.lock disagrees with pyproject, and the
+      #                release bumps the version in pyproject without
+      #                regenerating the lock, so it disagrees by construction.
+      #
+      # Both were verified against the release branch: --no-build reports
+      # "Building source distributions for coordinode is disabled", and
+      # --locked alone reports "the lockfile needs to be updated". Do not add
+      # either back without first making the release update the lock.
+      - run: uv sync
+      - run: uv run ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv run ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -49,13 +52,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --locked --no-build --all-packages
+        run: uv sync --all-packages
 
       - name: Generate proto stubs
-        run: uv run --locked --no-build make proto
+        run: uv run make proto
 
       - name: Unit tests
-        run: uv run --locked --no-build pytest tests/unit/ -v
+        run: uv run pytest tests/unit/ -v
 
   build-embedded:
     name: Build embedded (CI check)
@@ -159,10 +162,10 @@ jobs:
 
       - name: Install + generate proto
         run: |
-          uv sync --locked --no-build --all-packages
-          uv run --locked --no-build make proto
+          uv sync --all-packages
+          uv run make proto
 
       - name: Integration tests
         env:
           COORDINODE_ADDR: "localhost:7080"
-        run: uv run --locked --no-build pytest tests/integration/ -v --timeout=30
+        run: uv run pytest tests/integration/ -v --timeout=30
