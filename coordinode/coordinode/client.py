@@ -534,6 +534,12 @@ class AsyncCoordinodeClient:
         Shared by :meth:`create_label` and :meth:`create_edge_type` to avoid
         duplicating the type-map and validation logic.
         """
+        # A 1:1 mirror of the wire enum, which is the whole list of types a
+        # property can be *declared* as. Multi-vector and path are not among
+        # them: they are shapes a value takes on its way in or out, carried on
+        # PropertyValue, and no declarable type corresponds to either. Adding
+        # a key here for one of them would name an enum member that does not
+        # exist. Extend this only when the enum itself grows.
         type_map = {
             "int64": property_type_cls.PROPERTY_TYPE_INT64,
             "float64": property_type_cls.PROPERTY_TYPE_FLOAT64,
