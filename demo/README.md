@@ -12,9 +12,13 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) **LangGraph** | Agent with CoordiNode as graph memory (save/query/traverse) | nothing |
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/04_whats_new_in_0_5.ipynb) **What 0.5 Added** | Batch insert, `element_id`, schema revision, write/read concerns, time travel | a server (`COORDINODE_ADDR`) |
 
-> **Note:** First run installs `coordinode-embedded` from source (Rust build, ~5 min).
-> Subsequent runs use Colab's pip cache.
-> The embedded Colab install is pinned to a specific commit that bundles coordinode-rs v0.4.1; the Colab notebook links above target `main`.
+> **Note:** **LangGraph** runs the engine in-process rather than against a
+> server, in a database that exists only for that run. `query_facts` there
+> executes Cypher the model writes, and a private database is what makes an
+> invented query harmless; the alternative was filtering model-written Cypher
+> by a session tag, which leaks the first time the filter misses a case.
+> It installs `coordinode-embedded` from PyPI, which is also why it opens in
+> Colab with nothing to set up.
 > The Docker Compose stack below pins the CoordiNode **server** image v0.5.5 by
 > digest. Do not move it below that: 0.5.1 crashes its Raft core when the oplog
 > rolls a segment that already exists, and a single-node stack never regains
@@ -25,6 +29,12 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 > and the embedded engine has neither Raft nor replicas, so that notebook stops
 > until `COORDINODE_ADDR` points at a server. Run it against the Docker Compose
 > stack below.
+>
+> In the Compose stack, **LangGraph** needs `coordinode-embedded` in the Jupyter
+> image. The wheel currently on PyPI predates the path syntax `find_related`
+> uses, so the image does not install it yet; run that notebook in Colab or
+> locally until a release publishes a current wheel. The other four use the
+> server and are unaffected.
 
 ## Run locally (Docker Compose)
 
