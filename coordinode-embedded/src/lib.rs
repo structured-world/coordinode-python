@@ -21,6 +21,7 @@ use coordinode_core::graph::types::{GeoValue, PathRel, PathValue, Value};
 use coordinode_embed::{Database, DatabaseError};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rmpv::Value as MsgpackValue;
 
@@ -34,10 +35,23 @@ use rmpv::Value as MsgpackValue;
 /// property's type. That module re-exports `coordinode`'s definition when that
 /// package is installed and defines an equivalent when it is not, so the tag
 /// holds for a standalone install of the embedded engine too.
+/// Looked up once per process rather than per value: `value_to_py` runs for
+/// every column of every row, and the import machinery plus the attribute
+/// fetch are the same two lookups every time. A failed lookup is cached too,
+/// since a package that is not importable at the first conversion will not
+/// become importable later in the same process.
+static MULTI_VECTOR_TYPE: GILOnceCell<Option<Py<PyAny>>> = GILOnceCell::new();
+
 fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
-    py.import("coordinode_embedded._types")
-        .and_then(|m| m.getattr("MultiVector"))
-        .ok()
+    MULTI_VECTOR_TYPE
+        .get_or_init(py, || {
+            py.import("coordinode_embedded._types")
+                .and_then(|m| m.getattr("MultiVector"))
+                .map(Bound::unbind)
+                .ok()
+        })
+        .as_ref()
+        .map(|tag| tag.bind(py).clone())
 }
 
 /// The `Path` tag, from this package's own `_types` module.
@@ -45,10 +59,19 @@ fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
 /// A dict subclass, for the same reason as [`multi_vector_type`]: without the
 /// tag a path read back is an ordinary mapping, and writing it out again would
 /// store a map.
+/// Cached for the same reason as [`MULTI_VECTOR_TYPE`].
+static PATH_TYPE: GILOnceCell<Option<Py<PyAny>>> = GILOnceCell::new();
+
 fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
-    py.import("coordinode_embedded._types")
-        .and_then(|m| m.getattr("Path"))
-        .ok()
+    PATH_TYPE
+        .get_or_init(py, || {
+            py.import("coordinode_embedded._types")
+                .and_then(|m| m.getattr("Path"))
+                .map(Bound::unbind)
+                .ok()
+        })
+        .as_ref()
+        .map(|tag| tag.bind(py).clone())
 }
 
 fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
@@ -62,13 +85,11 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
         Value::String(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
         // Timestamp: expose as raw microseconds; callers use datetime.fromtimestamp(ts/1e6)
         Value::Timestamp(ts) => Ok(ts.into_pyobject(py)?.into_any().unbind()),
-        Value::Vector(v) => {
-            let list = PyList::empty(py);
-            for x in v {
-                list.append(x)?;
-            }
-            Ok(list.into_any().unbind())
-        }
+        // Sized from the vector's length in one go. Growing by append costs a
+        // reallocation every time the list outgrows its capacity, and an
+        // embedding is the one value here that routinely runs to hundreds or
+        // thousands of elements.
+        Value::Vector(v) => Ok(PyList::new(py, v)?.into_any().unbind()),
         Value::Array(arr) => {
             let list = PyList::empty(py);
             for item in arr {
@@ -103,11 +124,8 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
         Value::MultiVector(rows) => {
             let outer = PyList::empty(py);
             for row in rows {
-                let inner = PyList::empty(py);
-                for x in row {
-                    inner.append(x)?;
-                }
-                outer.append(inner)?;
+                // Each row's width is known, so the list is sized once.
+                outer.append(PyList::new(py, row)?)?;
             }
             match multi_vector_type(py) {
                 Some(cls) => Ok(cls.call1((outer,))?.unbind()),
@@ -118,16 +136,17 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
         // it runs through and the relationship hops between them.
         Value::Path(path) => {
             let d = PyDict::new(py);
-            let nodes = PyList::empty(py);
-            for n in &path.nodes {
-                nodes.append(*n)?;
-            }
-            d.set_item("nodes", nodes)?;
+            // Sized from the length that is already known, rather than grown
+            // by repeated append.
+            d.set_item("nodes", PyList::new(py, path.nodes)?)?;
 
             let rels = PyList::empty(py);
-            for rel in &path.rels {
+            for rel in path.rels {
                 let r = PyDict::new(py);
-                r.set_item("type", rel.edge_type.clone())?;
+                // The path is owned here and dropped on the way out, so the
+                // type moves into the Python string instead of being copied
+                // once per hop for it.
+                r.set_item("type", rel.edge_type)?;
                 r.set_item("source", rel.source)?;
                 r.set_item("target", rel.target)?;
                 rels.append(r)?;
