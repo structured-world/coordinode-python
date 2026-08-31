@@ -56,6 +56,57 @@ with CoordinodeClient("localhost:7080") as db:
         print(row["name"])
 ```
 
+## Transactions
+
+`db.cypher(...)` commits each statement on its own. To make several statements
+land together, or not at all, run them in a transaction:
+
+```python
+with db.transaction() as tx:
+    tx.cypher("CREATE (:Person {name: $n})", params={"n": "Alice"})
+    tx.cypher("CREATE (:Person {name: $n})", params={"n": "Bob"})
+    # commits here; an exception anywhere in the block rolls back instead,
+    # leaving neither person in the database
+```
+
+The same surface is on `AsyncCoordinodeClient`, with `async with` and awaited
+statements. When the commit point sits outside a block, drive it by hand:
+
+```python
+tx = db.begin_transaction()
+try:
+    tx.cypher("MERGE (n:Entity {name: $n})", params={"n": "Alice"})
+    applied_index = tx.commit()
+except Exception:
+    tx.rollback()
+    raise
+```
+
+Each statement reads the snapshot taken when the transaction began, so the
+transaction sees a stable view of the database plus its own uncommitted writes,
+which nobody else can see until the commit. A conflict with another transaction
+that wrote the same data is reported by `commit()`, not by the statement, and a
+rejected commit applies nothing. `commit()` returns the Raft applied index, which
+a later read can pass as `after_index` (with `write_concern="majority"`) when it
+must observe these writes.
+
+`tx.cypher()` takes no consistency arguments, unlike `db.cypher()`: the snapshot
+is already fixed and durability is decided once at the commit, so a per-statement
+read or write concern has nothing left to mean.
+
+Two constraints are worth knowing before holding a transaction open:
+
+- **It belongs to one node.** The handle lives in the memory of the server that
+  opened it, so every statement and the commit must reach that same node. One
+  client instance holds one connection and satisfies this; pointing several
+  clients at a load balancer in front of replicas does not.
+- **Idle transactions are collected.** The server reaps one that has been idle
+  (30 seconds by default), and it sweeps when another transaction begins rather
+  than on a timer, so a long pause between statements can lose the handle. A
+  failed statement also ends the transaction outright: its writes are discarded
+  and the handle is closed, so reusing it raises rather than reporting a
+  confusing error from the server.
+
 ## LangChain — GraphRAG Pipeline
 
 ```python

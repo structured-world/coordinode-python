@@ -30,9 +30,7 @@ class _ServerRejected(grpc.RpcError):
 def _execute_response(columns=(), rows=()):
     return cypher_pb2.ExecuteCypherResponse(
         columns=list(columns),
-        rows=[
-            cypher_pb2.Row(values=[types_pb2.PropertyValue(string_value=v) for v in row]) for row in rows
-        ],
+        rows=[cypher_pb2.Row(values=[types_pb2.PropertyValue(string_value=v) for v in row]) for row in rows],
     )
 
 
