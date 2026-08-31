@@ -16,21 +16,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Plain `uv sync`, deliberately. Two flags were tried here and both break
-      # the release, which is the one pull request that must not be blocked:
+      # Plain `uv sync`, deliberately, on two counts.
       #
-      #   --no-build   refuses to build a source distribution, and this
-      #                workspace's own three packages are exactly that. It
-      #                passes while a cache holds a wheel for the version in
-      #                the lock and fails the moment that version moves.
-      #   --locked     fails when uv.lock disagrees with pyproject, and the
-      #                release bumps the version in pyproject without
-      #                regenerating the lock, so it disagrees by construction.
+      # Resolving fresh on a pull request is wanted here, not merely tolerated:
+      # a dependency that publishes a breaking release fails these jobs, on a
+      # pull request, rather than after the merge that would have pinned it.
       #
-      # Both were verified against the release branch: --no-build reports
-      # "Building source distributions for coordinode is disabled", and
-      # --locked alone reports "the lockfile needs to be updated". Do not add
-      # either back without first making the release update the lock.
+      # The two flags tried here also break the release, and for one shared
+      # reason: the release bumps the version in pyproject.toml and leaves
+      # uv.lock naming the old one, so uv has to re-resolve.
+      #
+      #   --locked     fails on exactly that mismatch, reporting that the
+      #                lockfile needs to be updated.
+      #   --no-build   fails because re-resolving means building this
+      #                workspace's own three packages, which are source rather
+      #                than wheels: "Building source distributions for
+      #                coordinode is disabled".
+      #
+      # Verified on the release branch with a cold cache: both fail there, and
+      # both pass on that same branch once uv.lock carries the new version. So
+      # restoring either one means first making the release regenerate the
+      # lock, and even then it gives up the fresh resolution described above.
       - run: uv sync
       - run: uv run ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
       - run: uv run ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
@@ -86,7 +92,7 @@ jobs:
       - name: Install wheel + run embedded tests
         # The main `test` job skips coordinode_embedded with importorskip
         # because that runner doesn't build the wheel.  This job has the
-        # wheel — install it and run the embedded tests here, then assert
+        # wheel, so install it and run the embedded tests here, then assert
         # nothing was skipped (a skip with the wheel installed means a
         # broken manylinux glibc / missing numpy / etc., not the expected
         # "no wheel" condition).
@@ -119,7 +125,7 @@ jobs:
             exit 1
           fi
           if ! echo "$OUTPUT" | grep -qE '=+ [0-9]+ passed'; then
-            echo "::error::No tests passed — the module was likely not collected"
+            echo "::error::No tests passed; the module was likely not collected"
             exit 1
           fi
 
@@ -154,7 +160,7 @@ jobs:
               echo "coordinode is ready (attempt $i)"
               exit 0
             fi
-            echo "Attempt $i/30 — not ready yet, sleeping 5s..."
+            echo "Attempt $i/30, not ready yet, sleeping 5s..."
             sleep 5
           done
           echo "Error: coordinode did not become healthy after 150s" >&2
