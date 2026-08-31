@@ -18,9 +18,14 @@ jobs:
 
       # Plain `uv sync`, deliberately, on two counts.
       #
-      # Resolving fresh on a pull request is wanted here, not merely tolerated:
-      # a dependency that publishes a breaking release fails these jobs, on a
-      # pull request, rather than after the merge that would have pinned it.
+      # Resolving fresh is wanted on the pull requests where it actually
+      # happens, which is not all of them. `uv sync` follows the committed lock
+      # while that lock satisfies pyproject.toml, so an ordinary pull request
+      # installs the locked versions. When a pull request moves dependency
+      # metadata without regenerating the lock, uv resolves the new set and
+      # these jobs exercise it. `--locked` would instead refuse to run and
+      # report that the lock needs updating, which says nothing about whether
+      # the new version works.
       #
       # The two flags tried here also break the release, and for one shared
       # reason: the release bumps the version in pyproject.toml and leaves
