@@ -35,23 +35,20 @@ use rmpv::Value as MsgpackValue;
 /// property's type. That module re-exports `coordinode`'s definition when that
 /// package is installed and defines an equivalent when it is not, so the tag
 /// holds for a standalone install of the embedded engine too.
-/// Looked up once per process rather than per value: `value_to_py` runs for
+/// Resolved once per process rather than per value: `value_to_py` runs for
 /// every column of every row, and the import machinery plus the attribute
-/// fetch are the same two lookups every time. A failed lookup is cached too,
-/// since a package that is not importable at the first conversion will not
-/// become importable later in the same process.
-static MULTI_VECTOR_TYPE: GILOnceCell<Option<Py<PyAny>>> = GILOnceCell::new();
+/// fetch are the same two lookups every time.
+///
+/// Only a success is remembered. Caching a failure would let one bad lookup
+/// decide the wire type of every value for the rest of the process, and the
+/// error is discarded here rather than inspected, so it is not ours to call
+/// permanent. Retrying costs the two lookups again on a path that only runs
+/// when the module is missing, which cannot happen while it ships in this
+/// package.
+static MULTI_VECTOR_TYPE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
 
 fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
-    MULTI_VECTOR_TYPE
-        .get_or_init(py, || {
-            py.import("coordinode_embedded._types")
-                .and_then(|m| m.getattr("MultiVector"))
-                .map(Bound::unbind)
-                .ok()
-        })
-        .as_ref()
-        .map(|tag| tag.bind(py).clone())
+    tag_type(py, &MULTI_VECTOR_TYPE, "MultiVector")
 }
 
 /// The `Path` tag, from this package's own `_types` module.
@@ -59,19 +56,32 @@ fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
 /// A dict subclass, for the same reason as [`multi_vector_type`]: without the
 /// tag a path read back is an ordinary mapping, and writing it out again would
 /// store a map.
-/// Cached for the same reason as [`MULTI_VECTOR_TYPE`].
-static PATH_TYPE: GILOnceCell<Option<Py<PyAny>>> = GILOnceCell::new();
+/// Resolved and remembered on the same terms as [`MULTI_VECTOR_TYPE`].
+static PATH_TYPE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
 
 fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
-    PATH_TYPE
-        .get_or_init(py, || {
-            py.import("coordinode_embedded._types")
-                .and_then(|m| m.getattr("Path"))
-                .map(Bound::unbind)
-                .ok()
-        })
-        .as_ref()
-        .map(|tag| tag.bind(py).clone())
+    tag_type(py, &PATH_TYPE, "Path")
+}
+
+/// Fetch a tag class from this package's `_types`, remembering it in `cell`.
+///
+/// The cell holds successes only, so a lookup that fails is retried on the
+/// next value rather than deciding the wire type for the rest of the process.
+fn tag_type<'py>(
+    py: Python<'py>,
+    cell: &GILOnceCell<Py<PyAny>>,
+    name: &str,
+) -> Option<Bound<'py, PyAny>> {
+    if let Some(tag) = cell.get(py) {
+        return Some(tag.bind(py).clone());
+    }
+    let tag = py
+        .import("coordinode_embedded._types")
+        .and_then(|module| module.getattr(name))
+        .ok()?;
+    // A racing thread may have set it first; either value is the same class.
+    let _ = cell.set(py, tag.clone().unbind());
+    Some(tag)
 }
 
 fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
