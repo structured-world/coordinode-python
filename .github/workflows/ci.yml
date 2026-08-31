@@ -19,8 +19,15 @@ jobs:
       # --locked fails the job when uv.lock does not match pyproject, so CI
       # resolves exactly what a developer resolved rather than picking up a
       # newer release mid-run. --no-build installs from wheels only, which
-      # keeps a dependency's setup.py from executing on the runner. Workspace
-      # members still install, so the pair costs nothing here.
+      # keeps a dependency's setup.py from executing on the runner.
+      #
+      # The editable workspace members install regardless: --no-build refuses
+      # source distributions of dependencies, not a local editable install.
+      # Verified both ways, since the flag reads as though it would block them:
+      # a sync with an empty UV_CACHE_DIR into a fresh environment installs
+      # coordinode, langchain-coordinode and llama-index-graph-stores-coordinode
+      # and imports them, and every job below has run green with the flag on a
+      # clean runner. Remove it only with evidence, not on the wording.
       - run: uv sync --locked --no-build
       - run: uv run --locked --no-build ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
       - run: uv run --locked --no-build ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
