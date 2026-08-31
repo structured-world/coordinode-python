@@ -739,3 +739,110 @@ def test_cypher_rejects_invalid_consistency_values(client):
         client.cypher("RETURN 1", after_index=True)
     with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
         client.cypher("RETURN 1", after_index="7")  # type: ignore[arg-type]
+
+
+# ── Interactive transactions ──────────────────────────────────────────────────
+
+
+def test_transaction_commits_every_statement(client):
+    """Two writes in one transaction land together."""
+    tag = uid()
+    try:
+        with client.transaction() as tx:
+            tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+            tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Bob'})", params={"tag": tag})
+        rows = client.cypher(
+            "MATCH (n:TxDemo {tag: $tag}) RETURN n.name AS name ORDER BY name",
+            params={"tag": tag},
+        )
+        assert [r["name"] for r in rows] == ["Alice", "Bob"]
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_rollback_leaves_no_partial_write(client):
+    """The write made before the failure is not in the database afterwards.
+
+    This is the whole point of the feature: without it the first CREATE would
+    have been applied on its own and the graph would carry half of an operation.
+    """
+    tag = uid()
+    try:
+        with pytest.raises(ZeroDivisionError):
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+                1 / 0
+        rows = client.cypher("MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+        assert rows[0]["c"] == 0
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_explicit_rollback_discards_the_write(client):
+    tag = uid()
+    try:
+        tx = client.begin_transaction()
+        tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+        tx.rollback()
+        assert tx.is_open is False
+        rows = client.cypher("MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+        assert rows[0]["c"] == 0
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_uncommitted_write_is_invisible_outside_the_transaction(client):
+    """A buffered write is readable by the transaction and by nobody else."""
+    tag = uid()
+    tx = client.begin_transaction()
+    try:
+        tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+        inside = tx.cypher("MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+        assert inside[0]["c"] == 1, "the transaction has to see its own write"
+        outside = client.cypher("MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+        assert outside[0]["c"] == 0, "an uncommitted write must not be visible elsewhere"
+    finally:
+        if tx.is_open:
+            tx.rollback()
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_statement_error_reports_itself_and_leaves_nothing(client):
+    """A bad statement fails with its own error, not with a cleanup error.
+
+    The server discards the transaction on the spot, so the earlier write is
+    gone and the handle is closed.
+    """
+    tag = uid()
+    try:
+        with pytest.raises(grpc.RpcError):
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+                # A parse failure, deliberately: an unknown function or a
+                # division by zero answers NULL here rather than failing, so
+                # neither would exercise the abort path.
+                tx.cypher("RETURN (")
+        rows = client.cypher("MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+        assert rows[0]["c"] == 0
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_commit_returns_a_usable_applied_index(client):
+    """The index a causal read can be fenced on."""
+    tag = uid()
+    try:
+        tx = client.begin_transaction()
+        tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+        applied_index = tx.commit()
+        assert isinstance(applied_index, int)
+        assert applied_index > 0
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_reuse_after_commit_raises(client):
+    tx = client.begin_transaction()
+    tx.commit()
+    with pytest.raises(RuntimeError, match="already committed"):
+        tx.cypher("RETURN 1")
