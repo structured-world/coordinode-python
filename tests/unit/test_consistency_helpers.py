@@ -76,8 +76,21 @@ class TestAtTimestamp:
 
     @pytest.mark.parametrize("bad", [-1, True, "42", 1.5])
     def test_rejects_non_negative_integers(self, bad: object) -> None:
-        with pytest.raises(ValueError, match="at_timestamp must be a non-negative integer"):
+        with pytest.raises(ValueError, match="at_timestamp must be a positive integer"):
             _make_read_concern(None, None, bad)  # type: ignore[arg-type]
+
+    def test_rejects_zero_because_the_wire_cannot_carry_it(self) -> None:
+        """Zero is how the wire says "no pin", so it cannot also mean a pin.
+
+        `at_timestamp` is a plain proto3 scalar with no field presence, so
+        zero is not serialised and the server reads the field as absent. A
+        caller asking to read as of the epoch would silently get a current
+        read instead, which is the one answer a time-travel query must never
+        return. `test_absent_by_default` pins the other half of this: an
+        unpinned request is exactly the one whose timestamp is zero.
+        """
+        with pytest.raises(ValueError, match="at_timestamp must be a positive integer"):
+            _make_read_concern(None, None, 0)
 
     def test_defaults_the_level_to_snapshot(self) -> None:
         """A pinned read is a snapshot read, and the server enforces that.

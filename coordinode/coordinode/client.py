@@ -296,7 +296,8 @@ class AsyncCoordinodeClient:
           The timestamp has to fall inside the MVCC retention window; older snapshots are
           collected and the server answers UNAVAILABLE. It cannot be combined with a
           non-zero ``after_index``: waiting for a new write and reading a fixed past are
-          opposite requests, and the pair is rejected.
+          opposite requests, and the pair is rejected. Zero is rejected too: it is how the
+          wire says "no pin", so it cannot also ask for one.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
@@ -1116,8 +1117,14 @@ def _make_read_concern(level: str | None, after_index: int | None, at_timestamp:
             raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
         kwargs["after_index"] = after_index
     if at_timestamp is not None:
-        if not isinstance(at_timestamp, int) or isinstance(at_timestamp, bool) or at_timestamp < 0:
-            raise ValueError(f"at_timestamp must be a non-negative integer, got {at_timestamp!r}")
+        # Positive, not merely non-negative: the field is a plain proto3 scalar
+        # with no presence, so zero is not put on the wire and the server reads
+        # it as "no pin". A request to read as of the epoch would come back as
+        # a current read, which is the one answer time travel must not give.
+        if not isinstance(at_timestamp, int) or isinstance(at_timestamp, bool) or at_timestamp < 1:
+            raise ValueError(
+                f"at_timestamp must be a positive integer (microseconds since the epoch), got {at_timestamp!r}"
+            )
         # A fence waits for the log to reach an index; a pin reads a fixed
         # point in the past. The server calls the pair mutually exclusive and
         # answers INVALID_ARGUMENT, so say so here rather than a round trip
