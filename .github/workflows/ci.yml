@@ -93,7 +93,12 @@ jobs:
           # jobs instead of whatever is newest on PyPI that morning.
           uv pip install --python /tmp/test-venv/bin/python "$WHL" \
             numpy==2.4.6 pytest==9.1.1 pytest-timeout==2.4.0
-          OUTPUT=$(/tmp/test-venv/bin/python -m pytest tests/unit/test_hnsw.py -v --strict-markers -ra 2>&1)
+          # Every test file that needs the extension belongs here: the main
+          # `test` job skips them all for want of a wheel, so a file left out
+          # of this list runs in no job at all.
+          OUTPUT=$(/tmp/test-venv/bin/python -m pytest \
+            tests/unit/test_hnsw.py tests/unit/test_embedded_values.py \
+            -v --strict-markers -ra 2>&1)
           echo "$OUTPUT"
           # `-ra` prints a "SKIPPED [N]" short summary header when anything was
           # skipped; importorskip-based skip also surfaces this way.  Use the
