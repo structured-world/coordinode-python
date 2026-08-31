@@ -18,6 +18,7 @@ Async::
         result = await db.cypher("MATCH (n) RETURN count(n) AS total")
 """
 
+from coordinode._types import MultiVector, Path
 from coordinode.client import (
     AsyncCoordinodeClient,
     CoordinodeClient,
@@ -39,6 +40,11 @@ except ImportError:
 __all__ = [
     "CoordinodeClient",
     "AsyncCoordinodeClient",
+    # Values whose wire type only a tag can carry: a plain nested list encodes
+    # as a list and a plain dict as a map, so sending either of these types
+    # requires the constructor, not just the shape.
+    "MultiVector",
+    "Path",
     "NodeResult",
     "EdgeResult",
     "VectorResult",

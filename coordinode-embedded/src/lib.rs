@@ -26,26 +26,27 @@ use rmpv::Value as MsgpackValue;
 
 // ── Value → PyObject conversion ──────────────────────────────────────────────
 
-/// The `MultiVector` tag from the `coordinode` package, when it is installed.
+/// The `MultiVector` tag, from this package's own `_types` module.
 ///
 /// A list subclass, so a tagged value reads and compares exactly like the
-/// nested list it replaces; the type exists only to survive a round trip. This
-/// package does not depend on `coordinode` (the embedded engine is usable on
-/// its own), so a missing import is an ordinary outcome and the caller falls
-/// back to a plain list, which is what this returned before the tag existed.
+/// nested list it replaces; the type exists only to survive a round trip,
+/// since an untagged nested list re-encodes as an array and changes the
+/// property's type. That module re-exports `coordinode`'s definition when that
+/// package is installed and defines an equivalent when it is not, so the tag
+/// holds for a standalone install of the embedded engine too.
 fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
-    py.import("coordinode._types")
+    py.import("coordinode_embedded._types")
         .and_then(|m| m.getattr("MultiVector"))
         .ok()
 }
 
-/// The `Path` tag from the `coordinode` package, when it is installed.
+/// The `Path` tag, from this package's own `_types` module.
 ///
-/// A dict subclass, for the same reason and with the same fallback as
-/// [`multi_vector_type`]: without the tag a path read back is an ordinary
-/// mapping, and writing it out again would store a map.
+/// A dict subclass, for the same reason as [`multi_vector_type`]: without the
+/// tag a path read back is an ordinary mapping, and writing it out again would
+/// store a map.
 fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
-    py.import("coordinode._types")
+    py.import("coordinode_embedded._types")
         .and_then(|m| m.getattr("Path"))
         .ok()
 }

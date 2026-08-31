@@ -10,7 +10,10 @@ import pytest
 
 ce = pytest.importorskip("coordinode_embedded")
 
-from coordinode._types import MultiVector, Path  # noqa: E402  (after the skip guard)
+# From the embedded package rather than `coordinode`, so this file runs where
+# only the wheel is installed. It re-exports `coordinode`'s definitions when
+# that package is present, so this is the same class either way.
+from coordinode_embedded import MultiVector, Path  # noqa: E402  (after the skip guard)
 
 
 @pytest.fixture
