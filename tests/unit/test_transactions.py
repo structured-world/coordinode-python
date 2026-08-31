@@ -525,3 +525,66 @@ class TestIndeterminateCommit:
                 await tx.commit()
 
         asyncio.run(_inner())
+
+
+class TestBeginValidation:
+    def test_a_zero_handle_is_refused(self):
+        """The wire defines zero on ExecuteCypherRequest as auto-commit, so a
+        zero handle would silently turn every statement of this transaction
+        into its own committed write. The protocol promises begin answers a
+        non-zero id; a server that breaks that promise gets refused, not
+        obeyed."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                BeginTransaction=AsyncMock(return_value=cypher_pb2.BeginTransactionResponse(transaction_id=0))
+            )
+            with pytest.raises(RuntimeError, match="transaction_id=0"):
+                await client.begin_transaction()
+
+        asyncio.run(_inner())
+
+
+class TestRowDecoding:
+    """The shared decoder for both the auto-commit and the in-transaction path."""
+
+    def test_a_short_row_is_an_error_not_a_missing_key(self):
+        """Silently dropping a column hands the caller a dict whose missing key
+        looks like an absent property. A wire-shape mismatch is a decoding
+        failure and should say so at the decode point."""
+        from unittest.mock import AsyncMock
+
+        short_row = cypher_pb2.ExecuteCypherResponse(
+            columns=["a", "b"],
+            rows=[cypher_pb2.Row(values=[types_pb2.PropertyValue(string_value="only-one")])],
+        )
+
+        async def _inner() -> None:
+            client = _async_client(ExecuteCypher=AsyncMock(return_value=short_row))
+            with pytest.raises(ValueError):
+                await client.cypher("MATCH (n) RETURN n.a AS a, n.b AS b")
+
+        asyncio.run(_inner())
+
+    def test_a_long_row_is_an_error_too(self):
+        from unittest.mock import AsyncMock
+
+        long_row = cypher_pb2.ExecuteCypherResponse(
+            columns=["a"],
+            rows=[
+                cypher_pb2.Row(
+                    values=[
+                        types_pb2.PropertyValue(string_value="one"),
+                        types_pb2.PropertyValue(string_value="unexpected"),
+                    ]
+                )
+            ],
+        )
+
+        async def _inner() -> None:
+            client = _async_client(ExecuteCypher=AsyncMock(return_value=long_row))
+            with pytest.raises(ValueError):
+                await client.cypher("MATCH (n) RETURN n.a AS a")
+
+        asyncio.run(_inner())

@@ -586,6 +586,15 @@ class AsyncCoordinodeClient:
         )
 
         resp = await self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
+        if resp.transaction_id == 0:
+            # Zero is what ExecuteCypherRequest uses for "no transaction", so a
+            # zero handle would silently turn every statement of this
+            # transaction into its own auto-committed write. The protocol
+            # promises a non-zero id here; refuse a server that breaks it.
+            raise RuntimeError(
+                "server answered BeginTransaction with transaction_id=0, which the wire "
+                "reserves for auto-commit; refusing to run statements outside a transaction"
+            )
         return AsyncTransaction(self, resp.transaction_id)
 
     @asynccontextmanager
@@ -1449,9 +1458,14 @@ def _rows_to_dicts(resp: Any) -> list[dict[str, Any]]:
     Shared by the auto-commit path and the in-transaction one: both answer with
     the same message, and a second copy of this loop is a second place for a
     decoding fix to be forgotten.
+
+    Pairs strictly. A row carrying more or fewer values than there are columns
+    is a wire-shape mismatch, and pairing loosely would hand the caller a dict
+    with a key quietly missing, indistinguishable from a property the node does
+    not have. Raising here names the real problem at the point it is visible.
     """
     columns = list(resp.columns)
-    return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
+    return [{col: from_property_value(val) for col, val in zip(columns, row.values, strict=True)} for row in resp.rows]
 
 
 def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) -> str:
