@@ -233,6 +233,10 @@ class TextIndexInfo:
 
 # ── Async client ─────────────────────────────────────────────────────────────
 
+# Detached cleanup tasks spawned from cancellation handlers, referenced here
+# until done so the event loop cannot garbage-collect them mid-flight.
+_PENDING_CLEANUPS: set[asyncio.Task[None]] = set()
+
 
 class AsyncTransaction:
     """One interactive transaction, held open across several statements.
@@ -299,6 +303,19 @@ class AsyncTransaction:
                 "data before retrying, since a blind retry can duplicate them."
             )
         raise RuntimeError(f"Cannot {action} this transaction: it was already {self._state.replace('_', ' ')}.")
+
+    def _spawn_cleanup(self) -> None:
+        """Run :meth:`_best_effort_rollback` as a detached task.
+
+        Used from cancellation handlers, where awaiting the rollback in place
+        would only be cancelled again. The task keeps itself referenced until
+        done (an unreferenced task can be garbage-collected mid-flight); if
+        the event loop closes before it runs, the server's idle sweep remains
+        the backstop, which is exactly what best-effort means.
+        """
+        task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
+        _PENDING_CLEANUPS.add(task)
+        task.add_done_callback(_PENDING_CLEANUPS.discard)
 
     async def _best_effort_rollback(self) -> None:
         """Ask the server to drop the transaction, ignoring every failure.
@@ -372,10 +389,16 @@ class AsyncTransaction:
         except asyncio.CancelledError:
             # Cancellation is a BaseException, so the handler above never sees
             # it. No commit was sent, so nothing of this transaction can apply;
-            # the handle is closed rather than left open for reuse. No cleanup
-            # is attempted, since an await during cancellation would only be
-            # cancelled again.
+            # the handle is closed rather than left open for reuse. The
+            # cancellation may still have arrived AFTER the server accepted
+            # the statement, leaving the transaction alive there with its
+            # buffered writes and a pinned snapshot — and with the handle
+            # closed, nothing later can free it before the idle sweep. The
+            # cleanup therefore runs as its own task: awaiting it here would
+            # only be cancelled again, while a detached task survives this
+            # task's cancellation. (A commit is different — see commit().)
             self._state = "aborted"
+            self._spawn_cleanup()
             raise
         return _rows_to_dicts(resp)
 

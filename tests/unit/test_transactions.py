@@ -721,3 +721,56 @@ class TestStatementCleanupIsUnconditional:
             assert client._cypher_stub.RollbackTransaction.await_count == 1
 
         asyncio.run(_inner())
+
+
+class TestCancellationCleanup:
+    """Cancellation can arrive after the server has the statement, so the
+    transaction may still be alive there with its buffered writes and a pinned
+    snapshot. Nothing can free it afterwards: the handle is closed, so both
+    `rollback()` and the context manager decline to act."""
+
+    def test_a_really_cancelled_statement_still_sends_the_cleanup(self):
+        """Cancels a task mid-flight rather than raising CancelledError from a
+        mock, so the shielding is exercised the way the event loop does it."""
+
+        async def _inner() -> None:
+            from unittest.mock import AsyncMock
+
+            in_flight = asyncio.Event()
+
+            async def never_answers(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            # Wrapped in AsyncMock: a bare function stored on the fake stub
+            # class would bind as a method and receive the stub as `req`.
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=never_answers))
+            tx = await client.begin_transaction()
+            task = asyncio.create_task(tx.cypher("CREATE (:Person)"))
+            await in_flight.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The cleanup outlives the cancellation, so give the loop a turn.
+            await asyncio.sleep(0.05)
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+            assert tx.is_open is False
+
+        asyncio.run(_inner())
+
+    def test_a_cancelled_commit_sends_no_cleanup(self):
+        """The opposite case, and the reason this is not symmetric: after a
+        commit the writes may be applied, and a rollback cannot un-apply them.
+        Sending one could only discard a transaction the server still holds,
+        turning an unknown outcome into a silently discarded one."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=asyncio.CancelledError()))
+            tx = await client.begin_transaction()
+            with pytest.raises(asyncio.CancelledError):
+                await tx.commit()
+            await asyncio.sleep(0.05)
+            assert client._cypher_stub.RollbackTransaction.await_count == 0
+
+        asyncio.run(_inner())
