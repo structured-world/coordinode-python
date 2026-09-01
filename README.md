@@ -93,9 +93,10 @@ except Exception:
     raise
 ```
 
-Requires a CoordiNode server of **v0.5.0 or newer**. The transaction RPCs
-arrived in that release, and `health()` exercises a different service, so an
-older server passes the health check and then refuses `transaction()`.
+Requires a CoordiNode server of **v0.5.5 or newer** — the release this client
+is integration-tested against. `health()` exercises a different service, so a
+server without the transaction RPCs passes the health check and then refuses
+`transaction()`.
 
 Each statement reads the snapshot taken when the transaction began, so the
 transaction sees a stable view of the database plus its own uncommitted writes,
