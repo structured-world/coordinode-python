@@ -1763,3 +1763,66 @@ class TestCaughtIndeterminateCommitCleansUpOnNormalExit:
                 await tx.cypher("RETURN 1")
 
         asyncio.run(_inner())
+
+
+class TestSyncCaughtIndeterminateCommitCleansUpOnNormalExit:
+    """Sync mirror of the async normal-exit rule: a manual commit() that
+    fails ambiguously and is caught inside the block leaves the transaction
+    indeterminate; the context exit must still send the bounded best-effort
+    cleanup in case the commit never reached the server."""
+
+    def test_normal_exit_sends_cleanup_and_keeps_the_verdict(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        client = _sync_client(
+            CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED))
+        )
+        with client.transaction() as tx:
+            tx.cypher("CREATE (:A)")
+            with ctx_suppress(grpc.RpcError):
+                tx.commit()
+        assert client._async._cypher_stub.RollbackTransaction.await_count == 1, (
+            "a caught ambiguous commit left the server transaction to the idle sweep"
+        )
+        with pytest.raises(RuntimeError, match="outcome is unknown"):
+            tx.cypher("RETURN 1")
+
+
+class TestRepeatedRollbackRetriesUnconfirmedCleanup:
+    """rollback() on an aborted handle must not settle into rolled_back while
+    the cleanup remains unconfirmed: a retry that itself failed would
+    otherwise report success and lock out every later retry, leaving the
+    server transaction to the idle sweep even after connectivity recovers."""
+
+    def test_state_settles_only_after_a_confirmed_cleanup(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            rollback = AsyncMock(
+                side_effect=[
+                    _TransportError(grpc.StatusCode.UNAVAILABLE),
+                    _TransportError(grpc.StatusCode.UNAVAILABLE),
+                    cypher_pb2.RollbackTransactionResponse(),
+                ]
+            )
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang), RollbackTransaction=rollback)
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await in_flight.wait()
+            stmt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stmt
+            await asyncio.sleep(0.01)  # the detached cleanup runs and fails (1st call)
+            await tx.rollback()  # the retry fails too (2nd call); must stay retriable
+            await tx.rollback()  # this retry succeeds (3rd call)
+            assert client._cypher_stub.RollbackTransaction.await_count == 3
+            await client.close()
+
+        asyncio.run(_inner())

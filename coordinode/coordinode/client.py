@@ -583,6 +583,14 @@ class AsyncTransaction:
             # since, so the cleanup is retried here before settling.
             if not self._cleanup_confirmed:
                 await self._best_effort_rollback()
+                if not self._cleanup_confirmed:
+                    # The retry failed too. The discard promise still holds
+                    # (no commit was ever sent), but the server may hold the
+                    # transaction until its idle sweep — so stay "aborted",
+                    # keeping a later explicit rollback() able to retry once
+                    # connectivity recovers, instead of settling into a
+                    # state that refuses to.
+                    return
             self._state = "rolled_back"
             return
         self._require_open("roll back")
@@ -1703,6 +1711,13 @@ class CoordinodeClient:
                         with suppress(BaseException):
                             self._run(tx._inner._best_effort_rollback())
                     raise
+            elif tx._inner._state == "indeterminate":
+                # Mirrors the async context manager's normal-exit path: a
+                # manual commit() that failed ambiguously and was CAUGHT
+                # inside the block still gets the bounded best-effort
+                # cleanup, with the indeterminate verdict preserved.
+                with suppress(BaseException):
+                    self._run(tx._inner._best_effort_rollback())
 
     def vector_search(
         self,
