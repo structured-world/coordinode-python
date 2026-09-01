@@ -14,6 +14,7 @@ from typing import Any
 import grpc
 import grpc.aio
 
+from coordinode import _source
 from coordinode._types import (
     PyValue,
     dict_to_props,
@@ -133,6 +134,24 @@ def _make_channel(host: str, port: int, tls: bool) -> grpc.Channel:
     if tls:
         return grpc.secure_channel(target, grpc.ssl_channel_credentials())
     return grpc.insecure_channel(target)
+
+
+async def _execute_cypher(
+    stub: Any,
+    req: Any,
+    timeout: float,
+    metadata: tuple[tuple[str, str], ...],
+) -> Any:
+    """Send one ExecuteCypher, carrying *metadata* only when there is some.
+
+    The argument is omitted rather than passed empty so that a client with
+    source tracking off makes exactly the call it made before the feature
+    existed. An opt-in feature should be invisible until it is opted into,
+    down to the shape of the call.
+    """
+    if metadata:
+        return await stub.ExecuteCypher(req, timeout=timeout, metadata=metadata)
+    return await stub.ExecuteCypher(req, timeout=timeout)
 
 
 def _make_async_channel(host: str, port: int, tls: bool) -> grpc.aio.Channel:
@@ -504,6 +523,8 @@ class AsyncTransaction:
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
+        *,
+        _source_location: _source.SourceLocation | None = None,
     ) -> list[dict[str, Any]]:
         """Run one statement inside this transaction and return its rows.
 
@@ -536,13 +557,21 @@ class AsyncTransaction:
             parameters=dict_to_props(params or {}),
             transaction_id=self._id,
         )
+        # Read while this method's caller is still on the stack, which is what
+        # the helper's frame arithmetic counts on.
+        metadata = self._client._source_metadata(_source_location)
         # Transition BEFORE the await, mirroring commit(): a concurrent
         # commit slipping in while this statement is in flight could land
         # without the statement's write, and the statement's late "unknown
         # transaction" failure would then overwrite the real outcome.
         self._state = "executing"
         try:
-            resp = await self._client._cypher_stub.ExecuteCypher(req, timeout=self._client._timeout)
+            resp = await _execute_cypher(
+                self._client._cypher_stub,
+                req,
+                self._client._timeout,
+                metadata,
+            )
         except grpc.RpcError:
             # Always attempt the cleanup, without classifying the failure.
             # Whether the server processed the statement decides only whether
@@ -808,6 +837,15 @@ class AsyncCoordinodeClient:
         # Also accepts separate host and port:
         async with AsyncCoordinodeClient("localhost", port=7080) as client:
             ...
+
+    Pass ``debug_source_tracking=True`` to send the file, line and function
+    each query was written at. The server's advisor groups its statistics by
+    query shape, so this is what lets it point at the line that wrote the slow
+    one instead of only the text, which a dozen call sites usually share.
+    ``app_name`` and ``app_version`` ride along with it, naming the service the
+    query came from when several share a database. It is off by default and
+    costs nothing while off, so turn it on where you are looking, not
+    everywhere: what it sends is your source paths.
     """
 
     def __init__(
@@ -817,6 +855,9 @@ class AsyncCoordinodeClient:
         *,
         tls: bool = False,
         timeout: float = 30.0,
+        debug_source_tracking: bool = False,
+        app_name: str = "",
+        app_version: str = "",
     ) -> None:
         # Support "host:port" as a single string (common gRPC convention).
         # _HOST_PORT_RE matches "hostname:port" and "[IPv6]:port" but not bare
@@ -838,6 +879,12 @@ class AsyncCoordinodeClient:
         self._port = port
         self._tls = tls
         self._timeout = timeout
+        # Off by default, and off is free: no frame is read and no metadata is
+        # built unless somebody asked for the attribution.
+        self._source_tracking = debug_source_tracking
+        # Constant for the life of the client, so it is built here rather than
+        # rebuilt for every query.
+        self._app_identity = _source.identity(app_name, app_version)
         self._channel: grpc.aio.Channel | None = None
         # Detached cleanup tasks spawned by cancellation handlers, referenced
         # here until done (an unreferenced task can be garbage-collected
@@ -859,6 +906,27 @@ class AsyncCoordinodeClient:
 
     async def __aexit__(self, *_: Any) -> None:
         await self.close()
+
+    def _source_metadata(
+        self,
+        location: _source.SourceLocation | None,
+    ) -> tuple[tuple[str, str], ...]:
+        """gRPC metadata naming the call site, empty unless tracking is on.
+
+        Call this DIRECTLY from the query method whose caller is to be
+        attributed: with no location supplied it reads the frame two levels up,
+        which is this helper, then the query method, then the caller. The
+        synchronous client supplies one instead, because by the time the
+        coroutine it wrapped runs, the frame that called it is gone.
+        """
+        if not self._source_tracking:
+            return ()
+        if location is None:
+            # Two frames up from here: the query method, then its caller.
+            location = _source.capture(2)
+        if location is None or not _source.is_call_site(location):
+            return ()
+        return _source.to_metadata(location, self._app_identity)
 
     async def connect(self) -> None:
         # A reconnect must not race an in-flight shutdown: when it resumes,
@@ -955,6 +1023,7 @@ class AsyncCoordinodeClient:
         read_preference: str | None = None,
         after_index: int | None = None,
         at_timestamp: int | None = None,
+        _source_location: _source.SourceLocation | None = None,
     ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts.
 
@@ -1022,7 +1091,12 @@ class AsyncCoordinodeClient:
             req.write_concern.CopyFrom(_make_write_concern(write_concern))
         if read_preference is not None:
             req.read_preference = _make_read_preference(read_preference)
-        resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
+        resp = await _execute_cypher(
+            self._cypher_stub,
+            req,
+            self._timeout,
+            self._source_metadata(_source_location),
+        )
         return _rows_to_dicts(resp)
 
     def _reclaim_cancelled_begin(self, begin: asyncio.Task[Any]) -> None:
@@ -1822,7 +1896,12 @@ class Transaction:
     ) -> list[dict[str, Any]]:
         """Run one statement inside this transaction. See :meth:`AsyncTransaction.cypher`."""
         try:
-            return self._client._run(self._inner.cypher(query, params))  # type: ignore[no-any-return]
+            # Read before the coroutine is handed to the loop, for the reason
+            # given on _caller_location.
+            location = self._client._caller_location()
+            return self._client._run(  # type: ignore[no-any-return]
+                self._inner.cypher(query, params, _source_location=location)
+            )
         except BaseException as exc:
             # An interruption raised INSIDE the stepping coroutine (Ctrl-C
             # delivered mid-call) completes the task before _run() can
@@ -1870,6 +1949,9 @@ class CoordinodeClient:
         with CoordinodeClient("localhost:7080") as client:
             rows = client.cypher("MATCH (n:Person) RETURN n.name LIMIT 5")
             print(rows)  # [{"n.name": "Alice"}, ...]
+
+    Takes ``debug_source_tracking``, ``app_name`` and ``app_version`` as
+    :class:`AsyncCoordinodeClient` does; see there.
     """
 
     def __init__(
@@ -1879,8 +1961,19 @@ class CoordinodeClient:
         *,
         tls: bool = False,
         timeout: float = 30.0,
+        debug_source_tracking: bool = False,
+        app_name: str = "",
+        app_version: str = "",
     ) -> None:
-        self._async = AsyncCoordinodeClient(host, port, tls=tls, timeout=timeout)
+        self._async = AsyncCoordinodeClient(
+            host,
+            port,
+            tls=tls,
+            timeout=timeout,
+            debug_source_tracking=debug_source_tracking,
+            app_name=app_name,
+            app_version=app_version,
+        )
         self._loop = asyncio.new_event_loop()
         self._connected = False
 
@@ -1900,6 +1993,19 @@ class CoordinodeClient:
             self._connected = False
         if not self._loop.is_closed():
             self._loop.close()
+
+    def _caller_location(self) -> _source.SourceLocation | None:
+        """The call site of the synchronous method that calls this, or ``None``.
+
+        Call it DIRECTLY from that method: the frame two levels up is this
+        helper, then the method, then the caller to attribute. It exists
+        because the synchronous API hands a coroutine to the loop, and the
+        coroutine's own view of who called it is the loop by then.
+        """
+        if not self._async._source_tracking:
+            return None
+        # Two frames up from here: the synchronous method, then its caller.
+        return _source.capture(2)
 
     def _run(self, coro: Any) -> Any:
         if self._loop.is_closed():
@@ -1949,6 +2055,10 @@ class CoordinodeClient:
                 read_preference=read_preference,
                 after_index=after_index,
                 at_timestamp=at_timestamp,
+                # Read here rather than inside the coroutine: the coroutine
+                # body runs from the event loop, by which time the frame that
+                # called this method has already returned.
+                _source_location=self._caller_location(),
             )
         )
 

@@ -140,6 +140,34 @@ Three constraints are worth knowing before holding a transaction open:
   calls on it say so, and `rollback()` raises instead of promising a discard.
   Verify the data rather than blindly retrying, which can duplicate the writes.
 
+## Finding the Slow Query's Author
+
+The server's query advisor groups what it measures by the shape of the query,
+which is why its report can name a statement but not the place that wrote it:
+one line of Cypher usually has a dozen call sites. Turn on source tracking and
+each query carries the file, line and function it was written at, so the report
+names the line instead.
+
+```python
+client = CoordinodeClient(
+    "localhost:7080",
+    debug_source_tracking=True,
+    app_name="feed-service",     # optional, for when services share a database
+    app_version="2.1.0",
+)
+```
+
+It is off by default and free while off: no frame is read and the request goes
+out exactly as it would have. Turn it on where you are looking rather than
+everywhere, because what it sends is the paths of your source files.
+
+One case reports nothing rather than guessing. A query handed to
+`asyncio.create_task` runs after the frame that created it has returned, so its
+call site is genuinely gone by then; the alternative would be reporting an
+event-loop line, which the advisor would fill with the queries of every
+unrelated task that took the same path. `await client.cypher(...)` and the
+synchronous client both report normally.
+
 ## LangChain — GraphRAG Pipeline
 
 ```python
