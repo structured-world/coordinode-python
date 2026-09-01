@@ -339,6 +339,10 @@ class AsyncTransaction:
         If the event loop stops before it runs, the server's idle sweep
         remains the backstop, which is exactly what best-effort means.
         """
+        if self._client._closing:
+            # The channel is (about to be) gone: a spawn now could only fail
+            # against it. The server's idle sweep collects the transaction.
+            return
         pending = self._client._pending_cleanups
         task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
         pending.add(task)
@@ -579,6 +583,10 @@ class AsyncCoordinodeClient:
         # mid-flight) and drained by close() BEFORE the channel goes away, so
         # a cleanup never races the transport it needs.
         self._pending_cleanups: set[asyncio.Task[None]] = set()
+        # Set once close() has finished draining: later cancellations forfeit
+        # their cleanup to the server's idle sweep instead of spawning a task
+        # that could only fail against the closed channel.
+        self._closing = False
 
     async def __aenter__(self) -> AsyncCoordinodeClient:
         await self.connect()
@@ -588,6 +596,7 @@ class AsyncCoordinodeClient:
         await self.close()
 
     async def connect(self) -> None:
+        self._closing = False
         self._channel = _make_async_channel(self._host, self._port, self._tls)
         self._cypher_stub = _cypher_stub(self._channel)
         self._vector_stub = _vector_stub(self._channel)
@@ -607,11 +616,18 @@ class AsyncCoordinodeClient:
         # spawned, so the loop ends as soon as callers stop cancelling work.
         while self._pending_cleanups:
             batch = list(self._pending_cleanups)
-            await asyncio.gather(*batch, return_exceptions=True)
+            # Shielded: cancelling close() itself must not take the in-flight
+            # cleanups down with it — they finish detached (still referenced
+            # by the set) while the cancellation propagates to the caller.
+            await asyncio.shield(asyncio.gather(*batch, return_exceptions=True))
             # Removed explicitly rather than trusting the done-callbacks:
             # awaiting an already-finished task does not yield to the loop,
             # so the callbacks may not have run yet and the while would spin.
             self._pending_cleanups.difference_update(batch)
+        # From here on the transport is going away: a statement cancelled
+        # later must not spawn a cleanup that could only fail against the
+        # closed channel — the server's idle sweep is the backstop for those.
+        self._closing = True
         if self._channel:
             await self._channel.close()
             self._channel = None
@@ -753,10 +769,25 @@ class AsyncCoordinodeClient:
                 # still pending and resurfaces at its next await.
                 with suppress(Exception, asyncio.CancelledError):
                     await tx.rollback()
+            elif tx._state == "indeterminate":
+                # The commit may never have REACHED the server, leaving the
+                # transaction open there with the caller gone. The bounded
+                # best-effort request frees it in that case; if the commit
+                # applied, the server answers "unknown id" and nothing
+                # changes. The verdict stays indeterminate either way.
+                with suppress(asyncio.CancelledError):
+                    await tx._best_effort_rollback()
             raise
         else:
             if tx.is_open:
-                await tx.commit()
+                try:
+                    await tx.commit()
+                except BaseException:
+                    if tx._state == "indeterminate":
+                        # Same reasoning as above, for the automatic commit.
+                        with suppress(asyncio.CancelledError):
+                            await tx._best_effort_rollback()
+                    raise
 
     async def vector_search(
         self,
@@ -1399,7 +1430,26 @@ class CoordinodeClient:
         if not self._connected:
             self._loop.run_until_complete(self._async.connect())
             self._connected = True
-        return self._loop.run_until_complete(coro)
+        # Driven through an explicit task so an interruption at the loop
+        # boundary (Ctrl-C escapes run_until_complete while the task is still
+        # pending) can cancel and DRAIN it. Left pending, the task would
+        # silently resume inside the next _run() call, racing a statement the
+        # caller believes interrupted against whatever runs next; cancelling
+        # it also fires the async cancellation handlers, so a transaction
+        # statement closes its handle exactly as it does under async
+        # cancellation.
+        task = self._loop.create_task(coro)
+        try:
+            return self._loop.run_until_complete(task)
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                # Swallows the CancelledError (and a second interrupt in this
+                # short window): the exception the caller sees is the
+                # interruption that started this.
+                with suppress(BaseException):
+                    self._loop.run_until_complete(task)
+            raise
 
     def cypher(
         self,
@@ -1451,10 +1501,23 @@ class CoordinodeClient:
                 # block's own exception.
                 with suppress(Exception, asyncio.CancelledError):
                     tx.rollback()
+            elif tx._inner._state == "indeterminate":
+                # Mirrors the async context manager: the commit may never
+                # have reached the server, so the bounded best-effort request
+                # frees the transaction in that case without touching the
+                # indeterminate verdict.
+                with suppress(BaseException):
+                    self._run(tx._inner._best_effort_rollback())
             raise
         else:
             if tx.is_open:
-                tx.commit()
+                try:
+                    tx.commit()
+                except BaseException:
+                    if tx._inner._state == "indeterminate":
+                        with suppress(BaseException):
+                            self._run(tx._inner._best_effort_rollback())
+                    raise
 
     def vector_search(
         self,
