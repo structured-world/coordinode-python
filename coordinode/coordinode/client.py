@@ -744,6 +744,24 @@ class AsyncTransaction:
             self._state = "aborted"
             self._spawn_cleanup()
             raise
+        except grpc.RpcError as exc:
+            # NOT_FOUND means the server holds nothing under this id, which
+            # for a transaction that was never committed is the discard this
+            # method promises, already done — most often by the idle sweep
+            # reclaiming a long-open transaction. Reporting that as a failure
+            # would send the caller back for a second rollback that can only
+            # be answered the same way. Every other code leaves the request's
+            # fate unknown and falls through to the retriable handling below.
+            with suppress(Exception):
+                if exc.code() == grpc.StatusCode.NOT_FOUND:
+                    self._cleanup_confirmed = True
+                    self._state = "rolled_back"
+                    return
+            self._state = "aborted"
+            self._cleanup_confirmed = False
+            if self._abandoned:
+                self._spawn_cleanup()
+            raise
         except BaseException:
             # The request may never have arrived: the discard promise still
             # holds (no commit was ever sent), but the server may hold the

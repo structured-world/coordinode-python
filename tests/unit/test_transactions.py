@@ -2557,6 +2557,29 @@ class TestUnknownTransactionAnswerConfirmsCleanup:
 
         asyncio.run(_inner())
 
+    def test_not_found_settles_a_direct_rollback(self):
+        """A transaction the idle sweep already reclaimed answers the
+        caller's own rollback() with NOT_FOUND. Nothing is held and no
+        commit was ever sent, so the discard the method promises is a fact,
+        not a failure: it must return and settle the handle terminally,
+        rather than leaving an "aborted" one a second call would retry."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                RollbackTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.NOT_FOUND)),
+            )
+            tx = await client.begin_transaction()
+            await tx.rollback()
+            assert tx._state == "rolled_back", "a settled discard reported as an unfinished one"
+            assert tx._cleanup_confirmed is True
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+            # Terminal, so nothing is left for a later call to re-send.
+            with pytest.raises(RuntimeError, match="already rolled back"):
+                await tx.rollback()
+
+        asyncio.run(_inner())
+
 
 class TestCancelledBeginReclaimerIsBounded:
     """The reclaimer that collects a cancelled begin's late reply must be
