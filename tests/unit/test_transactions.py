@@ -2556,3 +2556,86 @@ class TestUnknownTransactionAnswerConfirmsCleanup:
             assert client._cypher_stub.RollbackTransaction.await_count == 1, "redundant cleanup retry"
 
         asyncio.run(_inner())
+
+
+class TestCancelledBeginReclaimerIsBounded:
+    """The reclaimer that collects a cancelled begin's late reply must be
+    bounded by the cleanup deadline: close() drains it before releasing the
+    transport, so an unbounded wait would stall shutdown for the whole
+    request timeout on a stalled server."""
+
+    def test_close_does_not_stall_on_a_hanging_begin(self):
+        from unittest.mock import AsyncMock, patch
+
+        async def _inner() -> None:
+            started = asyncio.Event()
+
+            async def hanging_begin(req, timeout=None):
+                started.set()
+                await asyncio.sleep(30)
+                return cypher_pb2.BeginTransactionResponse(transaction_id=42)
+
+            # Patched for the whole scope: the reclaimer reads the deadline
+            # when it first runs, which is already during the cancellation.
+            with patch("coordinode.client._CLEANUP_TIMEOUT_SECS", 0.1):
+                client = _async_client(BeginTransaction=AsyncMock(side_effect=hanging_begin))
+                t = asyncio.create_task(client.begin_transaction())
+                await started.wait()
+                t.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await t
+                await asyncio.wait_for(client.close(), timeout=2)
+
+        asyncio.run(_inner())
+
+
+class TestInFlightRollbackBlocksContextExit:
+    """A rollback started in a background task and still awaiting the server
+    when the block exits must be caught by the in-flight guard: reporting a
+    successful exit would let the RPC settle after the owning scope is gone,
+    with a close or a late failure stranding the server transaction."""
+
+    def test_exiting_with_a_rollback_in_flight_raises(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=hang))
+            bg = None
+            with pytest.raises(RuntimeError, match="in flight"):
+                async with client.transaction() as tx:
+                    bg = asyncio.create_task(tx.rollback())
+                    await in_flight.wait()
+            bg.cancel()
+            with ctx_suppress(asyncio.CancelledError):
+                await bg
+
+        asyncio.run(_inner())
+
+
+class TestTransportCancelledCleanupKeepsTheStatementError:
+    """A CancelledError raised by the TRANSPORT during the inline cleanup,
+    with no cancellation pending on the task, must not replace the
+    statement's own gRPC failure: only a real caller cancellation
+    supersedes it."""
+
+    def test_statement_error_survives_a_spurious_cleanup_cancellation(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_ServerRejected()),
+                RollbackTransaction=AsyncMock(side_effect=asyncio.CancelledError()),
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_ServerRejected):
+                await tx.cypher("CREATE (:A)")
+            assert tx._state == "aborted"
+
+        asyncio.run(_inner())

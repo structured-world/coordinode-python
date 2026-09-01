@@ -64,6 +64,17 @@ _DEFINITIVE_REJECTION_CODES = frozenset(
 )
 
 
+# The transient states an operation passes through while its RPC is in
+# flight, mapped to what to call the operation in a message. A handle in one
+# of these is neither open nor settled: nothing else may run on it, and a
+# context manager exiting over one is exiting over unfinished work.
+_IN_FLIGHT_STATES = {
+    "executing": "statement",
+    "committing": "commit",
+    "rolling_back": "rollback",
+}
+
+
 def _rpc_outcome_is_ambiguous(exc: grpc.RpcError) -> bool:
     """Whether this failure leaves the server's state unknowable.
 
@@ -331,8 +342,8 @@ class AsyncTransaction:
     def _require_open(self, action: str) -> None:
         if self._state == "open":
             return
-        if self._state in ("committing", "executing"):
-            in_flight = "commit" if self._state == "committing" else "statement"
+        if self._state in _IN_FLIGHT_STATES:
+            in_flight = _IN_FLIGHT_STATES[self._state]
             raise RuntimeError(
                 f"Cannot {action} this transaction: a {in_flight} on it is already in "
                 "flight. Concurrent operations on one transaction handle would race "
@@ -481,9 +492,14 @@ class AsyncTransaction:
             except asyncio.CancelledError:
                 # A cancellation landing DURING the inline cleanup would lose
                 # it (the handle is already closed, nothing retries later):
-                # detach a fresh attempt, then honour the cancellation.
+                # detach a fresh attempt. Only a REAL pending cancellation of
+                # this task then supersedes the statement's own failure; a
+                # CancelledError raised by the transport itself (a closing
+                # channel) must not replace the error the caller needs.
                 self._spawn_cleanup()
-                raise
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
             raise
         except asyncio.CancelledError:
             # Cancellation is a BaseException, so the handler above never sees
@@ -650,15 +666,17 @@ class AsyncTransaction:
             self._state = "rolled_back"
             return
         self._require_open("roll back")
-        # Terminal before the call, not after it. If the request is lost the
+        # Closed before the call, not after it. If the request is lost the
         # server may hold the transaction until the idle sweep, but no commit
         # was ever sent, so nothing of it can apply and the discard this method
         # promises still holds. What must not happen is the handle staying
         # usable: a caller who asked to discard should not be able to add
         # another statement, or commit, because their rollback did not land.
         # The failure still propagates, so they know the request did not
-        # arrive.
-        self._state = "rolled_back"
+        # arrive. The state is transient rather than terminal until the RPC
+        # settles, so a context manager exiting over a rollback still in
+        # flight sees an in-flight operation rather than a finished one.
+        self._state = "rolling_back"
         try:
             await self._client._cypher_stub.RollbackTransaction(
                 RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
@@ -680,7 +698,11 @@ class AsyncTransaction:
             # the failure propagates so the caller knows it did not land.
             self._state = "aborted"
             self._cleanup_confirmed = False
+            if self._abandoned:
+                # The owning scope is gone; nobody is left to retry.
+                self._spawn_cleanup()
             raise
+        self._state = "rolled_back"
 
 
 class AsyncCoordinodeClient:
@@ -924,7 +946,12 @@ class AsyncCoordinodeClient:
 
         async def _reclaim() -> None:
             with suppress(Exception):
-                resp = await begin
+                # Bounded by the cleanup deadline, not the request timeout:
+                # close() drains this before releasing the transport, and a
+                # stalled begin must not hold shutdown for the whole 30
+                # seconds. wait_for cancels the begin on expiry; whatever the
+                # server may have allocated then falls to its idle sweep.
+                resp = await asyncio.wait_for(begin, timeout=min(_CLEANUP_TIMEOUT_SECS, self._timeout))
                 if resp.transaction_id != 0:
                     await AsyncTransaction(self, resp.transaction_id)._best_effort_rollback()
 
@@ -1017,7 +1044,7 @@ class AsyncCoordinodeClient:
                 # bounded cleanup — the verdict stays indeterminate either
                 # way, and the cancellation is not held up.
                 tx._spawn_cleanup()
-            elif tx._state in ("executing", "committing"):
+            elif tx._state in _IN_FLIGHT_STATES:
                 # An operation started in a background task is still in
                 # flight while this scope unwinds; it cannot be awaited or
                 # cancelled from here, so the straggler is marked to hand the
@@ -1082,7 +1109,7 @@ class AsyncCoordinodeClient:
                     # propagate.
                     tx._spawn_cleanup()
                     raise
-            elif tx._state in ("executing", "committing"):
+            elif tx._state in _IN_FLIGHT_STATES:
                 # The block raised while an operation it started (in a
                 # background task) is still in flight. Raising over the
                 # block's own error would mask it, and the operation cannot
@@ -1110,13 +1137,13 @@ class AsyncCoordinodeClient:
                     raise
             raise
         else:
-            if tx._state in ("executing", "committing"):
+            if tx._state in _IN_FLIGHT_STATES:
                 # The block exited while an operation it started (in a
                 # background task) is still in flight: reporting a successful
                 # exit then would let that operation race an owner that has
                 # already returned — buffered writes and a pinned snapshot can
                 # outlive the block unnoticed. Surface the misuse instead.
-                in_flight = "commit" if tx._state == "committing" else "statement"
+                in_flight = _IN_FLIGHT_STATES[tx._state]
                 # The raise below leaves the scope with the operation still
                 # running; the straggler hands the transaction to cleanup on
                 # completion, same as on an exceptional exit.
