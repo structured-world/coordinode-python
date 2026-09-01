@@ -2415,3 +2415,43 @@ class TestCancelledBeginReclaimsTheAllocation:
             assert rollback.await_args.args[0].transaction_id == 42
 
         asyncio.run(_inner())
+
+
+class TestCancelledAbortedRetrySpawnsCleanup:
+    """The aborted-branch retry in rollback(), cancelled mid-RPC, must hand
+    the cleanup to a detached task like the indeterminate and open branches
+    already do: a direct caller has no exit handler to retry for it."""
+
+    def test_cancelled_aborted_retry_gets_detached_cleanup(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            retry_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise _TransportError(grpc.StatusCode.UNAVAILABLE)
+                if calls["n"] == 2:
+                    retry_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_ServerRejected()),
+                RollbackTransaction=AsyncMock(side_effect=rollback),
+            )
+            tx = await client.begin_transaction()
+            with ctx_suppress(grpc.RpcError):
+                await tx.cypher("CREATE (:A)")  # aborts; its cleanup fails (1st call)
+            t = asyncio.create_task(tx.rollback())  # aborted branch retries (2nd call)
+            await retry_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry (3rd call)
+            assert calls["n"] == 3, "a cancelled aborted-branch retry got no detached cleanup"
+
+        asyncio.run(_inner())

@@ -600,7 +600,15 @@ class AsyncTransaction:
             # server may still hold it, and connectivity may have recovered
             # since, so the cleanup is retried here before settling.
             if not self._cleanup_confirmed:
-                await self._best_effort_rollback()
+                try:
+                    await self._best_effort_rollback()
+                except asyncio.CancelledError:
+                    # Same rule as the open and indeterminate branches: a
+                    # direct caller has no exit handler to retry for it, so
+                    # the interrupted retry goes detached before the
+                    # cancellation propagates.
+                    self._spawn_cleanup()
+                    raise
                 if not self._cleanup_confirmed:
                     # The retry failed too. The discard promise still holds
                     # (no commit was ever sent), but the server may hold the
