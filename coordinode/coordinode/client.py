@@ -651,7 +651,14 @@ class AsyncCoordinodeClient:
         # incompatible with afterClusterTime". The concern that matters is the
         # read's, not the write's, because the fence is about which replicas
         # may answer, not about how the referenced write was acknowledged.
-        if after_index is not None and after_index > 0 and (read_concern or "").strip().lower() != "majority":
+        # The isinstance guard keeps a non-string read_concern (e.g. an int)
+        # on the ValueError path here, instead of crashing on `.strip()`
+        # before the concern validators get their chance to reject it.
+        if (
+            after_index is not None
+            and after_index > 0
+            and (not isinstance(read_concern, str) or read_concern.strip().lower() != "majority")
+        ):
             raise ValueError(
                 "after_index > 0 requires read_concern='majority': a causal read has to be "
                 "answered by a majority-acknowledged replica, or the referenced index may "
@@ -720,7 +727,12 @@ class AsyncCoordinodeClient:
             yield tx
         except BaseException:
             if tx.is_open:
-                with suppress(Exception):
+                # CancelledError included: it is a BaseException, so a plain
+                # Exception suppression would let a rollback cancelled on the
+                # way out REPLACE the error that caused the rollback. If the
+                # surrounding task is being cancelled, that cancellation is
+                # still pending and resurfaces at its next await.
+                with suppress(Exception, asyncio.CancelledError):
                     await tx.rollback()
             raise
         else:
@@ -1404,7 +1416,10 @@ class CoordinodeClient:
             yield tx
         except BaseException:
             if tx.is_open:
-                with suppress(Exception):
+                # CancelledError included, mirroring the async context
+                # manager: the cleanup's failure must never replace the
+                # block's own exception.
+                with suppress(Exception, asyncio.CancelledError):
                     tx.rollback()
             raise
         else:

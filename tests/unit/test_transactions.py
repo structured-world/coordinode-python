@@ -651,6 +651,18 @@ class TestCausalReadValidation:
 
         asyncio.run(_inner())
 
+    def test_a_non_string_read_concern_is_a_value_error_not_a_crash(self):
+        """The guard runs before the concern validators, so a non-string used
+        to crash it with AttributeError from `.strip()` instead of the clear
+        rejection every other invalid consistency value gets."""
+
+        async def _inner() -> None:
+            client = _async_client()
+            with pytest.raises(ValueError):
+                await client.cypher("MATCH (n) RETURN n", after_index=7, read_concern=1)
+
+        asyncio.run(_inner())
+
 
 # -- Failures that are not gRPC errors, and cleanup that must not be skipped ---
 
@@ -906,3 +918,28 @@ class TestCleanupDeadline:
             assert used < 30.0, f"cleanup must use a short deadline, got {used}"
 
         asyncio.run(_inner())
+
+
+class TestRollbackCancellationDoesNotMaskTheBlockError:
+    """A rollback cancelled on the way out of the context manager must not
+    replace the exception that caused the rollback: CancelledError is a
+    BaseException, so a plain `suppress(Exception)` let it through."""
+
+    def test_async_context_preserves_the_block_exception(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=asyncio.CancelledError()))
+            with pytest.raises(ValueError, match="the real problem"):
+                async with client.transaction():
+                    raise ValueError("the real problem")
+
+        asyncio.run(_inner())
+
+    def test_sync_context_preserves_the_block_exception(self):
+        from unittest.mock import AsyncMock
+
+        client = _sync_client(RollbackTransaction=AsyncMock(side_effect=asyncio.CancelledError()))
+        with pytest.raises(ValueError, match="the real problem"):
+            with client.transaction():
+                raise ValueError("the real problem")
