@@ -164,9 +164,10 @@ everywhere, because what it sends is the paths of your source files.
 The location is read when you call the method, not when the query runs, so
 concurrency does not lose it: `create_task`, `gather`, `wait_for`, `shield` and
 `TaskGroup` all start the coroutine long after the calling frame has returned,
-and all of them still report the line you wrote. A path or function name
-outside ASCII is escaped rather than sent raw, because gRPC refuses a
-non-ASCII header and would fail the query rather than the attribution.
+and all of them still report the line you wrote. Anything outside printable
+ASCII is escaped rather than sent raw — a non-ASCII path, but a newline or a
+tab just as much, since gRPC refuses those in a header too and would fail the
+query rather than the attribution.
 
 ## LangChain — GraphRAG Pipeline
 

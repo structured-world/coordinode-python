@@ -357,6 +357,24 @@ class TestWireContract:
         assert "render" in md["x-source-function"]
         assert md["x-source-line"] == "47"
 
+    def test_values_are_printable(self):
+        """ASCII alone is not the bar: gRPC refuses a control character in a
+        header value just as it refuses a non-ASCII one, and 0x7f with them.
+        An application name read from a file arrives with the trailing
+        newline, and a POSIX path may legally contain one, so this is the
+        likelier of the two ways to break every query."""
+        md = dict(
+            to_metadata(
+                SourceLocation(file="/app/feed\n.py", line=47, function="render\x00"),
+                identity("feed-service\n", "2.1.0\t"),
+            )
+        )
+        for value in md.values():
+            assert all(" " <= ch <= "~" for ch in value), repr(value)
+        assert "feed" in md["x-source-file"]
+        assert "render" in md["x-source-function"]
+        assert "feed-service" in md["x-source-app"]
+
     def test_identity_omits_what_was_not_given(self):
         assert identity("", "") == ()
         assert identity("feed-service", "") == (("x-source-app", "feed-service"),)

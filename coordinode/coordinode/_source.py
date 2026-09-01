@@ -105,20 +105,31 @@ def capture(levels_up: int) -> SourceLocation | None:
     )
 
 
-def _ascii(value: str) -> str:
-    """*value* with anything gRPC would refuse escaped out.
+def _header_safe(value: str) -> str:
+    """*value* with everything gRPC would refuse escaped out.
 
     A metadata key without the ``-bin`` suffix carries an HTTP/2 header value,
-    which must be ASCII, and gRPC enforces it on the client: a value with a
-    non-ASCII character fails the call before it is sent. Both of these can
-    hold one — a checkout under a non-ASCII path, and a function named in one,
-    which Python allows — so a debugging aid would become the reason every
-    query fails.
+    and gRPC enforces the permitted range on the client: a value outside
+    printable ASCII fails the call before it is sent, so an unescaped one
+    would make a debugging aid the reason every query fails.
+
+    The bar is printable ASCII, not ASCII. A newline, a tab, a NUL and 0x7f
+    are each refused the same way a non-ASCII character is, and the likeliest
+    source of one is mundane: an application name read from a file arrives
+    with the newline that ended it. A POSIX path may legally contain one too.
 
     Escaped rather than dropped, because an escaped path still names the file
     and still groups with itself in the advisor, which is the whole job.
     """
-    return value.encode("ascii", "backslashreplace").decode("ascii")
+    # Both checks are single scans in C, and together they say exactly
+    # "every character is in 0x20..0x7e": isascii rules out the rest of
+    # Unicode, isprintable rules out the control characters and 0x7f while
+    # counting the space as printable.
+    if value.isascii() and value.isprintable():
+        return value
+    return "".join(
+        ch if " " <= ch <= "~" else f"\\x{ord(ch):02x}" if ord(ch) < 0x100 else f"\\u{ord(ch):04x}" for ch in value
+    )
 
 
 def identity(app_name: str, app_version: str) -> tuple[tuple[str, str], ...]:
@@ -133,9 +144,9 @@ def identity(app_name: str, app_version: str) -> tuple[tuple[str, str], ...]:
     """
     pairs = []
     if app_name:
-        pairs.append(("x-source-app", _ascii(app_name)))
+        pairs.append(("x-source-app", _header_safe(app_name)))
     if app_version:
-        pairs.append(("x-source-version", _ascii(app_version)))
+        pairs.append(("x-source-version", _header_safe(app_version)))
     return tuple(pairs)
 
 
@@ -153,8 +164,8 @@ def to_metadata(
     if location is None:
         return ()
     return (
-        ("x-source-file", _ascii(location.file)),
+        ("x-source-file", _header_safe(location.file)),
         # The line is an integer, so its decimal form is ASCII already.
         ("x-source-line", str(location.line)),
-        ("x-source-function", _ascii(location.function)),
+        ("x-source-function", _header_safe(location.function)),
     ) + app_identity
