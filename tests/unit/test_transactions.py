@@ -845,3 +845,64 @@ class TestCommitFailureClassification:
                 await tx.cypher("RETURN 1")
 
         asyncio.run(_inner())
+
+
+class TestCleanupDrainOnClose:
+    """The detached cancellation cleanup must not race client shutdown: the
+    channel closing first would strand the transaction on the server."""
+
+    def test_close_awaits_spawned_cleanup_before_returning(self):
+        async def _inner() -> None:
+            from unittest.mock import AsyncMock
+
+            in_flight = asyncio.Event()
+            rollback_done = asyncio.Event()
+
+            async def never_answers(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            async def slow_rollback(req, timeout=None):
+                # Slower than a single event-loop turn: merely yielding once
+                # is not enough for this to finish, so the assertion below
+                # holds only if close() genuinely awaits the cleanup task.
+                await asyncio.sleep(0.05)
+                rollback_done.set()
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=never_answers),
+                RollbackTransaction=AsyncMock(side_effect=slow_rollback),
+            )
+            tx = await client.begin_transaction()
+            task = asyncio.create_task(tx.cypher("CREATE (:Person)"))
+            await in_flight.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await client.close()
+            assert rollback_done.is_set(), "close() returned before the cleanup finished"
+
+        asyncio.run(_inner())
+
+
+class TestCleanupDeadline:
+    """Best-effort cleanup must not double the caller's worst-case latency:
+    a statement that already burned the full RPC deadline would otherwise be
+    followed by a rollback burning another one, for a result nobody reads."""
+
+    def test_cleanup_rollback_uses_a_short_deadline_not_the_client_timeout(self):
+        async def _inner() -> None:
+            from unittest.mock import AsyncMock
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED))
+            )
+            client._timeout = 30.0
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("RETURN 1")
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+            used = client._cypher_stub.RollbackTransaction.call_args.kwargs["timeout"]
+            assert used < 30.0, f"cleanup must use a short deadline, got {used}"
+
+        asyncio.run(_inner())

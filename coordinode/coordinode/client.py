@@ -254,9 +254,12 @@ class TextIndexInfo:
 
 # ── Async client ─────────────────────────────────────────────────────────────
 
-# Detached cleanup tasks spawned from cancellation handlers, referenced here
-# until done so the event loop cannot garbage-collect them mid-flight.
-_PENDING_CLEANUPS: set[asyncio.Task[None]] = set()
+# Deadline for cleanup RPCs whose result nobody reads (the best-effort
+# rollback). Deliberately short and NOT the client's request timeout: cleanup
+# runs on paths that may already have burned the full deadline, and doubling
+# a 30-second worst case for an ignored answer helps no one. The server's
+# idle sweep remains the backstop when even this expires.
+_CLEANUP_TIMEOUT_SECS = 5.0
 
 
 class AsyncTransaction:
@@ -329,14 +332,17 @@ class AsyncTransaction:
         """Run :meth:`_best_effort_rollback` as a detached task.
 
         Used from cancellation handlers, where awaiting the rollback in place
-        would only be cancelled again. The task keeps itself referenced until
-        done (an unreferenced task can be garbage-collected mid-flight); if
-        the event loop closes before it runs, the server's idle sweep remains
-        the backstop, which is exactly what best-effort means.
+        would only be cancelled again. The task is tracked on the CLIENT so
+        that (a) it stays referenced until done — an unreferenced task can be
+        garbage-collected mid-flight — and (b) `close()` drains it before the
+        channel goes away, so the cleanup never races the transport it needs.
+        If the event loop stops before it runs, the server's idle sweep
+        remains the backstop, which is exactly what best-effort means.
         """
+        pending = self._client._pending_cleanups
         task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
-        _PENDING_CLEANUPS.add(task)
-        task.add_done_callback(_PENDING_CLEANUPS.discard)
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
     async def _best_effort_rollback(self) -> None:
         """Ask the server to drop the transaction, ignoring every failure.
@@ -354,7 +360,7 @@ class AsyncTransaction:
         with suppress(Exception):
             await self._client._cypher_stub.RollbackTransaction(
                 RollbackTransactionRequest(transaction_id=self._id),
-                timeout=self._client._timeout,
+                timeout=_CLEANUP_TIMEOUT_SECS,
             )
 
     async def cypher(
@@ -558,6 +564,11 @@ class AsyncCoordinodeClient:
         self._tls = tls
         self._timeout = timeout
         self._channel: grpc.aio.Channel | None = None
+        # Detached cleanup tasks spawned by cancellation handlers, referenced
+        # here until done (an unreferenced task can be garbage-collected
+        # mid-flight) and drained by close() BEFORE the channel goes away, so
+        # a cleanup never races the transport it needs.
+        self._pending_cleanups: set[asyncio.Task[None]] = set()
 
     async def __aenter__(self) -> AsyncCoordinodeClient:
         await self.connect()
@@ -576,6 +587,12 @@ class AsyncCoordinodeClient:
         self._health_stub = _health_stub(self._channel)
 
     async def close(self) -> None:
+        # Detached cancellation cleanups first: each is already bounded by
+        # the short cleanup deadline, so this cannot hang shutdown, and
+        # closing the channel under a cleanup in flight would strand its
+        # transaction on the server until the idle sweep.
+        if self._pending_cleanups:
+            await asyncio.gather(*self._pending_cleanups, return_exceptions=True)
         if self._channel:
             await self._channel.close()
             self._channel = None
