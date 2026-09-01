@@ -244,15 +244,68 @@ class TestNonCallSites:
         neighbour = f"{sdk_dir}-extra{os.sep}app.py"
         assert is_call_site(SourceLocation(file=neighbour, line=1, function="handler"))
 
-    def test_query_started_as_a_task_sends_nothing(self):
-        """A query handed to create_task runs after the frame that created it
-        has returned, so the location is genuinely unavailable. Sending the
-        event-loop frame instead would be a wrong answer, not a partial one."""
 
+class TestScheduledQueries:
+    """Everything that schedules the coroutine as a task runs its body after
+    the frame that wrote the query has returned. The location is therefore
+    read when the method is CALLED, which is the only moment every one of
+    these has in common."""
+
+    def test_create_task(self):
         async def _inner() -> None:
             client = _async_client(debug_source_tracking=True)
-            await asyncio.create_task(client.cypher("RETURN 1"))
-            assert _sent_metadata(client._cypher_stub.ExecuteCypher) == {}
+            task = asyncio.create_task(client.cypher("RETURN 1"))
+            expected_line = _inner.__code__.co_firstlineno + 2
+            await task
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_gather(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            await asyncio.gather(client.cypher("RETURN 1"))
+            expected_line = _inner.__code__.co_firstlineno + 2
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_wait_for(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            await asyncio.wait_for(client.cypher("RETURN 1"), timeout=5)
+            expected_line = _inner.__code__.co_firstlineno + 2
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_task_group(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(client.cypher("RETURN 1"))
+            expected_line = _inner.__code__.co_firstlineno + 3
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_transaction_statement_as_a_task(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            tx = await client.begin_transaction()
+            await asyncio.create_task(tx.cypher("CREATE (:A)"))
+            expected_line = _inner.__code__.co_firstlineno + 3
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
 
         asyncio.run(_inner())
 
@@ -283,6 +336,27 @@ class TestWireContract:
     def test_no_location_means_no_metadata(self):
         assert to_metadata(None, identity("feed-service", "2.1.0")) == ()
 
+    def test_values_are_ascii(self):
+        """gRPC rejects a non-ASCII value on a key without the -bin suffix,
+        and rejects it client-side: the query never reaches the server. A
+        checkout under a non-ASCII path, or a function named in one — Python
+        allows both — would otherwise turn tracking from a debugging aid into
+        the reason every query fails.
+        """
+        md = dict(
+            to_metadata(
+                SourceLocation(file="/home/пользователь/app.py", line=47, function="Лента.render"),
+                identity("сервис", "2.1.0"),
+            )
+        )
+        for key, value in md.items():
+            value.encode("ascii")  # raises if the value would be rejected
+        # Escaped rather than dropped: the path still identifies the file, so
+        # the advisor can still group by it and a person can still read it.
+        assert "app.py" in md["x-source-file"]
+        assert "render" in md["x-source-function"]
+        assert md["x-source-line"] == "47"
+
     def test_identity_omits_what_was_not_given(self):
         assert identity("", "") == ()
         assert identity("feed-service", "") == (("x-source-app", "feed-service"),)
@@ -308,6 +382,26 @@ class TestFailurePaths:
                 await client.cypher("RETURN 1")
 
         asyncio.run(_inner())
+
+    def test_a_refused_frame_read_is_not_an_error(self, monkeypatch):
+        """A hardened application can install an audit hook that refuses the
+        `sys._getframe` event, and the hook's exception comes out of the frame
+        read rather than the ValueError a short stack gives. Either way the
+        location is unavailable, and an unavailable location must not take the
+        query down with it."""
+        import coordinode._source as source_module
+
+        def _refused(_depth):
+            raise RuntimeError("audit hook refused sys._getframe")
+
+        # Scoped to the single call: this replaces the attribute on the `sys`
+        # module itself, which the logging machinery also reads to name the
+        # line a record came from, so the substitution must not outlive the
+        # one call under test.
+        with monkeypatch.context() as patched:
+            patched.setattr(source_module.sys, "_getframe", _refused, raising=False)
+            location = source_module.capture(1)
+        assert location is None
 
     def test_a_missing_frame_is_not_an_error(self, monkeypatch):
         """An interpreter with no Python-level frames, or a stack shorter than

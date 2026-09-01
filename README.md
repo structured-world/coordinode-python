@@ -161,12 +161,12 @@ It is off by default and free while off: no frame is read and the request goes
 out exactly as it would have. Turn it on where you are looking rather than
 everywhere, because what it sends is the paths of your source files.
 
-One case reports nothing rather than guessing. A query handed to
-`asyncio.create_task` runs after the frame that created it has returned, so its
-call site is genuinely gone by then; the alternative would be reporting an
-event-loop line, which the advisor would fill with the queries of every
-unrelated task that took the same path. `await client.cypher(...)` and the
-synchronous client both report normally.
+The location is read when you call the method, not when the query runs, so
+concurrency does not lose it: `create_task`, `gather`, `wait_for`, `shield` and
+`TaskGroup` all start the coroutine long after the calling frame has returned,
+and all of them still report the line you wrote. A path or function name
+outside ASCII is escaped rather than sent raw, because gRPC refuses a
+non-ASCII header and would fail the query rather than the attribution.
 
 ## LangChain — GraphRAG Pipeline
 

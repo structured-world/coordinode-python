@@ -80,8 +80,12 @@ def capture(levels_up: int) -> SourceLocation | None:
     answer a question about one of them.
 
     ``None`` comes back when the frame cannot be had — an interpreter with no
-    Python-level frame support, or a stack shorter than the walk. Tracking
-    goes quiet rather than failing a query over a debugging aid.
+    Python-level frame support, a stack shorter than the walk, or a hardened
+    application whose audit hook refuses the ``sys._getframe`` event and
+    raises whatever it likes in place of an answer. Every one of those is the
+    same thing to a caller: no location. None of them is worth failing a
+    query over, which is why the read is caught broadly rather than by the
+    ValueError a short stack happens to give.
     """
     getframe = getattr(sys, "_getframe", None)
     if getframe is None:
@@ -89,8 +93,7 @@ def capture(levels_up: int) -> SourceLocation | None:
     try:
         # +1 for this frame, which the caller counts from rather than into.
         frame: FrameType = getframe(levels_up + 1)
-    except ValueError:
-        # Asked for more stack than exists.
+    except Exception:
         return None
     code = frame.f_code
     return SourceLocation(
@@ -100,6 +103,22 @@ def capture(levels_up: int) -> SourceLocation | None:
         # name that says nothing about which class it belongs to.
         function=code.co_qualname,
     )
+
+
+def _ascii(value: str) -> str:
+    """*value* with anything gRPC would refuse escaped out.
+
+    A metadata key without the ``-bin`` suffix carries an HTTP/2 header value,
+    which must be ASCII, and gRPC enforces it on the client: a value with a
+    non-ASCII character fails the call before it is sent. Both of these can
+    hold one — a checkout under a non-ASCII path, and a function named in one,
+    which Python allows — so a debugging aid would become the reason every
+    query fails.
+
+    Escaped rather than dropped, because an escaped path still names the file
+    and still groups with itself in the advisor, which is the whole job.
+    """
+    return value.encode("ascii", "backslashreplace").decode("ascii")
 
 
 def identity(app_name: str, app_version: str) -> tuple[tuple[str, str], ...]:
@@ -114,9 +133,9 @@ def identity(app_name: str, app_version: str) -> tuple[tuple[str, str], ...]:
     """
     pairs = []
     if app_name:
-        pairs.append(("x-source-app", app_name))
+        pairs.append(("x-source-app", _ascii(app_name)))
     if app_version:
-        pairs.append(("x-source-version", app_version))
+        pairs.append(("x-source-version", _ascii(app_version)))
     return tuple(pairs)
 
 
@@ -134,7 +153,8 @@ def to_metadata(
     if location is None:
         return ()
     return (
-        ("x-source-file", location.file),
+        ("x-source-file", _ascii(location.file)),
+        # The line is an integer, so its decimal form is ASCII already.
         ("x-source-line", str(location.line)),
-        ("x-source-function", location.function),
+        ("x-source-function", _ascii(location.function)),
     ) + app_identity
