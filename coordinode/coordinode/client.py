@@ -482,6 +482,24 @@ class AsyncTransaction:
         except Exception:
             pass
 
+    async def _cleanup_preserving_outcome(self) -> None:
+        """Run the bounded cleanup where the outcome is already decided.
+
+        Every exit path that reaches here has something of its own to report:
+        the block's exception, or a clean exit. A cleanup failure is never
+        worth replacing that, so it stays swallowed. A REAL cancellation is
+        the exception, because asyncio does not re-inject a swallowed one and
+        silence would turn a cancelled exit into a successful-looking one; it
+        propagates, handing the interrupted request to a detached retry first
+        so the server transaction is still freed.
+        """
+        try:
+            await self._best_effort_rollback()
+        except asyncio.CancelledError:
+            self._spawn_cleanup()
+            if _caller_is_being_cancelled():
+                raise
+
     async def cypher(
         self,
         query: str,
@@ -1128,22 +1146,16 @@ class AsyncCoordinodeClient:
                 except Exception:
                     if not tx._cleanup_confirmed:
                         tx._spawn_cleanup()
-            elif tx._state == "indeterminate":
-                # The commit may never have REACHED the server, leaving the
-                # transaction open there with the caller gone. The bounded
-                # best-effort request frees it in that case; if the commit
-                # applied, the server answers "unknown id" and nothing
-                # changes. The verdict stays indeterminate either way.
-                try:
-                    await tx._best_effort_rollback()
-                except asyncio.CancelledError:
-                    # A real cancellation must propagate (asyncio does not
-                    # re-inject a swallowed one); a transport-raised one is
-                    # just a failed cleanup and must leave the block's own
-                    # error in place.
-                    tx._spawn_cleanup()
-                    if _caller_is_being_cancelled():
-                        raise
+            elif tx._state == "indeterminate" or (tx._state == "aborted" and not tx._cleanup_confirmed):
+                # Two ways to reach the same unfinished business. A lost
+                # commit reply may mean the commit never REACHED the server,
+                # leaving the transaction open there with the caller gone; a
+                # failed statement whose own cleanup also failed leaves it
+                # open for the same reason. Either way the bounded request
+                # frees it, and if there is nothing to free the server
+                # answers "unknown id" and nothing changes. The block's own
+                # exception, and an indeterminate verdict, stand untouched.
+                await tx._cleanup_preserving_outcome()
             elif tx._state in _IN_FLIGHT_STATES:
                 # The block raised while an operation it started (in a
                 # background task) is still in flight. Raising over the
@@ -1159,19 +1171,6 @@ class AsyncCoordinodeClient:
                 tx._abandoned = True
                 if tx._state == "committing":
                     tx._spawn_cleanup()
-            elif tx._state == "aborted" and not tx._cleanup_confirmed:
-                # The block caught a failed statement (whose own cleanup
-                # also failed) and raised a different error: same bounded
-                # retry as the normal-exit path, preserving the block's
-                # exception. A cancellation mid-retry propagates with a
-                # detached retry spawned; a transport-raised one does not
-                # replace the block's error.
-                try:
-                    await tx._best_effort_rollback()
-                except asyncio.CancelledError:
-                    tx._spawn_cleanup()
-                    if _caller_is_being_cancelled():
-                        raise
             raise
         else:
             # One loop turn before deciding anything: an operation the block
@@ -1239,45 +1238,15 @@ class AsyncCoordinodeClient:
                 except BaseException:
                     if tx._state == "indeterminate":
                         # Same reasoning as above, for the automatic commit.
-                        try:
-                            await tx._best_effort_rollback()
-                        except asyncio.CancelledError:
-                            # A real cancellation must propagate (asyncio
-                            # does not re-inject a swallowed one); a
-                            # transport-raised one is just a failed cleanup
-                            # and must leave the commit's error in place.
-                            tx._spawn_cleanup()
-                            if _caller_is_being_cancelled():
-                                raise
+                        await tx._cleanup_preserving_outcome()
                     raise
-            elif tx._state == "indeterminate":
-                # A manual commit() inside the block failed ambiguously and
-                # the block CAUGHT it, so the exit is normal: the request may
-                # never have reached the server, leaving the transaction open
-                # there. Same bounded best-effort cleanup as the exception
-                # path; the verdict stays indeterminate.
-                try:
-                    await tx._best_effort_rollback()
-                except asyncio.CancelledError:
-                    # Swallowing a REAL cancellation would turn a cancelled
-                    # exit into a successful-looking one — propagate it, and
-                    # hand the interrupted cleanup to a detached retry so the
-                    # server transaction is still freed. A transport-raised
-                    # one must not fail an otherwise clean exit.
-                    tx._spawn_cleanup()
-                    if _caller_is_being_cancelled():
-                        raise
-            elif tx._state == "aborted" and not tx._cleanup_confirmed:
-                # A failed statement (or manual rollback) whose own cleanup
-                # also failed, with the error caught inside the block: retry
-                # the bounded request on this normal exit, same rule as the
-                # exceptional and cancellation paths.
-                try:
-                    await tx._best_effort_rollback()
-                except asyncio.CancelledError:
-                    tx._spawn_cleanup()
-                    if _caller_is_being_cancelled():
-                        raise
+            elif tx._state == "indeterminate" or (tx._state == "aborted" and not tx._cleanup_confirmed):
+                # The exit is normal because the block CAUGHT the failure, but
+                # the transaction it left behind may still be held: a manual
+                # commit() whose reply was lost, or a failed statement whose
+                # own cleanup also failed. Same bounded request as the
+                # exception path, and the indeterminate verdict survives it.
+                await tx._cleanup_preserving_outcome()
 
     async def vector_search(
         self,
@@ -2048,18 +2017,14 @@ class CoordinodeClient:
                         with suppress(Exception, asyncio.CancelledError):
                             self._run(tx._inner._best_effort_rollback())
                     raise
-            elif tx._inner._state == "indeterminate":
-                # Mirrors the async context manager's normal-exit path: a
-                # manual commit() that failed ambiguously and was CAUGHT
-                # inside the block still gets the bounded best-effort
-                # cleanup, with the indeterminate verdict preserved.
-                with suppress(Exception, asyncio.CancelledError):
-                    self._run(tx._inner._best_effort_rollback())
-            elif tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed:
-                # Mirrors the async normal-exit rule: a failed statement (or
-                # manual rollback) whose own cleanup also failed, with the
-                # error caught inside the block, still gets the bounded
-                # retry here.
+            elif tx._inner._state == "indeterminate" or (
+                tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed
+            ):
+                # Mirrors the async context manager's normal-exit rule: a
+                # manual commit() that failed ambiguously, or a failed
+                # statement whose own cleanup also failed, still gets the
+                # bounded request when the block caught the error, with the
+                # indeterminate verdict preserved.
                 with suppress(Exception, asyncio.CancelledError):
                     self._run(tx._inner._best_effort_rollback())
 

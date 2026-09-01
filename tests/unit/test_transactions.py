@@ -2110,9 +2110,14 @@ class TestSyncContextRetriesSettledInterruptCleanup:
             raise KeyboardInterrupt
 
         client = _sync_client(ExecuteCypher=AsyncMock(side_effect=ki))
+        # The scope stays inside pytest.raises because its exit is what is
+        # under test: it must send the cleanup AND still let the interrupt
+        # through. The await count below pins where the interrupt came from,
+        # so a passing test cannot mean one raised by any other phase.
         with pytest.raises(KeyboardInterrupt):
             with client.transaction() as tx:
                 tx.cypher("CREATE (:A)")
+        assert client._async._cypher_stub.ExecuteCypher.await_count == 1
         assert tx._inner._state == "aborted"
         assert client._async._cypher_stub.RollbackTransaction.await_count >= 1, (
             "the interrupted sync transaction was left to the idle sweep"
