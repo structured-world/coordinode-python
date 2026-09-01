@@ -2311,3 +2311,107 @@ class TestSyncCommitCleanupInterruptPropagates:
         with pytest.raises(KeyboardInterrupt):
             with client.transaction() as tx:
                 tx.cypher("CREATE (:A)")
+
+
+class TestCancelledIndeterminateRollbackSpawnsRetry:
+    """rollback() on an indeterminate handle whose best-effort request is
+    cancelled mid-RPC must hand the cleanup to a detached retry before
+    propagating: a direct caller has no context manager to do it, and the
+    commit may never have reached the server."""
+
+    def test_cancelled_indeterminate_rollback_gets_detached_retry(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    rollback_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+                RollbackTransaction=AsyncMock(side_effect=rollback),
+            )
+            tx = await client.begin_transaction()
+            with ctx_suppress(grpc.RpcError):
+                await tx.commit()  # lands indeterminate
+            t = asyncio.create_task(tx.rollback())
+            await rollback_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry
+            assert calls["n"] == 2, "a cancelled indeterminate rollback got no retry"
+
+        asyncio.run(_inner())
+
+
+class TestAsyncInterruptUnwindDetachesTheRollback:
+    """An async block unwound by KeyboardInterrupt or SystemExit must not
+    hold the exit for the full request deadline: the cleanup goes detached
+    (bounded, drained at close) while the interrupt propagates."""
+
+    def test_interrupt_exit_does_not_wait_for_the_rollback(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_done = asyncio.Event()
+
+            async def slow_rollback(req, timeout=None):
+                await asyncio.sleep(0.2)
+                rollback_done.set()
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=slow_rollback))
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    raise KeyboardInterrupt
+
+            with pytest.raises(KeyboardInterrupt):
+                await run_block()
+            assert not rollback_done.is_set(), "the interrupt exit held for the inline rollback"
+            await client.close()
+            assert rollback_done.is_set(), "the detached cleanup never ran"
+
+        asyncio.run(_inner())
+
+
+class TestCancelledBeginReclaimsTheAllocation:
+    """Cancellation landing after the server allocated the transaction but
+    before the begin reply reaches the caller loses the handle entirely; the
+    late reply must be collected detached and handed straight to a rollback,
+    or the pinned snapshot survives until the idle sweep."""
+
+    def test_cancelled_begin_rolls_back_the_late_allocation(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            begin_started = asyncio.Event()
+            release_begin = asyncio.Event()
+
+            async def gated_begin(req, timeout=None):
+                begin_started.set()
+                await release_begin.wait()
+                return cypher_pb2.BeginTransactionResponse(transaction_id=42)
+
+            client = _async_client(BeginTransaction=AsyncMock(side_effect=gated_begin))
+            t = asyncio.create_task(client.begin_transaction())
+            await begin_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            release_begin.set()
+            await client.close()  # drains the reclaim task
+            rollback = client._cypher_stub.RollbackTransaction
+            assert rollback.await_count == 1, "the late begin reply was never reclaimed"
+            assert rollback.await_args.args[0].transaction_id == 42
+
+        asyncio.run(_inner())

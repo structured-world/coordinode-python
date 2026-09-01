@@ -578,7 +578,14 @@ class AsyncTransaction:
         if self._state == "indeterminate":
             # If the commit never reached the server this frees the
             # transaction; if it was applied, nothing can un-apply it.
-            await self._best_effort_rollback()
+            try:
+                await self._best_effort_rollback()
+            except asyncio.CancelledError:
+                # A direct caller has no context manager to retry for it:
+                # hand the interrupted cleanup to a detached task before the
+                # cancellation propagates.
+                self._spawn_cleanup()
+                raise
             raise RuntimeError(
                 "Cannot promise a rollback: the commit's reply was lost, so its writes "
                 "may already be applied. A rollback request was sent in case the commit "
@@ -867,6 +874,27 @@ class AsyncCoordinodeClient:
         resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
         return _rows_to_dicts(resp)
 
+    def _reclaim_cancelled_begin(self, begin: asyncio.Task[Any]) -> None:
+        """Collect the late reply of a cancelled begin and roll it back.
+
+        Tracked in the same pending set the cancellation cleanups use, so
+        close() drains it before the channel goes away; every failure is
+        best-effort-suppressed, with the server's idle sweep as backstop.
+        """
+        if self._closing:
+            return
+
+        async def _reclaim() -> None:
+            with suppress(Exception):
+                resp = await begin
+                if resp.transaction_id != 0:
+                    await AsyncTransaction(self, resp.transaction_id)._best_effort_rollback()
+
+        pending = self._pending_cleanups
+        task = asyncio.get_running_loop().create_task(_reclaim())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
     async def begin_transaction(self) -> AsyncTransaction:
         """Open an interactive transaction and return its handle.
 
@@ -882,7 +910,21 @@ class AsyncCoordinodeClient:
             BeginTransactionRequest,
         )
 
-        resp = await self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
+        # The begin RPC runs in its own task, shielded: cancellation landing
+        # after the server has ALLOCATED the transaction but before the reply
+        # reaches this frame would otherwise lose the only copy of the id —
+        # no handle, nothing for close() to drain, a pinned snapshot until
+        # the idle sweep. On cancellation the task keeps running detached and
+        # its late reply is handed straight to a rollback.
+        begin = asyncio.get_running_loop().create_task(
+            self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
+        )
+        try:
+            resp = await asyncio.shield(begin)
+        except asyncio.CancelledError:
+            if not begin.cancelled():
+                self._reclaim_cancelled_begin(begin)
+            raise
         if resp.transaction_id == 0:
             # Zero is what ExecuteCypherRequest uses for "no transaction", so a
             # zero handle would silently turn every statement of this
@@ -951,8 +993,16 @@ class AsyncCoordinodeClient:
                 # transaction. Retry detached before the scope is gone.
                 tx._spawn_cleanup()
             raise
-        except BaseException:
-            if tx.is_open:
+        except BaseException as exc:
+            if tx.is_open and not isinstance(exc, Exception):
+                # KeyboardInterrupt / SystemExit: the exit must not hold for
+                # the full request deadline on a stalled server. The handle
+                # closes and the cleanup goes detached (bounded, drained at
+                # close) while the interrupt propagates — mirroring the sync
+                # context manager.
+                tx._state = "aborted"
+                tx._spawn_cleanup()
+            elif tx.is_open:
                 # An ordinary rollback failure must never replace the error
                 # that caused the rollback — but a CANCELLATION landing
                 # mid-rollback propagates (asyncio does not re-inject a
