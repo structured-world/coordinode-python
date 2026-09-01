@@ -926,6 +926,11 @@ class AsyncCoordinodeClient:
                 tx._abandoned = True
                 if tx._state == "committing":
                     tx._spawn_cleanup()
+            elif tx._state == "aborted" and not tx._cleanup_confirmed:
+                # A manual rollback() cancelled mid-RPC: the request was
+                # interrupted, not answered, so the server may still hold the
+                # transaction. Retry detached before the scope is gone.
+                tx._spawn_cleanup()
             raise
         except BaseException:
             if tx.is_open:
@@ -942,8 +947,15 @@ class AsyncCoordinodeClient:
                 # best-effort request frees it in that case; if the commit
                 # applied, the server answers "unknown id" and nothing
                 # changes. The verdict stays indeterminate either way.
-                with suppress(asyncio.CancelledError):
+                try:
                     await tx._best_effort_rollback()
+                except asyncio.CancelledError:
+                    # Suppressing this would re-raise the block's error and
+                    # LOSE the cancellation — asyncio does not re-inject a
+                    # swallowed one. Spawn the detached retry and let it
+                    # propagate.
+                    tx._spawn_cleanup()
+                    raise
             elif tx._state in ("executing", "committing"):
                 # The block raised while an operation it started (in a
                 # background task) is still in flight. Raising over the
@@ -992,8 +1004,15 @@ class AsyncCoordinodeClient:
                 except BaseException:
                     if tx._state == "indeterminate":
                         # Same reasoning as above, for the automatic commit.
-                        with suppress(asyncio.CancelledError):
+                        try:
                             await tx._best_effort_rollback()
+                        except asyncio.CancelledError:
+                            # Suppressing this would re-raise the commit
+                            # error and LOSE the cancellation — asyncio does
+                            # not re-inject a swallowed one. Spawn the
+                            # detached retry and let it propagate.
+                            tx._spawn_cleanup()
+                            raise
                     raise
             elif tx._state == "indeterminate":
                 # A manual commit() inside the block failed ambiguously and
@@ -1586,15 +1605,19 @@ class Transaction:
         """Run one statement inside this transaction. See :meth:`AsyncTransaction.cypher`."""
         try:
             return self._client._run(self._inner.cypher(query, params))  # type: ignore[no-any-return]
-        except BaseException:
+        except BaseException as exc:
             # An interruption raised INSIDE the stepping coroutine (Ctrl-C
             # delivered mid-call) completes the task before _run() can
             # cancel-and-drain it, so no async handler closes the handle.
             # Mirror commit()'s conservative settlement: no commit was sent,
             # so nothing can apply — the handle closes as aborted, with the
             # cleanup unconfirmed so a later rollback() frees the server
-            # side. An outcome the inner handler already decided is kept.
-            if self._inner._state in ("open", "executing"):
+            # side. Only for REAL interruptions (non-Exception): a local
+            # failure such as an unsupported parameter type raises an
+            # ordinary Exception before any RPC and must leave the handle
+            # open, exactly as the async path does. An outcome the inner
+            # handler already decided is kept either way.
+            if not isinstance(exc, Exception) and self._inner._state in ("open", "executing"):
                 self._inner._state = "aborted"
                 self._inner._cleanup_confirmed = False
             raise

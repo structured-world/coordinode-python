@@ -1960,3 +1960,101 @@ class TestSyncStatementInterruptedInsideTheTask:
         # must send the cleanup rather than trusting one that never ran.
         tx.rollback()
         assert client._async._cypher_stub.RollbackTransaction.await_count == 1
+
+
+class TestCancelledFailedCommitCleanupPropagates:
+    """When the automatic commit fails ambiguously and cancellation then
+    lands during the inline cleanup, the cancellation must propagate (a
+    swallowed one is simply lost — asyncio does not re-inject it) and the
+    interrupted cleanup must be retried detached."""
+
+    def test_cancellation_mid_failed_commit_cleanup_is_not_swallowed(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    rollback_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+                RollbackTransaction=AsyncMock(side_effect=rollback),
+            )
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+
+            t = asyncio.create_task(run_block())
+            await rollback_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry
+            assert calls["n"] == 2, "the interrupted cleanup was never retried"
+
+        asyncio.run(_inner())
+
+
+class TestCancelledManualRollbackGetsDetachedRetry:
+    """A manual rollback() cancelled mid-RPC leaves the handle aborted with
+    the cleanup unconfirmed; the context exit must register the detached
+    retry, or closing the client strands the server-side transaction until
+    the idle sweep."""
+
+    def test_cancelled_rollback_in_context_spawns_cleanup(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    rollback_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=rollback))
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    await tx.rollback()
+
+            t = asyncio.create_task(run_block())
+            await rollback_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry
+            assert calls["n"] == 2, "a cancelled manual rollback got no detached retry"
+
+        asyncio.run(_inner())
+
+
+class TestSyncLocalEncodingFailureKeepsTheHandleUsable:
+    """Sync mirror of the async encoding-failure contract: a parameter the
+    encoder rejects fails locally before any RPC, so the handle must stay
+    open — the interrupt settlement is for real interruptions only, not for
+    ordinary local exceptions."""
+
+    def test_a_bad_parameter_leaves_the_sync_transaction_open(self):
+        client = _sync_client()
+        tx = client.begin_transaction()
+        tx.cypher("CREATE (:A)")
+        with pytest.raises(Exception):
+            tx.cypher("CREATE (:B {v: $v})", {"v": object()})
+        assert client._async._cypher_stub.ExecuteCypher.await_count == 1, (
+            "the failing statement must not have reached the wire"
+        )
+        assert tx.is_open is True, "a local encoding failure aborted a usable transaction"
+        tx.rollback()
+        assert client._async._cypher_stub.RollbackTransaction.await_count == 1
