@@ -19,7 +19,7 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 > alternative was filtering model-written Cypher by a session tag, which leaks
 > the first time the filter misses a case. `COORDINODE_AGENT_DB` moves that
 > file; deleting it starts the agent with no memory.
-> The Docker Compose stack below pins the CoordiNode **server** image v0.5.5 by
+> The Docker Compose stack below pins the CoordiNode **server** image v0.5.7 by
 > digest. Do not move it below that: 0.5.1 crashes its Raft core when the oplog
 > rolls a segment that already exists, and a single-node stack never regains
 > leadership afterwards.

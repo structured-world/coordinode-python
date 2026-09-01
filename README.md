@@ -102,7 +102,7 @@ with CoordinodeClient("localhost:7080") as db:
         raise
 ```
 
-Requires a CoordiNode server of **v0.5.5 or newer** — the release this client
+Requires a CoordiNode server of **v0.5.7 or newer** — the release this client
 is integration-tested against. `health()` exercises a different service, so a
 server without the transaction RPCs passes the health check and then refuses
 `transaction()`.
