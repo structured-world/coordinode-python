@@ -373,13 +373,22 @@ class TestSyncClient:
 
 
 class _TransportError(grpc.RpcError):
-    """A gRPC failure with a status code, like the real client raises."""
+    """A gRPC failure with a status code, like the real client raises.
 
-    def __init__(self, code):
+    `trailing` models the trailing metadata a SERVER-answered failure
+    carries; a failure generated inside the client (a receive limit, a lost
+    connection) has none.
+    """
+
+    def __init__(self, code, trailing=None):
         self._code = code
+        self._trailing = trailing
 
     def code(self):
         return self._code
+
+    def trailing_metadata(self):
+        return self._trailing
 
 
 class TestAmbiguousStatementFailure:
@@ -772,5 +781,67 @@ class TestCancellationCleanup:
                 await tx.commit()
             await asyncio.sleep(0.05)
             assert client._cypher_stub.RollbackTransaction.await_count == 0
+
+        asyncio.run(_inner())
+
+
+class TestCommitFailureClassification:
+    """Which commit failures are definitive rejections and which leave the
+    outcome unknown. The dangerous misreading is one-directional: telling the
+    caller "nothing was applied" when the server may have applied everything
+    invites a retry that duplicates the writes."""
+
+    @staticmethod
+    def _commit_failing_with(err):
+        from unittest.mock import AsyncMock
+
+        return _async_client(CommitTransaction=AsyncMock(side_effect=err))
+
+    def test_a_local_resource_exhausted_reply_failure_is_indeterminate(self):
+        """RESOURCE_EXHAUSTED can be generated INSIDE the client while
+        receiving an oversized reply, after the server already applied the
+        commit. Without the server's structured details in the trailing
+        metadata, the code alone proves nothing."""
+
+        async def _inner() -> None:
+            client = self._commit_failing_with(_TransportError(grpc.StatusCode.RESOURCE_EXHAUSTED))
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.commit()
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.cypher("RETURN 1")
+
+        asyncio.run(_inner())
+
+    def test_a_server_answered_resource_exhausted_is_a_plain_abort(self):
+        """The same code WITH the server's structured error details is an
+        answer (a transaction-too-large rejection): nothing was applied."""
+
+        async def _inner() -> None:
+            client = self._commit_failing_with(
+                _TransportError(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    trailing=[("grpc-status-details-bin", b"\x08\x08")],
+                )
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.commit()
+            with pytest.raises(RuntimeError, match="an earlier failure closed it"):
+                await tx.cypher("RETURN 1")
+
+        asyncio.run(_inner())
+
+    def test_a_bare_internal_error_is_indeterminate(self):
+        """INTERNAL without details can come from either side of the wire and
+        says nothing about whether the proposal was applied."""
+
+        async def _inner() -> None:
+            client = self._commit_failing_with(_TransportError(grpc.StatusCode.INTERNAL))
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.commit()
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.cypher("RETURN 1")
 
         asyncio.run(_inner())

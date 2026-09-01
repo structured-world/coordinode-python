@@ -43,12 +43,23 @@ _CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # consult it: there the only question is whether server-side state needs
 # freeing, and asking for that is harmless whatever the answer, so the
 # statement path cleans up unconditionally rather than risk misjudging a code.
-_AMBIGUOUS_RPC_CODES = frozenset(
+# Codes the transport layer never fabricates on its own: seeing one proves
+# the server answered, so the commit was definitively rejected and nothing
+# was applied. The list is deliberately NOT the complement of "transport
+# codes": RESOURCE_EXHAUSTED, INTERNAL, DATA_LOSS and the like can be
+# generated inside the CLIENT while receiving or decoding a reply the server
+# already acted on, so on their own they prove nothing.
+_DEFINITIVE_REJECTION_CODES = frozenset(
     {
-        grpc.StatusCode.DEADLINE_EXCEEDED,
-        grpc.StatusCode.UNAVAILABLE,
-        grpc.StatusCode.CANCELLED,
-        grpc.StatusCode.UNKNOWN,
+        grpc.StatusCode.ABORTED,
+        grpc.StatusCode.NOT_FOUND,
+        grpc.StatusCode.INVALID_ARGUMENT,
+        grpc.StatusCode.FAILED_PRECONDITION,
+        grpc.StatusCode.ALREADY_EXISTS,
+        grpc.StatusCode.OUT_OF_RANGE,
+        grpc.StatusCode.PERMISSION_DENIED,
+        grpc.StatusCode.UNAUTHENTICATED,
+        grpc.StatusCode.UNIMPLEMENTED,
     }
 )
 
@@ -56,15 +67,25 @@ _AMBIGUOUS_RPC_CODES = frozenset(
 def _rpc_outcome_is_ambiguous(exc: grpc.RpcError) -> bool:
     """Whether this failure leaves the server's state unknowable.
 
-    A code outside the ambiguous set is an answer, so the commit's fate is
-    decided. An error that cannot even report a code proves nothing either way
-    and is read as ambiguous, because the two mistakes are not symmetric:
-    warning about an outcome that turned out to be a clean rejection costs the
-    caller one verification, while a wrongly claimed abort invites a retry that
+    Only positive proof that the server ANSWERED reads as a decided rejection:
+    either a status code the transport never generates locally, or the
+    server's structured error details riding the trailing metadata (every
+    rejection the server classifies carries them). Everything else — codes a
+    client can produce mid-reply, an error that cannot even report a code —
+    is ambiguous, because the two mistakes are not symmetric: warning about an
+    outcome that turned out to be a clean rejection costs the caller one
+    verification, while a wrongly claimed abort invites a retry that
     duplicates every write.
     """
     try:
-        return exc.code() in _AMBIGUOUS_RPC_CODES
+        if exc.code() in _DEFINITIVE_REJECTION_CODES:
+            return False
+        trailing = exc.trailing_metadata()
+        for entry in trailing or ():
+            key = entry[0] if isinstance(entry, tuple) else getattr(entry, "key", None)
+            if key == "grpc-status-details-bin":
+                return False
+        return True
     except Exception:
         return True
 
