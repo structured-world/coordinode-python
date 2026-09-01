@@ -314,6 +314,12 @@ class AsyncTransaction:
     def _require_open(self, action: str) -> None:
         if self._state == "open":
             return
+        if self._state == "committing":
+            raise RuntimeError(
+                f"Cannot {action} this transaction: its commit is already in flight. "
+                "Concurrent operations on one transaction handle would race the "
+                "commit's outcome; await it instead."
+            )
         if self._state == "aborted":
             raise RuntimeError(
                 f"Cannot {action} this transaction: an earlier failure closed it on the "
@@ -467,6 +473,11 @@ class AsyncTransaction:
         )
 
         self._require_open("commit")
+        # Transition BEFORE the await: a concurrent operation on this handle
+        # would otherwise pass its own open-check while the commit is in
+        # flight, and the loser's "unknown transaction" rejection would
+        # overwrite the real outcome (committed) with a claimed abort.
+        self._state = "committing"
         try:
             resp = await self._client._cypher_stub.CommitTransaction(
                 CommitTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
@@ -1371,11 +1382,12 @@ class Transaction:
         except BaseException:
             # An interruption at the loop boundary (Ctrl-C, SystemExit) never
             # reaches the async handlers, so without this the handle would
-            # read "open" while the server may already have applied the
-            # writes — inviting the duplicate retry the indeterminate state
-            # exists to prevent. An outcome the inner handler already decided
-            # (aborted, indeterminate, committed) is kept.
-            if self._inner._state == "open":
+            # read "open" (or stay parked mid-"committing") while the server
+            # may already have applied the writes — inviting the duplicate
+            # retry the indeterminate state exists to prevent. An outcome the
+            # inner handler already decided (aborted, indeterminate,
+            # committed) is kept.
+            if self._inner._state in ("open", "committing"):
                 self._inner._state = "indeterminate"
             raise
 

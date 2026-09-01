@@ -1206,3 +1206,51 @@ class TestCancelledCloseDoesNotAbortCleanup:
             assert cleanup_done.is_set(), "cancelling close() killed the cleanup"
 
         asyncio.run(_inner())
+
+
+class TestConcurrentCommitSerialization:
+    """Two tasks committing the same handle must not race the state machine:
+    the second must be refused BEFORE it sends anything, or the loser's
+    "unknown transaction" rejection would overwrite `committed` with
+    `aborted` and invite a duplicate retry."""
+
+    def test_a_second_concurrent_commit_is_refused_not_raced(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            async def slow_commit(req, timeout=None):
+                await asyncio.sleep(0.05)
+                return cypher_pb2.CommitTransactionResponse(applied_index=7)
+
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=slow_commit))
+            tx = await client.begin_transaction()
+            first = asyncio.create_task(tx.commit())
+            await asyncio.sleep(0.01)  # first commit is now awaiting the RPC
+            with pytest.raises(RuntimeError, match="in flight"):
+                await tx.commit()
+            assert await first == 7
+            assert client._cypher_stub.CommitTransaction.await_count == 1
+            # The handle records the real outcome, untouched by the refusal.
+            with pytest.raises(RuntimeError, match="already committed"):
+                await tx.cypher("RETURN 1")
+
+        asyncio.run(_inner())
+
+    def test_a_statement_during_a_commit_is_refused(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            async def slow_commit(req, timeout=None):
+                await asyncio.sleep(0.05)
+                return cypher_pb2.CommitTransactionResponse(applied_index=7)
+
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=slow_commit))
+            tx = await client.begin_transaction()
+            first = asyncio.create_task(tx.commit())
+            await asyncio.sleep(0.01)
+            with pytest.raises(RuntimeError, match="in flight"):
+                await tx.cypher("CREATE (:Late)")
+            assert await first == 7
+            assert client._cypher_stub.ExecuteCypher.await_count == 0
+
+        asyncio.run(_inner())
