@@ -18,6 +18,11 @@ name = "_coordinode_embedded"
 crate-type = ["cdylib"]
 
 [dependencies]
+# Moving the coordinode-rs submodule means refreshing Cargo.lock here in the
+# same commit. These are path dependencies, so their own registry dependencies
+# are resolved by THIS lock: an engine release that needs a newer storage
+# engine still compiles against whatever version the lock names, and fails on
+# the API it expected to find.
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
 numpy = "0.24"
 coordinode-embed = { path = "../coordinode-rs/crates/coordinode-embed" }
