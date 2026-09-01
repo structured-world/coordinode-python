@@ -919,6 +919,25 @@ class TestCleanupDeadline:
 
         asyncio.run(_inner())
 
+    def test_cleanup_deadline_is_capped_by_a_shorter_client_timeout(self):
+        """A caller who configured 100ms requests must not find a failed
+        statement holding the line for a multi-second cleanup."""
+
+        async def _inner() -> None:
+            from unittest.mock import AsyncMock
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED))
+            )
+            client._timeout = 0.1
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("RETURN 1")
+            used = client._cypher_stub.RollbackTransaction.call_args.kwargs["timeout"]
+            assert used == 0.1, f"cleanup must not exceed the client timeout, got {used}"
+
+        asyncio.run(_inner())
+
 
 class TestRollbackCancellationDoesNotMaskTheBlockError:
     """A rollback cancelled on the way out of the context manager must not
@@ -943,3 +962,114 @@ class TestRollbackCancellationDoesNotMaskTheBlockError:
         with pytest.raises(ValueError, match="the real problem"):
             with client.transaction():
                 raise ValueError("the real problem")
+
+
+class TestSyncCommitInterruption:
+    """Ctrl-C during a synchronous commit crosses the loop boundary as
+    KeyboardInterrupt, which the async handlers never see. The server may
+    already have applied the writes, so the handle must come back
+    indeterminate, not open: an "open" handle invites the duplicate retry."""
+
+    def test_an_interrupted_sync_commit_is_indeterminate(self):
+        from unittest.mock import AsyncMock
+
+        client = _sync_client(CommitTransaction=AsyncMock(side_effect=KeyboardInterrupt()))
+        tx = client.begin_transaction()
+        with pytest.raises(KeyboardInterrupt):
+            tx.commit()
+        assert tx.is_open is False
+        with pytest.raises(RuntimeError, match="outcome is unknown"):
+            tx.cypher("RETURN 1")
+
+
+class TestCancellationDuringInlineCleanup:
+    """A statement failure runs its cleanup inline; a cancellation arriving
+    DURING that cleanup must not lose it (the handle is already closed, so
+    nothing later would retry), it must detach it."""
+
+    def test_cleanup_cancelled_mid_flight_is_respawned_detached(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            cleanup_in_flight = asyncio.Event()
+            cleanup_done = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    cleanup_in_flight.set()
+                    await asyncio.sleep(10)
+                cleanup_done.set()
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.INVALID_ARGUMENT)),
+                RollbackTransaction=AsyncMock(side_effect=rollback),
+            )
+            tx = await client.begin_transaction()
+            task = asyncio.create_task(tx.cypher("RETURN ("))
+            await cleanup_in_flight.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The detached retry must be drained by close(), like every
+            # cancellation-spawned cleanup.
+            await client.close()
+            assert cleanup_done.is_set(), "the cleanup was lost to the cancellation"
+
+        asyncio.run(_inner())
+
+
+class TestLateCleanupDrain:
+    """close() must not settle for a one-time snapshot of the cleanup set: a
+    statement cancelled WHILE the drain awaits an earlier cleanup adds its
+    task after the snapshot, and a single gather would strand it against a
+    closed channel."""
+
+    def test_close_drains_cleanups_spawned_during_the_drain(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            stmt2_in_flight = asyncio.Event()
+            late_done = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                # Every cleanup is slower than one loop turn, so the late one
+                # can only complete if close() genuinely waits for it too (a
+                # one-time snapshot would return while it is still running).
+                calls["n"] += 1
+                mine = calls["n"]
+                await asyncio.sleep(0.1)
+                if mine == 2:
+                    late_done.set()
+
+            async def hang(req, timeout=None):
+                stmt2_in_flight.set()
+                await asyncio.sleep(10)
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=hang),
+                RollbackTransaction=AsyncMock(side_effect=rollback),
+            )
+            tx1 = await client.begin_transaction()
+            tx2 = await client.begin_transaction()
+            # First cancellation: its cleanup is the slow one close() drains.
+            t1 = asyncio.create_task(tx1.cypher("CREATE (:A)"))
+            await stmt2_in_flight.wait()
+            stmt2_in_flight.clear()
+            t1.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t1
+            # Second statement still in flight when close() starts.
+            t2 = asyncio.create_task(tx2.cypher("CREATE (:B)"))
+            await stmt2_in_flight.wait()
+            closer = asyncio.create_task(client.close())
+            await asyncio.sleep(0.02)  # close() is now inside the drain
+            t2.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t2
+            await closer
+            assert late_done.is_set(), "a cleanup spawned during the drain was stranded"
+
+        asyncio.run(_inner())

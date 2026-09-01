@@ -360,7 +360,10 @@ class AsyncTransaction:
         with suppress(Exception):
             await self._client._cypher_stub.RollbackTransaction(
                 RollbackTransactionRequest(transaction_id=self._id),
-                timeout=_CLEANUP_TIMEOUT_SECS,
+                # Capped by the client's own timeout too: a caller who
+                # configured 100ms requests must not find a failed statement
+                # holding the line for a 5-second cleanup.
+                timeout=min(_CLEANUP_TIMEOUT_SECS, self._client._timeout),
             )
 
     async def cypher(
@@ -411,7 +414,14 @@ class AsyncTransaction:
             # transaction for the idle timeout. The cost of not classifying is
             # one wasted RPC on a path that is already failing.
             self._state = "aborted"
-            await self._best_effort_rollback()
+            try:
+                await self._best_effort_rollback()
+            except asyncio.CancelledError:
+                # A cancellation landing DURING the inline cleanup would lose
+                # it (the handle is already closed, nothing retries later):
+                # detach a fresh attempt, then honour the cancellation.
+                self._spawn_cleanup()
+                raise
             raise
         except asyncio.CancelledError:
             # Cancellation is a BaseException, so the handler above never sees
@@ -587,12 +597,21 @@ class AsyncCoordinodeClient:
         self._health_stub = _health_stub(self._channel)
 
     async def close(self) -> None:
-        # Detached cancellation cleanups first: each is already bounded by
-        # the short cleanup deadline, so this cannot hang shutdown, and
-        # closing the channel under a cleanup in flight would strand its
-        # transaction on the server until the idle sweep.
-        if self._pending_cleanups:
-            await asyncio.gather(*self._pending_cleanups, return_exceptions=True)
+        # Detached cancellation cleanups first: closing the channel under a
+        # cleanup in flight would strand its transaction on the server until
+        # the idle sweep. Drained until the set is STABLE, not from a single
+        # snapshot — a statement cancelled while the drain awaits an earlier
+        # cleanup adds its task after the snapshot, and one gather would
+        # strand it against a closed transport. Each task is bounded by the
+        # cleanup deadline and each round only exists because a new one was
+        # spawned, so the loop ends as soon as callers stop cancelling work.
+        while self._pending_cleanups:
+            batch = list(self._pending_cleanups)
+            await asyncio.gather(*batch, return_exceptions=True)
+            # Removed explicitly rather than trusting the done-callbacks:
+            # awaiting an already-finished task does not yield to the loop,
+            # so the callbacks may not have run yet and the while would spin.
+            self._pending_cleanups.difference_update(batch)
         if self._channel:
             await self._channel.close()
             self._channel = None
@@ -1316,7 +1335,18 @@ class Transaction:
 
     def commit(self) -> int:
         """Apply every buffered write as one unit. See :meth:`AsyncTransaction.commit`."""
-        return self._client._run(self._inner.commit())  # type: ignore[no-any-return]
+        try:
+            return self._client._run(self._inner.commit())  # type: ignore[no-any-return]
+        except BaseException:
+            # An interruption at the loop boundary (Ctrl-C, SystemExit) never
+            # reaches the async handlers, so without this the handle would
+            # read "open" while the server may already have applied the
+            # writes — inviting the duplicate retry the indeterminate state
+            # exists to prevent. An outcome the inner handler already decided
+            # (aborted, indeterminate, committed) is kept.
+            if self._inner._state == "open":
+                self._inner._state = "indeterminate"
+            raise
 
     def rollback(self) -> None:
         """Discard every buffered write. See :meth:`AsyncTransaction.rollback`."""
