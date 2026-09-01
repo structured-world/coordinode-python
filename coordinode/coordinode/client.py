@@ -411,6 +411,43 @@ class AsyncTransaction:
         pending.add(task)
         task.add_done_callback(pending.discard)
 
+    def _settle_cancelled_scope(self) -> None:
+        """Settle this handle when its owning scope is unwound by cancellation.
+
+        A scope unwound this way must not hold for a rollback round trip: the
+        caught CancelledError is not re-injected, so an inline await could
+        overrun a surrounding timeout by the whole cleanup deadline. Every
+        branch therefore detaches (bounded, drained at close) and returns at
+        once. Synchronous by design, so a cancellation arriving at any await
+        of the exit path can call it.
+        """
+        if self.is_open:
+            self._state = "aborted"
+            self._spawn_cleanup()
+        elif self._state == "indeterminate":
+            # A manual commit() inside the block was cancelled mid-flight:
+            # its request may never have reached the server, leaving the
+            # transaction open there with the caller gone. The verdict stays
+            # indeterminate either way.
+            self._spawn_cleanup()
+        elif self._state in _IN_FLIGHT_STATES:
+            # An operation started in a background task is still in flight
+            # while this scope unwinds; it cannot be awaited or cancelled
+            # from here, so the straggler is marked to hand the transaction
+            # to cleanup when it completes. An in-flight COMMIT is
+            # additionally contested with a detached rollback: a successful
+            # commit cannot be retracted afterwards, so the only honest shot
+            # at the rollback-on-cancellation contract is letting the server
+            # race decide which request wins.
+            self._abandoned = True
+            if self._state == "committing":
+                self._spawn_cleanup()
+        elif self._state == "aborted" and not self._cleanup_confirmed:
+            # A manual rollback() cancelled mid-RPC: the request was
+            # interrupted, not answered, so the server may still hold the
+            # transaction. Retry detached before the scope is gone.
+            self._spawn_cleanup()
+
     async def _best_effort_rollback(self) -> None:
         """Ask the server to drop the transaction, ignoring every failure.
 
@@ -1045,40 +1082,7 @@ class AsyncCoordinodeClient:
         try:
             yield tx
         except asyncio.CancelledError:
-            # A block unwound by cancellation (asyncio.timeout, a cancelled
-            # task) must not hold this exit for a rollback round trip — the
-            # caught CancelledError is not re-injected, so an inline await
-            # here could overrun the surrounding timeout by the whole
-            # rollback deadline. The cleanup goes detached instead (bounded
-            # deadline, drained at close), and the cancellation propagates
-            # immediately.
-            if tx.is_open:
-                tx._state = "aborted"
-                tx._spawn_cleanup()
-            elif tx._state == "indeterminate":
-                # A manual commit() inside the block was cancelled mid-flight:
-                # its request may never have reached the server, leaving the
-                # transaction open there with the caller gone. Same detached
-                # bounded cleanup — the verdict stays indeterminate either
-                # way, and the cancellation is not held up.
-                tx._spawn_cleanup()
-            elif tx._state in _IN_FLIGHT_STATES:
-                # An operation started in a background task is still in
-                # flight while this scope unwinds; it cannot be awaited or
-                # cancelled from here, so the straggler is marked to hand the
-                # transaction to cleanup when it completes. An in-flight
-                # COMMIT is additionally contested with a detached rollback:
-                # a successful commit cannot be retracted afterwards, so the
-                # only honest shot at the rollback-on-cancellation contract
-                # is letting the server race decide which request wins.
-                tx._abandoned = True
-                if tx._state == "committing":
-                    tx._spawn_cleanup()
-            elif tx._state == "aborted" and not tx._cleanup_confirmed:
-                # A manual rollback() cancelled mid-RPC: the request was
-                # interrupted, not answered, so the server may still hold the
-                # transaction. Retry detached before the scope is gone.
-                tx._spawn_cleanup()
+            tx._settle_cancelled_scope()
             raise
         except BaseException as exc:
             if tx.is_open and not isinstance(exc, Exception):
@@ -1115,12 +1119,13 @@ class AsyncCoordinodeClient:
                 try:
                     await tx._best_effort_rollback()
                 except asyncio.CancelledError:
-                    # Suppressing this would re-raise the block's error and
-                    # LOSE the cancellation — asyncio does not re-inject a
-                    # swallowed one. Spawn the detached retry and let it
-                    # propagate.
+                    # A real cancellation must propagate (asyncio does not
+                    # re-inject a swallowed one); a transport-raised one is
+                    # just a failed cleanup and must leave the block's own
+                    # error in place.
                     tx._spawn_cleanup()
-                    raise
+                    if _caller_is_being_cancelled():
+                        raise
             elif tx._state in _IN_FLIGHT_STATES:
                 # The block raised while an operation it started (in a
                 # background task) is still in flight. Raising over the
@@ -1159,7 +1164,15 @@ class AsyncCoordinodeClient:
             # task created inside the block runs its first step (up to its
             # own state reservation, which is synchronous) ahead of this
             # continuation, and the guard below sees it.
-            await asyncio.sleep(0)
+            #
+            # Guarded: this yield sits in the `else` suite, so a cancellation
+            # landing on it escapes the handlers above — an open transaction
+            # would walk away with neither rollback nor detached cleanup.
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                tx._settle_cancelled_scope()
+                raise
             if tx._state in _IN_FLIGHT_STATES:
                 # The block exited while an operation it started (in a
                 # background task) is still in flight: reporting a successful

@@ -2718,3 +2718,63 @@ class TestQueuedStatementIsSeenBeforeAutoCommit:
                 await bg
 
         asyncio.run(_inner())
+
+
+class TestCancellationAtTheSchedulingYieldCleansUp:
+    """Cancellation can land while the exit's scheduling yield is suspended
+    — after the block returned, before anything was decided. That path
+    leaves the try suite, so it must settle the handle itself instead of
+    walking away from an open transaction."""
+
+    def test_cancellation_during_the_yield_still_cleans_up(self):
+        async def _inner() -> None:
+            body_done = asyncio.Event()
+            holder: dict[str, object] = {}
+
+            client = _async_client()
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    holder["tx"] = tx
+                    # Event.set() schedules this waiter via call_soon, so the
+                    # test resumes BEFORE the exit's own sleep(0)
+                    # continuation: the cancel below lands exactly on that
+                    # suspended yield.
+                    body_done.set()
+
+            t = asyncio.create_task(run_block())
+            await body_done.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached cleanup
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "a transaction cancelled at the scheduling yield was left open"
+            )
+
+        asyncio.run(_inner())
+
+
+class TestTransportCancelledCleanupKeepsTheBlockError:
+    """The exceptional exit's indeterminate cleanup follows the same rule as
+    every other cleanup: a CancelledError the transport raised, with no
+    cancellation pending, must not replace the block's own exception."""
+
+    def test_block_error_survives_a_spurious_cleanup_cancellation(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+                RollbackTransaction=AsyncMock(side_effect=asyncio.CancelledError()),
+            )
+            with pytest.raises(RuntimeError, match="boom"):
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    with ctx_suppress(grpc.RpcError):
+                        await tx.commit()
+                    raise RuntimeError("boom")
+            assert tx._state == "indeterminate"
+
+        asyncio.run(_inner())
