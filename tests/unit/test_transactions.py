@@ -1426,3 +1426,205 @@ class TestCancelledChannelCloseKeepsCleanupUsable:
             )
 
         asyncio.run(_inner())
+
+
+class TestInFlightOperationAtContextExit:
+    """A block that starts a statement or commit in a background task and
+    exits without awaiting it leaves the transaction in a transient state;
+    reporting a successful context exit then would let buffered writes and a
+    pinned snapshot outlive the owning scope unnoticed."""
+
+    def test_exiting_with_a_statement_in_flight_raises(self):
+        from contextlib import suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang))
+            bg = None
+            with pytest.raises(RuntimeError, match="in flight"):
+                async with client.transaction() as tx:
+                    bg = asyncio.create_task(tx.cypher("CREATE (:A)"))
+                    await in_flight.wait()
+            bg.cancel()
+            with suppress(asyncio.CancelledError):
+                await bg
+
+        asyncio.run(_inner())
+
+
+class TestCancelledManualCommitCleansUpOnContextExit:
+    """A manual commit() inside the block, cancelled mid-flight, marks the
+    transaction indeterminate before the cancellation reaches the context
+    manager; the exit must still send the detached best-effort rollback in
+    case the commit never reached the server."""
+
+    def test_cancelled_manual_commit_spawns_cleanup(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            commit_in_flight = asyncio.Event()
+
+            async def hang_commit(req, timeout=None):
+                commit_in_flight.set()
+                await asyncio.sleep(10)
+
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=hang_commit))
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    await tx.commit()
+
+            t = asyncio.create_task(run_block())
+            await commit_in_flight.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            # close() drains the detached cleanup before the assertion.
+            await client.close()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "a cancelled manual commit left the server transaction to the idle sweep"
+            )
+
+        asyncio.run(_inner())
+
+
+class TestCancelledAutomaticCommitDetachesTheCleanup:
+    """Cancellation during the context manager's automatic commit must not
+    hold the exit for an inline rollback round trip: caught cancellation is
+    not re-injected at the next await, so the exit could otherwise overrun a
+    surrounding asyncio.timeout by the whole cleanup deadline."""
+
+    def test_exit_does_not_wait_for_the_rollback(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            commit_in_flight = asyncio.Event()
+            rollback_done = asyncio.Event()
+
+            async def hang_commit(req, timeout=None):
+                commit_in_flight.set()
+                await asyncio.sleep(10)
+
+            async def slow_rollback(req, timeout=None):
+                await asyncio.sleep(0.2)
+                rollback_done.set()
+
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=hang_commit),
+                RollbackTransaction=AsyncMock(side_effect=slow_rollback),
+            )
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+
+            t = asyncio.create_task(run_block())
+            await commit_in_flight.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            assert not rollback_done.is_set(), "context exit held for the inline rollback"
+            await client.close()
+            assert rollback_done.is_set(), "the detached cleanup never ran"
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+
+        asyncio.run(_inner())
+
+
+class TestCancelledCloseStillClosesTheChannel:
+    """Cancelling the task awaiting close() must not abandon shutdown midway:
+    the finalization continues detached, so the drain finishes AND the channel
+    is released, while the cancellation propagates to the caller."""
+
+    def test_channel_is_closed_after_a_cancelled_close(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            stmt_in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                stmt_in_flight.set()
+                await asyncio.sleep(10)
+
+            async def slow_rollback(req, timeout=None):
+                await asyncio.sleep(0.15)
+
+            class _CountingChannel:
+                def __init__(self) -> None:
+                    self.close_calls = 0
+
+                async def close(self) -> None:
+                    self.close_calls += 1
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=hang),
+                RollbackTransaction=AsyncMock(side_effect=slow_rollback),
+            )
+            channel = _CountingChannel()
+            client._channel = channel
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await stmt_in_flight.wait()
+            stmt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stmt
+
+            closer = asyncio.create_task(client.close())
+            await asyncio.sleep(0.03)  # closer is inside the drain, rollback still running
+            closer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closer
+            await asyncio.sleep(0.3)  # finalization continues detached
+            assert channel.close_calls == 1, "cancelling close() abandoned the channel"
+            assert client._closing is True
+
+        asyncio.run(_inner())
+
+
+class TestLateCancellationDuringChannelCloseStillRollsBack:
+    """A statement cancelled while channel.close() is in progress must still
+    get its cleanup: the transport is not conclusively gone yet, so forfeiting
+    the rollback to the idle sweep at that point strands an accepted
+    server-side transaction for no reason."""
+
+    def test_cleanup_spawned_during_channel_close_runs(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            stmt_in_flight = asyncio.Event()
+            release_close = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                stmt_in_flight.set()
+                await asyncio.sleep(10)
+
+            class _BlockedChannel:
+                async def close(self) -> None:
+                    await release_close.wait()
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang))
+            client._channel = _BlockedChannel()
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await stmt_in_flight.wait()
+
+            closer = asyncio.create_task(client.close())
+            await asyncio.sleep(0.02)  # closer is awaiting channel.close()
+            stmt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stmt
+            await asyncio.sleep(0.05)  # the detached cleanup runs while close is blocked
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "a cancellation during channel close forfeited a reachable rollback"
+            )
+            release_close.set()
+            await closer
+
+        asyncio.run(_inner())

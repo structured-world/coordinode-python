@@ -620,10 +620,14 @@ class AsyncCoordinodeClient:
         # mid-flight) and drained by close() BEFORE the channel goes away, so
         # a cleanup never races the transport it needs.
         self._pending_cleanups: set[asyncio.Task[None]] = set()
-        # Set once close() has finished draining: later cancellations forfeit
-        # their cleanup to the server's idle sweep instead of spawning a task
-        # that could only fail against the closed channel.
+        # Set once close() has finished draining AND released the channel:
+        # later cancellations forfeit their cleanup to the server's idle
+        # sweep instead of spawning a task that could only fail against the
+        # closed channel.
         self._closing = False
+        # The single finalization task behind close(); shared by concurrent
+        # and repeated close() calls, and immune to their cancellation.
+        self._close_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> AsyncCoordinodeClient:
         await self.connect()
@@ -634,6 +638,7 @@ class AsyncCoordinodeClient:
 
     async def connect(self) -> None:
         self._closing = False
+        self._close_task = None
         self._channel = _make_async_channel(self._host, self._port, self._tls)
         self._cypher_stub = _cypher_stub(self._channel)
         self._vector_stub = _vector_stub(self._channel)
@@ -643,6 +648,19 @@ class AsyncCoordinodeClient:
         self._health_stub = _health_stub(self._channel)
 
     async def close(self) -> None:
+        # Shutdown runs in its own task so that cancelling the CALLER of
+        # close() cannot abandon it midway: only the shielded await here is
+        # cancelled, while the finalization drains the cleanups and releases
+        # the channel to the end. A finalization that itself failed is not
+        # cached — the next close() starts over against whatever transport
+        # state the failure left behind.
+        task = self._close_task
+        if task is None or (task.done() and not task.cancelled() and task.exception() is not None):
+            task = asyncio.get_running_loop().create_task(self._finalize_close())
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _finalize_close(self) -> None:
         # Detached cancellation cleanups first: closing the channel under a
         # cleanup in flight would strand its transaction on the server until
         # the idle sweep. Drained until the set is STABLE, not from a single
@@ -651,30 +669,30 @@ class AsyncCoordinodeClient:
         # strand it against a closed transport. Each task is bounded by the
         # cleanup deadline and each round only exists because a new one was
         # spawned, so the loop ends as soon as callers stop cancelling work.
-        while self._pending_cleanups:
-            batch = list(self._pending_cleanups)
-            # Shielded: cancelling close() itself must not take the in-flight
-            # cleanups down with it — they finish detached (still referenced
-            # by the set) while the cancellation propagates to the caller.
-            await asyncio.shield(asyncio.gather(*batch, return_exceptions=True))
-            # Removed explicitly rather than trusting the done-callbacks:
-            # awaiting an already-finished task does not yield to the loop,
-            # so the callbacks may not have run yet and the while would spin.
-            self._pending_cleanups.difference_update(batch)
-        # From here on the transport is going away: a statement cancelled
-        # later must not spawn a cleanup that could only fail against the
-        # closed channel — the server's idle sweep is the backstop for those.
-        self._closing = True
-        if self._channel:
-            try:
-                await self._channel.close()
-            except BaseException:
-                # The close itself was cancelled or failed: the transport may
-                # still be usable, so later cancellations keep their cleanup
-                # instead of forfeiting it to a shutdown that never finished.
-                self._closing = False
-                raise
+        while True:
+            while self._pending_cleanups:
+                batch = list(self._pending_cleanups)
+                await asyncio.gather(*batch, return_exceptions=True)
+                # Removed explicitly rather than trusting the done-callbacks:
+                # awaiting an already-finished task does not yield to the loop,
+                # so the callbacks may not have run yet and the while would spin.
+                self._pending_cleanups.difference_update(batch)
+            channel = self._channel
+            if channel is None:
+                break
+            # The closing gate stays OPEN through the channel close: a
+            # statement cancelled while the close is in progress spawns its
+            # cleanup, which runs concurrently against the still-live
+            # transport — and the next drain round above collects it. The
+            # rollback stays possible until the transport is conclusively
+            # gone, not merely scheduled to go.
+            await channel.close()
             self._channel = None
+        # Only now is the transport conclusively unavailable: a statement
+        # cancelled later must not spawn a cleanup that could only fail
+        # against the closed channel — the server's idle sweep is the
+        # backstop for those.
+        self._closing = True
 
     async def cypher(
         self,
@@ -815,6 +833,13 @@ class AsyncCoordinodeClient:
             if tx.is_open:
                 tx._state = "aborted"
                 tx._spawn_cleanup()
+            elif tx._state == "indeterminate":
+                # A manual commit() inside the block was cancelled mid-flight:
+                # its request may never have reached the server, leaving the
+                # transaction open there with the caller gone. Same detached
+                # bounded cleanup — the verdict stays indeterminate either
+                # way, and the cancellation is not held up.
+                tx._spawn_cleanup()
             raise
         except BaseException:
             if tx.is_open:
@@ -835,9 +860,30 @@ class AsyncCoordinodeClient:
                     await tx._best_effort_rollback()
             raise
         else:
+            if tx._state in ("executing", "committing"):
+                # The block exited while an operation it started (in a
+                # background task) is still in flight: reporting a successful
+                # exit then would let that operation race an owner that has
+                # already returned — buffered writes and a pinned snapshot can
+                # outlive the block unnoticed. Surface the misuse instead.
+                in_flight = "commit" if tx._state == "committing" else "statement"
+                raise RuntimeError(
+                    f"Transaction context exited while a {in_flight} on it is still "
+                    "in flight. Await every operation started inside the block "
+                    "before leaving it."
+                )
             if tx.is_open:
                 try:
                     await tx.commit()
+                except asyncio.CancelledError:
+                    # Caught cancellation is not re-injected at the next
+                    # await, so an inline bounded rollback here would delay
+                    # its propagation by the whole cleanup deadline — the
+                    # same reason cancellation of the block itself detaches
+                    # its cleanup. Spawn, then let the cancellation go.
+                    if tx._state == "indeterminate":
+                        tx._spawn_cleanup()
+                    raise
                 except BaseException:
                     if tx._state == "indeterminate":
                         # Same reasoning as above, for the automatic commit.
