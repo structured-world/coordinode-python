@@ -290,13 +290,21 @@ class AsyncTransaction:
     def __init__(self, client: AsyncCoordinodeClient, transaction_id: int) -> None:
         self._client = client
         self._id = transaction_id
-        # open -> committed | rolled_back | aborted | indeterminate.
+        # open -> committed | rolled_back | aborted | indeterminate, with two
+        # transient in-flight states (executing, committing) that strictly
+        # serialize operations on one handle.
         # "aborted" is the server having closed the transaction under us, which
         # it does on any statement error and on a rejected commit.
         # "indeterminate" is a commit whose reply was lost in transit: the
         # writes may all be applied or none may be, and nothing on the client
         # can tell which.
         self._state = "open"
+        # Whether the last best-effort cleanup RPC actually completed. False
+        # after a cleanup that itself failed (both RPCs lost to the same
+        # outage, say): the server may still hold the transaction, so an
+        # explicit rollback() on the aborted handle retries the cleanup
+        # instead of declaring the transaction already gone.
+        self._cleanup_confirmed = True
 
     def __repr__(self) -> str:
         return f"AsyncTransaction(id={self._id}, state={self._state})"
@@ -368,6 +376,7 @@ class AsyncTransaction:
             RollbackTransactionRequest,
         )
 
+        self._cleanup_confirmed = False
         with suppress(Exception):
             await self._client._cypher_stub.RollbackTransaction(
                 RollbackTransactionRequest(transaction_id=self._id),
@@ -376,6 +385,7 @@ class AsyncTransaction:
                 # holding the line for a 5-second cleanup.
                 timeout=min(_CLEANUP_TIMEOUT_SECS, self._client._timeout),
             )
+            self._cleanup_confirmed = True
 
     async def cypher(
         self,
@@ -404,16 +414,20 @@ class AsyncTransaction:
         )
 
         self._require_open("run a statement in")
-        # Transition BEFORE the await, mirroring commit(): a concurrent
-        # commit slipping in while this statement is in flight could land
-        # without the statement's write, and the statement's late "unknown
-        # transaction" failure would then overwrite the real outcome.
-        self._state = "executing"
+        # The request is built BEFORE the state transition: parameter
+        # encoding can fail locally (an unsupported Python type), and that
+        # failure changes nothing server-side, so it must leave the handle
+        # open rather than marooned in an in-flight state.
         req = ExecuteCypherRequest(
             query=query,
             parameters=dict_to_props(params or {}),
             transaction_id=self._id,
         )
+        # Transition BEFORE the await, mirroring commit(): a concurrent
+        # commit slipping in while this statement is in flight could land
+        # without the statement's write, and the statement's late "unknown
+        # transaction" failure would then overwrite the real outcome.
+        self._state = "executing"
         try:
             resp = await self._client._cypher_stub.ExecuteCypher(req, timeout=self._client._timeout)
         except grpc.RpcError:
@@ -535,7 +549,12 @@ class AsyncTransaction:
             # The failure that closed the transaction already discarded the
             # writes, so this call's contract is met. Asking the server would
             # only get "unknown transaction id" for a transaction that is
-            # correctly gone.
+            # correctly gone — UNLESS the cleanup that was supposed to free it
+            # never got through (both RPCs lost to the same outage): then the
+            # server may still hold it, and connectivity may have recovered
+            # since, so the cleanup is retried here before settling.
+            if not self._cleanup_confirmed:
+                await self._best_effort_rollback()
             self._state = "rolled_back"
             return
         self._require_open("roll back")
@@ -647,7 +666,14 @@ class AsyncCoordinodeClient:
         # closed channel — the server's idle sweep is the backstop for those.
         self._closing = True
         if self._channel:
-            await self._channel.close()
+            try:
+                await self._channel.close()
+            except BaseException:
+                # The close itself was cancelled or failed: the transport may
+                # still be usable, so later cancellations keep their cleanup
+                # instead of forfeiting it to a shutdown that never finished.
+                self._closing = False
+                raise
             self._channel = None
 
     async def cypher(
@@ -778,6 +804,18 @@ class AsyncCoordinodeClient:
         tx = await self.begin_transaction()
         try:
             yield tx
+        except asyncio.CancelledError:
+            # A block unwound by cancellation (asyncio.timeout, a cancelled
+            # task) must not hold this exit for a rollback round trip — the
+            # caught CancelledError is not re-injected, so an inline await
+            # here could overrun the surrounding timeout by the whole
+            # rollback deadline. The cleanup goes detached instead (bounded
+            # deadline, drained at close), and the cancellation propagates
+            # immediately.
+            if tx.is_open:
+                tx._state = "aborted"
+                tx._spawn_cleanup()
+            raise
         except BaseException:
             if tx.is_open:
                 # CancelledError included: it is a BaseException, so a plain

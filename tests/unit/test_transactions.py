@@ -1307,3 +1307,122 @@ class TestConcurrentStatementSerialization:
             assert client._cypher_stub.ExecuteCypher.await_count == 1
 
         asyncio.run(_inner())
+
+
+class TestLocalEncodingFailureKeepsTheHandleUsable:
+    """A parameter the encoder rejects fails LOCALLY, before any RPC: the
+    handle must stay open (nothing changed server-side), not be marooned in
+    an in-flight state that rejects even rollback."""
+
+    def test_a_bad_parameter_leaves_the_transaction_open(self):
+        async def _inner() -> None:
+            client = _async_client()
+            tx = await client.begin_transaction()
+            with pytest.raises(Exception):
+                await tx.cypher("CREATE (:A {v: $v})", {"v": object()})
+            assert client._cypher_stub.ExecuteCypher.await_count == 0
+            assert tx.is_open is True
+            await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+
+        asyncio.run(_inner())
+
+
+class TestUnconfirmedCleanupIsRetriedByExplicitRollback:
+    """When a statement failed ambiguously AND its best-effort cleanup also
+    failed, the server may still hold the transaction. An explicit rollback()
+    afterwards must retry the cleanup instead of declaring the transaction
+    already gone."""
+
+    def test_rollback_after_failed_cleanup_sends_again(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            calls = {"n": 0}
+
+            async def flaky_rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise _TransportError(grpc.StatusCode.UNAVAILABLE)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_TransportError(grpc.StatusCode.UNAVAILABLE)),
+                RollbackTransaction=AsyncMock(side_effect=flaky_rollback),
+            )
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.cypher("CREATE (:A)")
+            # The inline cleanup failed (suppressed); connectivity recovers.
+            await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count == 2
+
+        asyncio.run(_inner())
+
+
+class TestCancelledBlockDetachesTheRollback:
+    """A block unwound by cancellation must not hold __aexit__ for a full
+    rollback round trip: the cleanup goes detached (drained at close), so
+    the cancellation propagates immediately."""
+
+    def test_context_exit_does_not_await_the_rollback_inline(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_done = asyncio.Event()
+
+            async def slow_rollback(req, timeout=None):
+                await asyncio.sleep(0.2)
+                rollback_done.set()
+
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=slow_rollback))
+            with pytest.raises(asyncio.CancelledError):
+                async with client.transaction():
+                    raise asyncio.CancelledError()
+            assert not rollback_done.is_set(), "the context exit awaited the rollback inline instead of detaching it"
+            await client.close()
+            assert rollback_done.is_set(), "the detached rollback was not drained"
+
+        asyncio.run(_inner())
+
+
+class TestCancelledChannelCloseKeepsCleanupUsable:
+    """If channel.close() itself is cancelled, the transport may still be
+    usable: the closing flag must be restored so later cancellations still
+    spawn their cleanup instead of forfeiting it."""
+
+    def test_cleanups_still_spawn_after_a_cancelled_close(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            class _HangingChannel:
+                async def close(self):
+                    await asyncio.sleep(10)
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang))
+            client._channel = _HangingChannel()
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await in_flight.wait()
+
+            closer = asyncio.create_task(client.close())
+            await asyncio.sleep(0.02)  # closer is awaiting channel.close()
+            closer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closer
+
+            stmt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stmt
+            await asyncio.sleep(0.05)
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "a cancelled channel close must not permanently disable cleanup"
+            )
+
+        asyncio.run(_inner())
