@@ -2455,3 +2455,104 @@ class TestCancelledAbortedRetrySpawnsCleanup:
             assert calls["n"] == 3, "a cancelled aborted-branch retry got no detached cleanup"
 
         asyncio.run(_inner())
+
+
+class TestBeginWorksWithGrpcStyleAwaitables:
+    """A real grpc.aio unary stub returns a UnaryUnaryCall — an AWAITABLE,
+    not a coroutine object — and loop.create_task() accepts only coroutines.
+    AsyncMock hides this by returning coroutines, so this test wires a
+    call-like awaitable the way the real transport does."""
+
+    def test_begin_accepts_a_non_coroutine_awaitable(self):
+        from unittest.mock import MagicMock
+
+        class _CallLike:
+            def __init__(self, resp):
+                self._resp = resp
+
+            def __await__(self):
+                async def _deliver():
+                    return self._resp
+
+                return _deliver().__await__()
+
+        async def _inner() -> None:
+            client = _async_client(
+                BeginTransaction=MagicMock(
+                    side_effect=lambda req, timeout=None: _CallLike(
+                        cypher_pb2.BeginTransactionResponse(transaction_id=42)
+                    )
+                )
+            )
+            tx = await client.begin_transaction()
+            assert tx.transaction_id == 42
+
+        asyncio.run(_inner())
+
+
+class TestAsyncStatementSettlesAfterProcessControlException:
+    """KeyboardInterrupt or SystemExit raised from inside the awaited
+    statement matches neither the gRPC nor the cancellation handler; the
+    handle must still close conservatively (aborted, cleanup unconfirmed)
+    instead of staying "executing" forever."""
+
+    def test_interrupted_statement_closes_the_handle(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=KeyboardInterrupt))
+            tx = await client.begin_transaction()
+            with pytest.raises(KeyboardInterrupt):
+                await tx.cypher("CREATE (:A)")
+            assert tx._state == "aborted", "the interruption left the handle parked in-flight"
+            await tx.rollback()  # must be able to send the cleanup
+            await client.close()
+            assert client._cypher_stub.RollbackTransaction.await_count >= 1
+
+        asyncio.run(_inner())
+
+
+class TestAsyncCommitSettlesAfterProcessControlException:
+    """KeyboardInterrupt or SystemExit raised from inside the awaited commit
+    leaves the outcome unknowable — the request may already have applied —
+    so the handle must settle as indeterminate, not stay "committing"."""
+
+    def test_interrupted_commit_is_indeterminate(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=KeyboardInterrupt))
+            tx = await client.begin_transaction()
+            with pytest.raises(KeyboardInterrupt):
+                await tx.commit()
+            assert tx._state == "indeterminate"
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.cypher("RETURN 1")
+
+        asyncio.run(_inner())
+
+
+class TestUnknownTransactionAnswerConfirmsCleanup:
+    """The server answering a cleanup rollback with NOT_FOUND ("unknown
+    transaction id") is a definitive statement that nothing is held: the
+    cleanup must read as confirmed, so no redundant retries follow and an
+    explicit rollback() can settle the handle."""
+
+    def test_not_found_confirms_the_cleanup(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_ServerRejected()),
+                RollbackTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.NOT_FOUND)),
+            )
+            tx = await client.begin_transaction()
+            with ctx_suppress(grpc.RpcError):
+                await tx.cypher("CREATE (:A)")  # aborts; cleanup answered NOT_FOUND
+            assert tx._cleanup_confirmed is True, "a definitive unknown-id answer read as a lost request"
+            await tx.rollback()
+            assert tx._state == "rolled_back"
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, "redundant cleanup retry"
+
+        asyncio.run(_inner())

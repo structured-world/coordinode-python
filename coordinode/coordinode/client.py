@@ -399,7 +399,7 @@ class AsyncTransaction:
         )
 
         self._cleanup_confirmed = False
-        with suppress(Exception):
+        try:
             await self._client._cypher_stub.RollbackTransaction(
                 RollbackTransactionRequest(transaction_id=self._id),
                 # Capped by the client's own timeout too: a caller who
@@ -408,6 +408,16 @@ class AsyncTransaction:
                 timeout=min(_CLEANUP_TIMEOUT_SECS, self._client._timeout),
             )
             self._cleanup_confirmed = True
+        except grpc.RpcError as exc:
+            # NOT_FOUND is the server's "unknown transaction id": a definitive
+            # statement that nothing is held under this id any more — as
+            # settled as a successful rollback. Every other failure (a lost
+            # request most of all) leaves the cleanup unconfirmed, retriable.
+            with suppress(Exception):
+                if exc.code() == grpc.StatusCode.NOT_FOUND:
+                    self._cleanup_confirmed = True
+        except Exception:
+            pass
 
     async def cypher(
         self,
@@ -489,6 +499,16 @@ class AsyncTransaction:
             self._state = "aborted"
             self._spawn_cleanup()
             raise
+        except BaseException:
+            # KeyboardInterrupt / SystemExit raised from inside the awaited
+            # call (or any failure that is neither gRPC nor cancellation)
+            # matches none of the handlers above and would park the handle
+            # in "executing" forever. Settle conservatively: no commit was
+            # sent, so nothing can apply — close as aborted with a detached
+            # bounded cleanup, and let the exception propagate.
+            self._state = "aborted"
+            self._spawn_cleanup()
+            raise
         if self._abandoned:
             # The owning context exited while this statement was still in
             # flight: nobody is left to commit or roll back, so the buffered
@@ -558,6 +578,16 @@ class AsyncTransaction:
             if self._abandoned:
                 # The owning context is gone; nobody will run the
                 # indeterminate cleanup, so it goes detached from here.
+                self._spawn_cleanup()
+            raise
+        except BaseException:
+            # KeyboardInterrupt / SystemExit raised from inside the awaited
+            # call matches neither handler above and would park the handle in
+            # "committing" forever. The request may already have applied, so
+            # the only honest settlement is indeterminate — as the sync
+            # wrapper already does for interrupts at the loop boundary.
+            self._state = "indeterminate"
+            if self._abandoned:
                 self._spawn_cleanup()
             raise
         self._state = "committed"
@@ -924,9 +954,13 @@ class AsyncCoordinodeClient:
         # no handle, nothing for close() to drain, a pinned snapshot until
         # the idle sweep. On cancellation the task keeps running detached and
         # its late reply is handed straight to a rollback.
-        begin = asyncio.get_running_loop().create_task(
-            self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
-        )
+        # Wrapped in a coroutine: a real grpc.aio stub returns a
+        # UnaryUnaryCall — an awaitable, NOT a coroutine object — and
+        # create_task() accepts only the latter.
+        async def _begin() -> Any:
+            return await self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
+
+        begin = asyncio.get_running_loop().create_task(_begin())
         try:
             resp = await asyncio.shield(begin)
         except asyncio.CancelledError:
