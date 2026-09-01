@@ -2639,3 +2639,82 @@ class TestTransportCancelledCleanupKeepsTheStatementError:
             assert tx._state == "aborted"
 
         asyncio.run(_inner())
+
+
+class TestTransportCancelledCommitCleanupKeepsTheError:
+    """A CancelledError raised by the TRANSPORT while the automatic commit's
+    cleanup runs, with no cancellation pending on the task, must not replace
+    the commit's own gRPC failure — the same rule the statement path
+    follows."""
+
+    def test_commit_error_survives_a_spurious_cleanup_cancellation(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+                RollbackTransaction=AsyncMock(side_effect=asyncio.CancelledError()),
+            )
+            with pytest.raises(_TransportError):
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+            assert tx._state == "indeterminate"
+
+        asyncio.run(_inner())
+
+
+class TestTransportCancelledCleanupKeepsANormalExit:
+    """The same rule on the NORMAL exit: a manual commit caught inside the
+    block leaves the handle indeterminate, and a transport-raised
+    CancelledError during the exit's cleanup must not turn a successful
+    block into a cancelled one."""
+
+    def test_normal_exit_survives_a_spurious_cleanup_cancellation(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+                RollbackTransaction=AsyncMock(side_effect=asyncio.CancelledError()),
+            )
+            async with client.transaction() as tx:
+                await tx.cypher("CREATE (:A)")
+                with ctx_suppress(grpc.RpcError):
+                    await tx.commit()
+            assert tx._state == "indeterminate"
+
+        asyncio.run(_inner())
+
+
+class TestQueuedStatementIsSeenBeforeAutoCommit:
+    """A statement queued with create_task and never awaited has not reached
+    its state reservation when the block exits; auto-committing then would
+    report success while that write is silently dropped. The exit must give
+    queued work its first step and see the in-flight operation."""
+
+    def test_queued_statement_blocks_the_auto_commit(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            # The statement must actually reach the wire and wait there, the
+            # way a real RPC does: a mock that returns without suspending
+            # would finish the whole statement within that first step, and
+            # there would be nothing in flight to catch.
+            async def hang(req, timeout=None):
+                await asyncio.sleep(10)
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang))
+            bg = None
+            with pytest.raises(RuntimeError, match="in flight"):
+                async with client.transaction() as tx:
+                    bg = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            assert client._cypher_stub.CommitTransaction.await_count == 0, (
+                "the block auto-committed while a queued statement was pending"
+            )
+            bg.cancel()
+            with ctx_suppress(asyncio.CancelledError):
+                await bg
+
+        asyncio.run(_inner())

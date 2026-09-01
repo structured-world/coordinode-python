@@ -75,6 +75,21 @@ _IN_FLIGHT_STATES = {
 }
 
 
+def _caller_is_being_cancelled() -> bool:
+    """Whether a cancellation of the running task is actually pending.
+
+    A cleanup RPC can raise :exc:`asyncio.CancelledError` on its own — a
+    channel closing under it, say — with nobody having cancelled this task.
+    Propagating that would replace the outcome the caller needs (the
+    statement's failure, the commit's error, a clean exit) with a
+    cancellation that never happened. Only a real pending cancellation
+    supersedes those, and asyncio does not re-inject a swallowed one, so it
+    must be re-raised rather than dropped.
+    """
+    task = asyncio.current_task()
+    return task is not None and bool(task.cancelling())
+
+
 def _rpc_outcome_is_ambiguous(exc: grpc.RpcError) -> bool:
     """Whether this failure leaves the server's state unknowable.
 
@@ -497,8 +512,7 @@ class AsyncTransaction:
                 # CancelledError raised by the transport itself (a closing
                 # channel) must not replace the error the caller needs.
                 self._spawn_cleanup()
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
+                if _caller_is_being_cancelled():
                     raise
             raise
         except asyncio.CancelledError:
@@ -628,10 +642,12 @@ class AsyncTransaction:
                 await self._best_effort_rollback()
             except asyncio.CancelledError:
                 # A direct caller has no context manager to retry for it:
-                # hand the interrupted cleanup to a detached task before the
-                # cancellation propagates.
+                # hand the interrupted cleanup to a detached task. Only a
+                # real cancellation then supersedes the indeterminate
+                # verdict below; a transport-raised one must not hide it.
                 self._spawn_cleanup()
-                raise
+                if _caller_is_being_cancelled():
+                    raise
             raise RuntimeError(
                 "Cannot promise a rollback: the commit's reply was lost, so its writes "
                 "may already be applied. A rollback request was sent in case the commit "
@@ -651,10 +667,12 @@ class AsyncTransaction:
                 except asyncio.CancelledError:
                     # Same rule as the open and indeterminate branches: a
                     # direct caller has no exit handler to retry for it, so
-                    # the interrupted retry goes detached before the
-                    # cancellation propagates.
+                    # the interrupted retry goes detached. Only a real
+                    # cancellation propagates; a transport-raised one must
+                    # not fail a rollback that has met its contract.
                     self._spawn_cleanup()
-                    raise
+                    if _caller_is_being_cancelled():
+                        raise
                 if not self._cleanup_confirmed:
                     # The retry failed too. The discard promise still holds
                     # (no commit was ever sent), but the server may hold the
@@ -1083,13 +1101,7 @@ class AsyncCoordinodeClient:
                 except asyncio.CancelledError:
                     if not tx._cleanup_confirmed:
                         tx._spawn_cleanup()
-                    # Propagate only a REAL pending cancellation of this task
-                    # (asyncio does not re-inject a swallowed one). A
-                    # CancelledError thrown by the transport itself, with no
-                    # cancellation pending, is just a failed rollback — and a
-                    # failed rollback must never replace the block's error.
-                    task = asyncio.current_task()
-                    if task is not None and task.cancelling():
+                    if _caller_is_being_cancelled():
                         raise
                 except Exception:
                     if not tx._cleanup_confirmed:
@@ -1129,14 +1141,25 @@ class AsyncCoordinodeClient:
                 # also failed) and raised a different error: same bounded
                 # retry as the normal-exit path, preserving the block's
                 # exception. A cancellation mid-retry propagates with a
-                # detached retry spawned.
+                # detached retry spawned; a transport-raised one does not
+                # replace the block's error.
                 try:
                     await tx._best_effort_rollback()
                 except asyncio.CancelledError:
                     tx._spawn_cleanup()
-                    raise
+                    if _caller_is_being_cancelled():
+                        raise
             raise
         else:
+            # One loop turn before deciding anything: an operation the block
+            # QUEUED with create_task and never awaited has not run yet, so
+            # its state reservation has not happened and the handle still
+            # reads "open" — auto-committing here would report success while
+            # that write is silently dropped. The ready queue is FIFO, so a
+            # task created inside the block runs its first step (up to its
+            # own state reservation, which is synchronous) ahead of this
+            # continuation, and the guard below sees it.
+            await asyncio.sleep(0)
             if tx._state in _IN_FLIGHT_STATES:
                 # The block exited while an operation it started (in a
                 # background task) is still in flight: reporting a successful
@@ -1171,12 +1194,13 @@ class AsyncCoordinodeClient:
                         try:
                             await tx._best_effort_rollback()
                         except asyncio.CancelledError:
-                            # Suppressing this would re-raise the commit
-                            # error and LOSE the cancellation — asyncio does
-                            # not re-inject a swallowed one. Spawn the
-                            # detached retry and let it propagate.
+                            # A real cancellation must propagate (asyncio
+                            # does not re-inject a swallowed one); a
+                            # transport-raised one is just a failed cleanup
+                            # and must leave the commit's error in place.
                             tx._spawn_cleanup()
-                            raise
+                            if _caller_is_being_cancelled():
+                                raise
                     raise
             elif tx._state == "indeterminate":
                 # A manual commit() inside the block failed ambiguously and
@@ -1187,12 +1211,14 @@ class AsyncCoordinodeClient:
                 try:
                     await tx._best_effort_rollback()
                 except asyncio.CancelledError:
-                    # Swallowing the cancellation here would turn a cancelled
+                    # Swallowing a REAL cancellation would turn a cancelled
                     # exit into a successful-looking one — propagate it, and
                     # hand the interrupted cleanup to a detached retry so the
-                    # server transaction is still freed.
+                    # server transaction is still freed. A transport-raised
+                    # one must not fail an otherwise clean exit.
                     tx._spawn_cleanup()
-                    raise
+                    if _caller_is_being_cancelled():
+                        raise
             elif tx._state == "aborted" and not tx._cleanup_confirmed:
                 # A failed statement (or manual rollback) whose own cleanup
                 # also failed, with the error caught inside the block: retry
@@ -1202,7 +1228,8 @@ class AsyncCoordinodeClient:
                     await tx._best_effort_rollback()
                 except asyncio.CancelledError:
                     tx._spawn_cleanup()
-                    raise
+                    if _caller_is_being_cancelled():
+                        raise
 
     async def vector_search(
         self,
