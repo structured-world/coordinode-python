@@ -2228,3 +2228,86 @@ class TestSyncInterruptUnwindUsesBoundedCleanup:
         assert recorded["timeout"] == 5.0, (
             "an interrupt unwind must use the bounded cleanup deadline, not the full rollback timeout"
         )
+
+
+class TestDirectRollbackCancellationSpawnsCleanup:
+    """A transaction rolled back directly (no context manager) and cancelled
+    mid-RPC has no exit handler to retry for it, and the cancelled owner may
+    never call again: rollback() itself must hand the cleanup to a detached
+    task before propagating the cancellation."""
+
+    def test_cancelled_direct_rollback_gets_detached_retry(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    rollback_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=rollback))
+            tx = await client.begin_transaction()
+            t = asyncio.create_task(tx.rollback())
+            await rollback_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry
+            assert calls["n"] == 2, "a cancelled direct rollback got no detached retry"
+
+        asyncio.run(_inner())
+
+
+class TestExceptionalExitRetriesUnconfirmedCleanup:
+    """A block that catches a failed statement (whose cleanup also failed)
+    and raises a DIFFERENT error reaches the exceptional exit as aborted
+    with the cleanup unconfirmed; the exit must retry the bounded request
+    while preserving the block's own exception."""
+
+    def test_exceptional_exit_retries_and_keeps_the_error(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback = AsyncMock(
+                side_effect=[
+                    _TransportError(grpc.StatusCode.UNAVAILABLE),
+                    cypher_pb2.RollbackTransactionResponse(),
+                ]
+            )
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_ServerRejected()),
+                RollbackTransaction=rollback,
+            )
+            with pytest.raises(RuntimeError, match="different"):
+                async with client.transaction() as tx:
+                    try:
+                        await tx.cypher("CREATE (:A)")
+                    except grpc.RpcError:
+                        raise RuntimeError("different") from None
+            assert client._cypher_stub.RollbackTransaction.await_count == 2, (
+                "the failed cleanup was never retried on the exceptional exit"
+            )
+
+        asyncio.run(_inner())
+
+
+class TestSyncCommitCleanupInterruptPropagates:
+    """Ctrl-C arriving while the sync automatic-commit cleanup is running is
+    the user's word: it must propagate instead of being swallowed into
+    reporting the earlier commit error."""
+
+    def test_interrupt_during_commit_cleanup_wins(self):
+        from unittest.mock import AsyncMock
+
+        client = _sync_client(
+            CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+            RollbackTransaction=AsyncMock(side_effect=KeyboardInterrupt),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:A)")

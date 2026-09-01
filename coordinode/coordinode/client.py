@@ -310,6 +310,10 @@ class AsyncTransaction:
         # hands the transaction to cleanup instead of returning the handle to
         # "open" with nobody left to commit or roll it back.
         self._abandoned = False
+        # The pending detached cleanup, if any: several unwinding layers can
+        # each ask for one (rollback() itself, then the context manager), and
+        # one bounded attempt per transaction is enough.
+        self._cleanup_task: asyncio.Task[None] | None = None
 
     def __repr__(self) -> str:
         return f"AsyncTransaction(id={self._id}, state={self._state})"
@@ -370,8 +374,14 @@ class AsyncTransaction:
             # The channel is (about to be) gone: a spawn now could only fail
             # against it. The server's idle sweep collects the transaction.
             return
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            # Several unwinding layers can each request the cleanup (the
+            # rollback that was cancelled, then the context manager on its
+            # way out); one pending bounded attempt is enough.
+            return
         pending = self._client._pending_cleanups
         task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
+        self._cleanup_task = task
         pending.add(task)
         task.add_done_callback(pending.discard)
 
@@ -608,6 +618,14 @@ class AsyncTransaction:
             await self._client._cypher_stub.RollbackTransaction(
                 RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
             )
+        except asyncio.CancelledError:
+            # A cancelled owner may never call again, and a direct caller
+            # has no context manager to retry for it: hand the cleanup to a
+            # detached task (which also marks it unconfirmed) before the
+            # cancellation propagates.
+            self._state = "aborted"
+            self._spawn_cleanup()
+            raise
         except BaseException:
             # The request may never have arrived: the discard promise still
             # holds (no commit was ever sent), but the server may hold the
@@ -987,6 +1005,17 @@ class AsyncCoordinodeClient:
                 tx._abandoned = True
                 if tx._state == "committing":
                     tx._spawn_cleanup()
+            elif tx._state == "aborted" and not tx._cleanup_confirmed:
+                # The block caught a failed statement (whose own cleanup
+                # also failed) and raised a different error: same bounded
+                # retry as the normal-exit path, preserving the block's
+                # exception. A cancellation mid-retry propagates with a
+                # detached retry spawned.
+                try:
+                    await tx._best_effort_rollback()
+                except asyncio.CancelledError:
+                    tx._spawn_cleanup()
+                    raise
             raise
         else:
             if tx._state in ("executing", "committing"):
@@ -1798,8 +1827,10 @@ class CoordinodeClient:
                 # Mirrors the async context manager: the commit may never
                 # have reached the server, so the bounded best-effort request
                 # frees the transaction in that case without touching the
-                # indeterminate verdict.
-                with suppress(BaseException):
+                # indeterminate verdict. Ordinary cleanup failures stay
+                # suppressed; a FRESH Ctrl-C or SystemExit arriving
+                # mid-cleanup is the user's word and propagates.
+                with suppress(Exception, asyncio.CancelledError):
                     self._run(tx._inner._best_effort_rollback())
             # A rollback that itself failed, or an in-task interruption's
             # conservative settlement, leaves the handle aborted with the
@@ -1807,7 +1838,7 @@ class CoordinodeClient:
             # before the exception propagates, or the server holds the
             # transaction until its idle sweep.
             if tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed:
-                with suppress(BaseException):
+                with suppress(Exception, asyncio.CancelledError):
                     self._run(tx._inner._best_effort_rollback())
             raise
         else:
@@ -1816,7 +1847,11 @@ class CoordinodeClient:
                     tx.commit()
                 except BaseException:
                     if tx._inner._state == "indeterminate":
-                        with suppress(BaseException):
+                        # Ordinary cleanup failures stay suppressed (the
+                        # commit's own error is the story); a FRESH Ctrl-C
+                        # or SystemExit arriving mid-cleanup is the user's
+                        # word and propagates instead.
+                        with suppress(Exception, asyncio.CancelledError):
                             self._run(tx._inner._best_effort_rollback())
                     raise
             elif tx._inner._state == "indeterminate":
@@ -1824,14 +1859,14 @@ class CoordinodeClient:
                 # manual commit() that failed ambiguously and was CAUGHT
                 # inside the block still gets the bounded best-effort
                 # cleanup, with the indeterminate verdict preserved.
-                with suppress(BaseException):
+                with suppress(Exception, asyncio.CancelledError):
                     self._run(tx._inner._best_effort_rollback())
             elif tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed:
                 # Mirrors the async normal-exit rule: a failed statement (or
                 # manual rollback) whose own cleanup also failed, with the
                 # error caught inside the block, still gets the bounded
                 # retry here.
-                with suppress(BaseException):
+                with suppress(Exception, asyncio.CancelledError):
                     self._run(tx._inner._best_effort_rollback())
 
     def vector_search(
