@@ -66,14 +66,18 @@ with CoordinodeClient("localhost:7080") as db:
 ## Transactions
 
 `db.cypher(...)` commits each statement on its own. To make several statements
-land together, or not at all, run them in a transaction:
+land together, or not at all, run them in a transaction (each snippet opens
+its own client, so it runs as pasted):
 
 ```python
-with db.transaction() as tx:
-    tx.cypher("CREATE (:Person {name: $n})", params={"n": "Alice"})
-    tx.cypher("CREATE (:Person {name: $n})", params={"n": "Bob"})
-    # commits here; an exception anywhere in the block rolls back instead,
-    # leaving neither person in the database
+from coordinode import CoordinodeClient
+
+with CoordinodeClient("localhost:7080") as db:
+    with db.transaction() as tx:
+        tx.cypher("CREATE (:Person {name: $n})", params={"n": "Alice"})
+        tx.cypher("CREATE (:Person {name: $n})", params={"n": "Bob"})
+        # commits here; an exception anywhere in the block rolls back
+        # instead, leaving neither person in the database
 ```
 
 The same surface is on `AsyncCoordinodeClient`, with `async with` and awaited
@@ -82,15 +86,19 @@ statements. When the commit point sits outside a block, drive it by hand:
 ```python
 from contextlib import suppress
 
-tx = db.begin_transaction()
-try:
-    tx.cypher("MERGE (n:Entity {name: $n})", params={"n": "Alice"})
-    applied_index = tx.commit()
-except Exception:
-    # Suppressed so a failing rollback cannot replace the error that caused it.
-    with suppress(Exception):
-        tx.rollback()
-    raise
+from coordinode import CoordinodeClient
+
+with CoordinodeClient("localhost:7080") as db:
+    tx = db.begin_transaction()
+    try:
+        tx.cypher("MERGE (n:Entity {name: $n})", params={"n": "Alice"})
+        applied_index = tx.commit()
+    except Exception:
+        # Suppressed so a failing rollback cannot replace the error that
+        # caused it.
+        with suppress(Exception):
+            tx.rollback()
+        raise
 ```
 
 Requires a CoordiNode server of **v0.5.5 or newer** — the release this client
