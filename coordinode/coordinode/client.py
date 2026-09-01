@@ -934,13 +934,28 @@ class AsyncCoordinodeClient:
             raise
         except BaseException:
             if tx.is_open:
-                # CancelledError included: it is a BaseException, so a plain
-                # Exception suppression would let a rollback cancelled on the
-                # way out REPLACE the error that caused the rollback. If the
-                # surrounding task is being cancelled, that cancellation is
-                # still pending and resurfaces at its next await.
-                with suppress(Exception, asyncio.CancelledError):
+                # An ordinary rollback failure must never replace the error
+                # that caused the rollback — but a CANCELLATION landing
+                # mid-rollback propagates (asyncio does not re-inject a
+                # swallowed one). Either way an interrupted or failed
+                # rollback leaves the cleanup unconfirmed: hand it to a
+                # detached retry before the scope is gone.
+                try:
                     await tx.rollback()
+                except asyncio.CancelledError:
+                    if not tx._cleanup_confirmed:
+                        tx._spawn_cleanup()
+                    # Propagate only a REAL pending cancellation of this task
+                    # (asyncio does not re-inject a swallowed one). A
+                    # CancelledError thrown by the transport itself, with no
+                    # cancellation pending, is just a failed rollback — and a
+                    # failed rollback must never replace the block's error.
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling():
+                        raise
+                except Exception:
+                    if not tx._cleanup_confirmed:
+                        tx._spawn_cleanup()
             elif tx._state == "indeterminate":
                 # The commit may never have REACHED the server, leaving the
                 # transaction open there with the caller gone. The bounded
@@ -1765,6 +1780,14 @@ class CoordinodeClient:
                 # have reached the server, so the bounded best-effort request
                 # frees the transaction in that case without touching the
                 # indeterminate verdict.
+                with suppress(BaseException):
+                    self._run(tx._inner._best_effort_rollback())
+            # A rollback that itself failed, or an in-task interruption's
+            # conservative settlement, leaves the handle aborted with the
+            # cleanup unconfirmed: retry the bounded best-effort request
+            # before the exception propagates, or the server holds the
+            # transaction until its idle sweep.
+            if tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed:
                 with suppress(BaseException):
                     self._run(tx._inner._best_effort_rollback())
             raise

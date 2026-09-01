@@ -2058,3 +2058,62 @@ class TestSyncLocalEncodingFailureKeepsTheHandleUsable:
         assert tx.is_open is True, "a local encoding failure aborted a usable transaction"
         tx.rollback()
         assert client._async._cypher_stub.RollbackTransaction.await_count == 1
+
+
+class TestCancelledExceptionalRollbackPropagates:
+    """Cancellation landing while the exceptional-exit rollback awaits the
+    server must propagate (not be traded for the block's earlier error) and
+    the interrupted rollback must get its detached retry."""
+
+    def test_cancellation_mid_exceptional_rollback_is_not_swallowed(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    rollback_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(RollbackTransaction=AsyncMock(side_effect=rollback))
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    raise ValueError("boom")
+
+            t = asyncio.create_task(run_block())
+            await rollback_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry
+            assert calls["n"] == 2, "the interrupted exceptional rollback got no retry"
+
+        asyncio.run(_inner())
+
+
+class TestSyncContextRetriesSettledInterruptCleanup:
+    """An in-task interruption settles the sync handle as aborted with the
+    cleanup unconfirmed; the surrounding sync transaction context must then
+    send the bounded best-effort rollback on exit instead of leaving the
+    server transaction to the idle sweep."""
+
+    def test_interrupted_statement_in_context_still_rolls_back(self):
+        from unittest.mock import AsyncMock
+
+        async def ki(req, timeout=None):
+            raise KeyboardInterrupt
+
+        client = _sync_client(ExecuteCypher=AsyncMock(side_effect=ki))
+        with pytest.raises(KeyboardInterrupt):
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:A)")
+        assert tx._inner._state == "aborted"
+        assert client._async._cypher_stub.RollbackTransaction.await_count >= 1, (
+            "the interrupted sync transaction was left to the idle sweep"
+        )
