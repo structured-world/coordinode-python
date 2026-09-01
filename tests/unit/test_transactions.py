@@ -1254,3 +1254,56 @@ class TestConcurrentCommitSerialization:
             assert client._cypher_stub.ExecuteCypher.await_count == 0
 
         asyncio.run(_inner())
+
+
+class TestConcurrentStatementSerialization:
+    """The mirror image of the commit race: while a statement awaits its RPC
+    the handle must not accept a concurrent commit (the commit could land
+    without the statement's write, then the statement's failure would
+    overwrite `committed` with `aborted`) nor a second statement."""
+
+    def test_a_commit_during_a_statement_is_refused(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            started = asyncio.Event()
+
+            async def slow_execute(req, timeout=None):
+                started.set()
+                await asyncio.sleep(0.05)
+                return _execute_response()
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=slow_execute))
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await started.wait()
+            with pytest.raises(RuntimeError, match="in flight"):
+                await tx.commit()
+            assert client._cypher_stub.CommitTransaction.await_count == 0
+            await stmt
+            # The handle is usable again once the statement resolved.
+            assert await tx.commit() == 7
+
+        asyncio.run(_inner())
+
+    def test_a_second_concurrent_statement_is_refused(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            started = asyncio.Event()
+
+            async def slow_execute(req, timeout=None):
+                started.set()
+                await asyncio.sleep(0.05)
+                return _execute_response()
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=slow_execute))
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await started.wait()
+            with pytest.raises(RuntimeError, match="in flight"):
+                await tx.cypher("CREATE (:B)")
+            await stmt
+            assert client._cypher_stub.ExecuteCypher.await_count == 1
+
+        asyncio.run(_inner())

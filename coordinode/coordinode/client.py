@@ -314,11 +314,12 @@ class AsyncTransaction:
     def _require_open(self, action: str) -> None:
         if self._state == "open":
             return
-        if self._state == "committing":
+        if self._state in ("committing", "executing"):
+            in_flight = "commit" if self._state == "committing" else "statement"
             raise RuntimeError(
-                f"Cannot {action} this transaction: its commit is already in flight. "
-                "Concurrent operations on one transaction handle would race the "
-                "commit's outcome; await it instead."
+                f"Cannot {action} this transaction: a {in_flight} on it is already in "
+                "flight. Concurrent operations on one transaction handle would race "
+                "its outcome; await the in-flight operation instead."
             )
         if self._state == "aborted":
             raise RuntimeError(
@@ -403,6 +404,11 @@ class AsyncTransaction:
         )
 
         self._require_open("run a statement in")
+        # Transition BEFORE the await, mirroring commit(): a concurrent
+        # commit slipping in while this statement is in flight could land
+        # without the statement's write, and the statement's late "unknown
+        # transaction" failure would then overwrite the real outcome.
+        self._state = "executing"
         req = ExecuteCypherRequest(
             query=query,
             parameters=dict_to_props(params or {}),
@@ -447,6 +453,7 @@ class AsyncTransaction:
             self._state = "aborted"
             self._spawn_cleanup()
             raise
+        self._state = "open"
         return _rows_to_dicts(resp)
 
     async def commit(self) -> int:
