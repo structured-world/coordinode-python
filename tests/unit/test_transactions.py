@@ -1663,3 +1663,103 @@ class TestReconnectWaitsForActiveShutdown:
             await client.close()
 
         asyncio.run(_inner())
+
+
+class TestAbandonedInFlightStatementDoesNotReopen:
+    """A block that starts a background statement and then raises leaves the
+    scope while the operation is still in flight; when the straggler later
+    completes, it must not return the handle to `open` — nobody is left to
+    commit or roll it back, so its buffered writes and pinned snapshot would
+    leak until the idle sweep."""
+
+    def test_straggler_hands_the_transaction_to_cleanup(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+            release = asyncio.Event()
+
+            async def gated(req, timeout=None):
+                in_flight.set()
+                await release.wait()
+                return _execute_response()
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=gated))
+            bg = None
+            with pytest.raises(ValueError):
+                async with client.transaction() as tx:
+                    bg = asyncio.create_task(tx.cypher("CREATE (:A)"))
+                    await in_flight.wait()
+                    raise ValueError("boom")
+            release.set()
+            await bg  # the statement completes after the owner is gone
+            assert tx.is_open is False, "the straggler returned the abandoned handle to open"
+            await client.close()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "an abandoned transaction was left to the idle sweep"
+            )
+
+        asyncio.run(_inner())
+
+
+class TestRollbackBeforeTheDetachedCleanupFirstTurn:
+    """The cleanup-confirmed flag must fall when the detached task is
+    SCHEDULED, not on its first step: an explicit rollback() racing in before
+    that first turn otherwise sees the flag still up, sends nothing, and a
+    loop shutdown can then cancel the pending task with nothing ever sent."""
+
+    def test_explicit_rollback_in_the_prestart_window_sends(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang))
+            tx = await client.begin_transaction()
+            stmt = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await in_flight.wait()
+            stmt.cancel()
+            # One yield: the cancellation handler runs (spawning the detached
+            # cleanup), but the detached task itself is still behind us in
+            # the ready queue — the pre-start window.
+            await asyncio.sleep(0)
+            await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count >= 1, (
+                "rollback() trusted a cleanup that had not started yet"
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await stmt
+            await client.close()
+
+        asyncio.run(_inner())
+
+
+class TestCaughtIndeterminateCommitCleansUpOnNormalExit:
+    """A manual commit() inside the block that fails ambiguously and is
+    CAUGHT there routes the exit through the normal path; the indeterminate
+    transaction must still get the bounded best-effort cleanup in case the
+    commit never reached the server, with the verdict preserved."""
+
+    def test_normal_exit_sends_cleanup_and_keeps_the_verdict(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED))
+            )
+            async with client.transaction() as tx:
+                await tx.cypher("CREATE (:A)")
+                with ctx_suppress(grpc.RpcError):
+                    await tx.commit()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "a caught ambiguous commit left the server transaction to the idle sweep"
+            )
+            with pytest.raises(RuntimeError, match="outcome is unknown"):
+                await tx.cypher("RETURN 1")
+
+        asyncio.run(_inner())

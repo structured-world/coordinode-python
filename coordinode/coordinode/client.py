@@ -305,6 +305,11 @@ class AsyncTransaction:
         # explicit rollback() on the aborted handle retries the cleanup
         # instead of declaring the transaction already gone.
         self._cleanup_confirmed = True
+        # Set by the context manager when it exits while an operation started
+        # inside the block is still in flight: the straggler, on completion,
+        # hands the transaction to cleanup instead of returning the handle to
+        # "open" with nobody left to commit or roll it back.
+        self._abandoned = False
 
     def __repr__(self) -> str:
         return f"AsyncTransaction(id={self._id}, state={self._state})"
@@ -358,6 +363,12 @@ class AsyncTransaction:
             # The channel is (about to be) gone: a spawn now could only fail
             # against it. The server's idle sweep collects the transaction.
             return
+        # Unconfirmed from the moment the cleanup is SCHEDULED, not from its
+        # first step: an explicit rollback() racing in before the detached
+        # task's first turn must see the cleanup as not-yet-done and retry
+        # it, or a loop shutdown could cancel the pending task with nothing
+        # ever sent.
+        self._cleanup_confirmed = False
         pending = self._client._pending_cleanups
         task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
         pending.add(task)
@@ -467,6 +478,15 @@ class AsyncTransaction:
             self._state = "aborted"
             self._spawn_cleanup()
             raise
+        if self._abandoned:
+            # The owning context exited while this statement was still in
+            # flight: nobody is left to commit or roll back, so the buffered
+            # writes and pinned snapshot are handed to cleanup now instead of
+            # leaking until the idle sweep. The rows still go to whoever
+            # awaits the straggler.
+            self._state = "aborted"
+            self._spawn_cleanup()
+            return _rows_to_dicts(resp)
         self._state = "open"
         return _rows_to_dicts(resp)
 
@@ -506,6 +526,10 @@ class AsyncTransaction:
         except grpc.RpcError as exc:
             if _rpc_outcome_is_ambiguous(exc):
                 self._state = "indeterminate"
+                if self._abandoned:
+                    # The owning context is gone; nobody will run the
+                    # indeterminate cleanup, so it goes detached from here.
+                    self._spawn_cleanup()
             else:
                 # An answered rejection (a write conflict, most commonly): the
                 # server consumed the handle and applied nothing, so a
@@ -520,6 +544,10 @@ class AsyncTransaction:
             # case the indeterminate state exists for: leaving the transaction
             # open here would invite the retry that duplicates the writes.
             self._state = "indeterminate"
+            if self._abandoned:
+                # The owning context is gone; nobody will run the
+                # indeterminate cleanup, so it goes detached from here.
+                self._spawn_cleanup()
             raise
         self._state = "committed"
         return int(resp.applied_index)
@@ -705,6 +733,14 @@ class AsyncCoordinodeClient:
             # transport — and the next drain round above collects it. The
             # rollback stays possible until the transport is conclusively
             # gone, not merely scheduled to go.
+            #
+            # One window remains open BY DESIGN: a cleanup registered in the
+            # very loop turn in which the transport finishes closing is still
+            # drained below, but its request meets a dead channel and is
+            # suppressed. Closing that window would require holding the
+            # channel open until every in-flight operation settles, letting a
+            # single hung statement block shutdown forever; the server's idle
+            # sweep is the documented backstop for that residue instead.
             await channel.close()
             self._channel = None
         # Only now is the transport conclusively unavailable: a statement
@@ -859,6 +895,12 @@ class AsyncCoordinodeClient:
                 # bounded cleanup — the verdict stays indeterminate either
                 # way, and the cancellation is not held up.
                 tx._spawn_cleanup()
+            elif tx._state in ("executing", "committing"):
+                # An operation started in a background task is still in
+                # flight while this scope unwinds; it cannot be awaited or
+                # cancelled from here, so the straggler is marked to hand the
+                # transaction to cleanup when it completes.
+                tx._abandoned = True
             raise
         except BaseException:
             if tx.is_open:
@@ -877,6 +919,15 @@ class AsyncCoordinodeClient:
                 # changes. The verdict stays indeterminate either way.
                 with suppress(asyncio.CancelledError):
                     await tx._best_effort_rollback()
+            elif tx._state in ("executing", "committing"):
+                # The block raised while an operation it started (in a
+                # background task) is still in flight. Raising over the
+                # block's own error would mask it, and the operation cannot
+                # be awaited or cancelled from here — so the straggler is
+                # marked to hand the transaction to cleanup when it
+                # completes, instead of returning the handle to "open" with
+                # nobody left to use it.
+                tx._abandoned = True
             raise
         else:
             if tx._state in ("executing", "committing"):
@@ -886,6 +937,10 @@ class AsyncCoordinodeClient:
                 # already returned — buffered writes and a pinned snapshot can
                 # outlive the block unnoticed. Surface the misuse instead.
                 in_flight = "commit" if tx._state == "committing" else "statement"
+                # The raise below leaves the scope with the operation still
+                # running; the straggler hands the transaction to cleanup on
+                # completion, same as on an exceptional exit.
+                tx._abandoned = True
                 raise RuntimeError(
                     f"Transaction context exited while a {in_flight} on it is still "
                     "in flight. Await every operation started inside the block "
@@ -909,6 +964,14 @@ class AsyncCoordinodeClient:
                         with suppress(asyncio.CancelledError):
                             await tx._best_effort_rollback()
                     raise
+            elif tx._state == "indeterminate":
+                # A manual commit() inside the block failed ambiguously and
+                # the block CAUGHT it, so the exit is normal: the request may
+                # never have reached the server, leaving the transaction open
+                # there. Same bounded best-effort cleanup as the exception
+                # path; the verdict stays indeterminate.
+                with suppress(asyncio.CancelledError):
+                    await tx._best_effort_rollback()
 
     async def vector_search(
         self,
