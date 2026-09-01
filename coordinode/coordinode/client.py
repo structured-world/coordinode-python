@@ -1179,6 +1179,23 @@ class AsyncCoordinodeClient:
                 # exit then would let that operation race an owner that has
                 # already returned — buffered writes and a pinned snapshot can
                 # outlive the block unnoticed. Surface the misuse instead.
+                #
+                # An operation that queued and then failed instantly is NOT
+                # caught here, and cannot be. By the time the exit looks, it
+                # has finished, and its handle reads exactly like one belonging
+                # to a block that awaited the failure and chose to ignore it:
+                #
+                #     bg = asyncio.create_task(tx.cypher(q, bad_params))  # dropped
+                #     try: await tx.cypher(q, bad_params)                 # handled
+                #     except Exception: pass
+                #
+                # Both leave a failed statement and an open handle. Whether the
+                # result was ever retrieved lives inside the asyncio.Task and
+                # is not observable from the coroutine, and a task nobody
+                # awaits still runs to completion, so there is no signal to
+                # read. Treating a failed statement as misuse would reject the
+                # second case, which is legitimate. The guard covers what is
+                # unambiguous: work that has not finished.
                 in_flight = _IN_FLIGHT_STATES[tx._state]
                 # The raise below leaves the scope with the operation still
                 # running; the straggler hands the transaction to cleanup on
