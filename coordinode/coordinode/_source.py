@@ -118,18 +118,40 @@ def _header_safe(value: str) -> str:
     source of one is mundane: an application name read from a file arrives
     with the newline that ended it. A POSIX path may legally contain one too.
 
+    The encoding is injective, which matters more than it looks: two call
+    sites arriving as one string would not merely lose detail, they would be
+    reported as one place in the code, with the queries of one attributed to
+    the other. Two things buy that. The escape character escapes itself, so a
+    name holding a real newline differs from one holding the characters that
+    spell its escape. And each form is padded to a fixed width, so a character
+    outside the basic plane cannot spell the same thing as one inside it
+    followed by a digit.
+
     Escaped rather than dropped, because an escaped path still names the file
     and still groups with itself in the advisor, which is the whole job.
     """
-    # Both checks are single scans in C, and together they say exactly
-    # "every character is in 0x20..0x7e": isascii rules out the rest of
-    # Unicode, isprintable rules out the control characters and 0x7f while
-    # counting the space as printable.
-    if value.isascii() and value.isprintable():
+    # Three single scans in C, and together they say "every character is in
+    # 0x20..0x7e, and none of them is the escape character": isascii rules out
+    # the rest of Unicode, isprintable rules out the control characters and
+    # 0x7f while counting the space as printable, and a value with no
+    # backslash cannot collide with an escaped one.
+    if value.isascii() and value.isprintable() and "\\" not in value:
         return value
-    return "".join(
-        ch if " " <= ch <= "~" else f"\\x{ord(ch):02x}" if ord(ch) < 0x100 else f"\\u{ord(ch):04x}" for ch in value
-    )
+    return "".join(_escape(ch) for ch in value)
+
+
+def _escape(ch: str) -> str:
+    """One character as itself, or as a fixed-width escape. See _header_safe."""
+    if ch == "\\":
+        return "\\\\"
+    if " " <= ch <= "~":
+        return ch
+    point = ord(ch)
+    if point < 0x100:
+        return f"\\x{point:02x}"
+    if point < 0x10000:
+        return f"\\u{point:04x}"
+    return f"\\U{point:08x}"
 
 
 def identity(app_name: str, app_version: str) -> tuple[tuple[str, str], ...]:

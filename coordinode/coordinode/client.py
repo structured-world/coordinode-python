@@ -5,6 +5,7 @@ CoordinodeClient: synchronous and asynchronous gRPC client for CoordiNode.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 from collections.abc import AsyncIterator, Coroutine, Iterator, Sequence
@@ -134,6 +135,29 @@ def _make_channel(host: str, port: int, tls: bool) -> grpc.Channel:
     if tls:
         return grpc.secure_channel(target, grpc.ssl_channel_credentials())
     return grpc.insecure_channel(target)
+
+
+def _stands_in_for_a_coroutine_function(fn: Any) -> Any:
+    """Mark *fn* so introspection sees the coroutine function it replaces.
+
+    The query methods are plain methods returning a coroutine, so that the
+    call site can be read while the caller is still on the stack. A caller
+    still writes ``await client.cypher(...)``, but code that ASKS instead of
+    awaiting would get the wrong answer: `unittest.mock.create_autospec` reads
+    the predicate to decide whether to build an async double, and a
+    synchronous double hands back a plain value where the test awaits one.
+
+    Marked two ways because the levers differ by version: from 3.12 there is a
+    supported one, and before it the answer comes from an attribute that
+    ``asyncio.iscoroutinefunction`` (and therefore mock) reads.
+    """
+    mark = getattr(inspect, "markcoroutinefunction", None)
+    if mark is not None:
+        return mark(fn)
+    marker = getattr(asyncio.coroutines, "_is_coroutine", None)
+    if marker is not None:
+        fn._is_coroutine = marker
+    return fn
 
 
 async def _execute_cypher(
@@ -519,6 +543,7 @@ class AsyncTransaction:
             if _caller_is_being_cancelled():
                 raise
 
+    @_stands_in_for_a_coroutine_function
     def cypher(
         self,
         query: str,
@@ -1024,6 +1049,7 @@ class AsyncCoordinodeClient:
         # backstop for those.
         self._closing = True
 
+    @_stands_in_for_a_coroutine_function
     def cypher(
         self,
         query: str,

@@ -245,6 +245,42 @@ class TestNonCallSites:
         assert is_call_site(SourceLocation(file=neighbour, line=1, function="handler"))
 
 
+class TestIntrospection:
+    """The query methods stand in for the coroutine functions they used to be,
+    and everything that asks must still get that answer. The capture had to
+    move out of the body, but a caller still writes `await client.cypher(...)`,
+    and code that dispatches on the predicate — `unittest.mock.create_autospec`
+    most consequentially — must keep building async doubles. This holds with
+    tracking off, which is the default, so the cost of getting it wrong falls
+    on people not using the feature at all."""
+
+    def test_client_cypher_is_a_coroutine_function(self):
+        import inspect
+
+        assert inspect.iscoroutinefunction(AsyncCoordinodeClient.cypher)
+        assert asyncio.iscoroutinefunction(AsyncCoordinodeClient.cypher)
+
+    def test_transaction_cypher_is_a_coroutine_function(self):
+        import inspect
+
+        from coordinode.client import AsyncTransaction
+
+        assert inspect.iscoroutinefunction(AsyncTransaction.cypher)
+        assert asyncio.iscoroutinefunction(AsyncTransaction.cypher)
+
+    def test_autospec_builds_an_async_double(self):
+        """The concrete breakage: an autospecced client whose `cypher` came out
+        synchronous returns a plain value where the caller awaits."""
+        from unittest.mock import create_autospec
+
+        async def _inner() -> None:
+            double = create_autospec(AsyncCoordinodeClient, instance=True)
+            double.cypher.return_value = [{"n": 1}]
+            assert await double.cypher("RETURN 1") == [{"n": 1}]
+
+        asyncio.run(_inner())
+
+
 class TestScheduledQueries:
     """Everything that schedules the coroutine as a task runs its body after
     the frame that wrote the query has returned. The location is therefore
@@ -356,6 +392,31 @@ class TestWireContract:
         assert "app.py" in md["x-source-file"]
         assert "render" in md["x-source-function"]
         assert md["x-source-line"] == "47"
+
+    def test_escaping_does_not_merge_distinct_files(self):
+        """Two different files must not arrive as the same metadata.
+
+        The advisor groups by what it receives, so a collision does not lose
+        information, it invents it: the queries of one call site are reported
+        under another. A file whose name holds a real newline and a file whose
+        name holds the four characters that spell the escape are exactly such
+        a pair, which is why the escape character escapes itself.
+        """
+        with_newline = to_metadata(SourceLocation(file="/app/a\n.py", line=1, function="f"), ())
+        with_literal = to_metadata(SourceLocation(file="/app/a\\x0a.py", line=1, function="f"), ())
+        assert dict(with_newline)["x-source-file"] != dict(with_literal)["x-source-file"]
+
+    def test_escaping_is_fixed_width_per_form(self):
+        """The other way two names could arrive as one string.
+
+        An escape whose length varied with the code point would let a
+        character outside the basic plane spell the same thing as a character
+        inside it followed by a digit. Each form is therefore padded to its
+        own fixed width, as Python's own escapes are.
+        """
+        astral = to_metadata(SourceLocation(file="\U0001f600", line=1, function="f"), ())
+        bmp_then_digit = to_metadata(SourceLocation(file="ὠ0", line=1, function="f"), ())
+        assert dict(astral)["x-source-file"] != dict(bmp_then_digit)["x-source-file"]
 
     def test_values_are_printable(self):
         """ASCII alone is not the bar: gRPC refuses a control character in a
