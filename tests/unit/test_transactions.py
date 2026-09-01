@@ -2117,3 +2117,114 @@ class TestSyncContextRetriesSettledInterruptCleanup:
         assert client._async._cypher_stub.RollbackTransaction.await_count >= 1, (
             "the interrupted sync transaction was left to the idle sweep"
         )
+
+
+class TestNormalExitRetriesUnconfirmedCleanup:
+    """A failed statement whose own cleanup also failed, with the error
+    caught inside the block, reaches the normal exit as aborted with the
+    cleanup unconfirmed; the exit must retry the bounded request instead of
+    leaving the server transaction to the idle sweep."""
+
+    def test_async_normal_exit_retries(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback = AsyncMock(
+                side_effect=[
+                    _TransportError(grpc.StatusCode.UNAVAILABLE),
+                    cypher_pb2.RollbackTransactionResponse(),
+                ]
+            )
+            client = _async_client(
+                ExecuteCypher=AsyncMock(side_effect=_ServerRejected()),
+                RollbackTransaction=rollback,
+            )
+            async with client.transaction() as tx:
+                with ctx_suppress(grpc.RpcError):
+                    await tx.cypher("CREATE (:A)")
+            assert client._cypher_stub.RollbackTransaction.await_count == 2, (
+                "the failed cleanup was never retried on the normal exit"
+            )
+            assert tx._cleanup_confirmed is True
+
+        asyncio.run(_inner())
+
+    def test_sync_normal_exit_retries(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        rollback = AsyncMock(
+            side_effect=[
+                _TransportError(grpc.StatusCode.UNAVAILABLE),
+                cypher_pb2.RollbackTransactionResponse(),
+            ]
+        )
+        client = _sync_client(
+            ExecuteCypher=AsyncMock(side_effect=_ServerRejected()),
+            RollbackTransaction=rollback,
+        )
+        with client.transaction() as tx:
+            with ctx_suppress(grpc.RpcError):
+                tx.cypher("CREATE (:A)")
+        assert client._async._cypher_stub.RollbackTransaction.await_count == 2, (
+            "the failed cleanup was never retried on the sync normal exit"
+        )
+
+
+class TestSkippedShutdownCleanupIsUnconfirmed:
+    """The closing gate may skip the cleanup spawn, but the transaction can
+    still have reached the server: the skipped cleanup must read as
+    unconfirmed, so an explicit rollback() after a reconnect retries it
+    instead of trusting a cleanup that never ran."""
+
+    def test_gated_spawn_leaves_the_cleanup_unconfirmed(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            in_flight = asyncio.Event()
+
+            async def hang(req, timeout=None):
+                in_flight.set()
+                await asyncio.sleep(10)
+
+            client = _async_client(ExecuteCypher=AsyncMock(side_effect=hang))
+            tx = await client.begin_transaction()
+            task = asyncio.create_task(tx.cypher("CREATE (:A)"))
+            await in_flight.wait()
+            await client.close()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert tx._cleanup_confirmed is False, "a cleanup the closing gate skipped must not read as done"
+            # After a reconnect, the explicit rollback must send the retry.
+            await tx.rollback()
+            assert client._cypher_stub.RollbackTransaction.await_count == 1
+
+        asyncio.run(_inner())
+
+
+class TestSyncInterruptUnwindUsesBoundedCleanup:
+    """A sync transaction block unwound by Ctrl-C or SystemExit must not
+    hold the exit for the full request deadline on a stalled server: the
+    cleanup goes out with the bounded deadline, not the ordinary rollback
+    timeout."""
+
+    def test_interrupt_exit_sends_the_bounded_request(self):
+        from unittest.mock import AsyncMock
+
+        recorded = {}
+
+        async def rollback(req, timeout=None):
+            recorded["timeout"] = timeout
+            return cypher_pb2.RollbackTransactionResponse()
+
+        client = _sync_client(RollbackTransaction=AsyncMock(side_effect=rollback))
+        with pytest.raises(KeyboardInterrupt):
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:A)")
+                raise KeyboardInterrupt
+        assert tx.is_open is False
+        assert recorded["timeout"] == 5.0, (
+            "an interrupt unwind must use the bounded cleanup deadline, not the full rollback timeout"
+        )

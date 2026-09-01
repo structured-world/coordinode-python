@@ -359,16 +359,17 @@ class AsyncTransaction:
         If the event loop stops before it runs, the server's idle sweep
         remains the backstop, which is exactly what best-effort means.
         """
+        # Unconfirmed from the moment the cleanup is REQUESTED, not from its
+        # first step — including when the closing gate below skips the spawn
+        # entirely: the statement may have reached the server, and an
+        # explicit rollback() (before the detached task's first turn, or
+        # after a reconnect) must see the cleanup as not-yet-done and retry
+        # it rather than trust one that never ran.
+        self._cleanup_confirmed = False
         if self._client._closing:
             # The channel is (about to be) gone: a spawn now could only fail
             # against it. The server's idle sweep collects the transaction.
             return
-        # Unconfirmed from the moment the cleanup is SCHEDULED, not from its
-        # first step: an explicit rollback() racing in before the detached
-        # task's first turn must see the cleanup as not-yet-done and retry
-        # it, or a loop shutdown could cancel the pending task with nothing
-        # ever sent.
-        self._cleanup_confirmed = False
         pending = self._client._pending_cleanups
         task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
         pending.add(task)
@@ -1042,6 +1043,16 @@ class AsyncCoordinodeClient:
                     # exit into a successful-looking one — propagate it, and
                     # hand the interrupted cleanup to a detached retry so the
                     # server transaction is still freed.
+                    tx._spawn_cleanup()
+                    raise
+            elif tx._state == "aborted" and not tx._cleanup_confirmed:
+                # A failed statement (or manual rollback) whose own cleanup
+                # also failed, with the error caught inside the block: retry
+                # the bounded request on this normal exit, same rule as the
+                # exceptional and cancellation paths.
+                try:
+                    await tx._best_effort_rollback()
+                except asyncio.CancelledError:
                     tx._spawn_cleanup()
                     raise
 
@@ -1768,13 +1779,21 @@ class CoordinodeClient:
         tx = self.begin_transaction()
         try:
             yield tx
-        except BaseException:
+        except BaseException as exc:
             if tx.is_open:
-                # CancelledError included, mirroring the async context
-                # manager: the cleanup's failure must never replace the
-                # block's own exception.
-                with suppress(Exception, asyncio.CancelledError):
-                    tx.rollback()
+                if isinstance(exc, Exception):
+                    # CancelledError included, mirroring the async context
+                    # manager: the cleanup's failure must never replace the
+                    # block's own exception.
+                    with suppress(Exception, asyncio.CancelledError):
+                        tx.rollback()
+                else:
+                    # Ctrl-C / SystemExit must not hold this exit for the
+                    # full request deadline on a stalled server. Close the
+                    # handle; the trailing check below sends one BOUNDED
+                    # best-effort request instead of the ordinary rollback.
+                    tx._inner._state = "aborted"
+                    tx._inner._cleanup_confirmed = False
             elif tx._inner._state == "indeterminate":
                 # Mirrors the async context manager: the commit may never
                 # have reached the server, so the bounded best-effort request
@@ -1805,6 +1824,13 @@ class CoordinodeClient:
                 # manual commit() that failed ambiguously and was CAUGHT
                 # inside the block still gets the bounded best-effort
                 # cleanup, with the indeterminate verdict preserved.
+                with suppress(BaseException):
+                    self._run(tx._inner._best_effort_rollback())
+            elif tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed:
+                # Mirrors the async normal-exit rule: a failed statement (or
+                # manual rollback) whose own cleanup also failed, with the
+                # error caught inside the block, still gets the bounded
+                # retry here.
                 with suppress(BaseException):
                     self._run(tx._inner._best_effort_rollback())
 
