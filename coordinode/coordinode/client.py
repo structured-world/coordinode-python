@@ -603,9 +603,20 @@ class AsyncTransaction:
         # The failure still propagates, so they know the request did not
         # arrive.
         self._state = "rolled_back"
-        await self._client._cypher_stub.RollbackTransaction(
-            RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
-        )
+        try:
+            await self._client._cypher_stub.RollbackTransaction(
+                RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
+            )
+        except BaseException:
+            # The request may never have arrived: the discard promise still
+            # holds (no commit was ever sent), but the server may hold the
+            # transaction until its idle sweep. "aborted" with the cleanup
+            # unconfirmed keeps the handle unusable for statements while a
+            # later rollback() can still retry once connectivity recovers;
+            # the failure propagates so the caller knows it did not land.
+            self._state = "aborted"
+            self._cleanup_confirmed = False
+            raise
 
 
 class AsyncCoordinodeClient:
@@ -907,8 +918,14 @@ class AsyncCoordinodeClient:
                 # An operation started in a background task is still in
                 # flight while this scope unwinds; it cannot be awaited or
                 # cancelled from here, so the straggler is marked to hand the
-                # transaction to cleanup when it completes.
+                # transaction to cleanup when it completes. An in-flight
+                # COMMIT is additionally contested with a detached rollback:
+                # a successful commit cannot be retracted afterwards, so the
+                # only honest shot at the rollback-on-cancellation contract
+                # is letting the server race decide which request wins.
                 tx._abandoned = True
+                if tx._state == "committing":
+                    tx._spawn_cleanup()
             raise
         except BaseException:
             if tx.is_open:
@@ -934,8 +951,14 @@ class AsyncCoordinodeClient:
                 # be awaited or cancelled from here — so the straggler is
                 # marked to hand the transaction to cleanup when it
                 # completes, instead of returning the handle to "open" with
-                # nobody left to use it.
+                # nobody left to use it. An in-flight COMMIT is additionally
+                # contested with a detached rollback: a successful commit
+                # cannot be retracted afterwards, so the only honest shot at
+                # the rollback-on-exception contract is letting the server
+                # race decide which request wins.
                 tx._abandoned = True
+                if tx._state == "committing":
+                    tx._spawn_cleanup()
             raise
         else:
             if tx._state in ("executing", "committing"):
@@ -978,8 +1001,15 @@ class AsyncCoordinodeClient:
                 # never have reached the server, leaving the transaction open
                 # there. Same bounded best-effort cleanup as the exception
                 # path; the verdict stays indeterminate.
-                with suppress(asyncio.CancelledError):
+                try:
                     await tx._best_effort_rollback()
+                except asyncio.CancelledError:
+                    # Swallowing the cancellation here would turn a cancelled
+                    # exit into a successful-looking one — propagate it, and
+                    # hand the interrupted cleanup to a detached retry so the
+                    # server transaction is still freed.
+                    tx._spawn_cleanup()
+                    raise
 
     async def vector_search(
         self,
@@ -1554,7 +1584,20 @@ class Transaction:
         params: dict[str, PyValue] | None = None,
     ) -> list[dict[str, Any]]:
         """Run one statement inside this transaction. See :meth:`AsyncTransaction.cypher`."""
-        return self._client._run(self._inner.cypher(query, params))  # type: ignore[no-any-return]
+        try:
+            return self._client._run(self._inner.cypher(query, params))  # type: ignore[no-any-return]
+        except BaseException:
+            # An interruption raised INSIDE the stepping coroutine (Ctrl-C
+            # delivered mid-call) completes the task before _run() can
+            # cancel-and-drain it, so no async handler closes the handle.
+            # Mirror commit()'s conservative settlement: no commit was sent,
+            # so nothing can apply — the handle closes as aborted, with the
+            # cleanup unconfirmed so a later rollback() frees the server
+            # side. An outcome the inner handler already decided is kept.
+            if self._inner._state in ("open", "executing"):
+                self._inner._state = "aborted"
+                self._inner._cleanup_confirmed = False
+            raise
 
     def commit(self) -> int:
         """Apply every buffered write as one unit. See :meth:`AsyncTransaction.commit`."""

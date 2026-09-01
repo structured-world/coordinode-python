@@ -706,7 +706,8 @@ class TestRollbackTransportFailure:
         """The request may not have landed, so the server may still hold the
         transaction until the idle sweep. What is certain is that no commit was
         ever sent, so nothing can apply: the discard promise holds and the
-        handle must not stay usable."""
+        handle must not stay usable — though it stays RETRIABLE for rollback,
+        so the closed state reads as aborted, not rolled back."""
         from unittest.mock import AsyncMock
 
         async def _inner() -> None:
@@ -717,7 +718,7 @@ class TestRollbackTransportFailure:
             with pytest.raises(_TransportError):
                 await tx.rollback()
             assert tx.is_open is False
-            with pytest.raises(RuntimeError, match="already rolled back"):
+            with pytest.raises(RuntimeError, match="earlier failure closed it"):
                 await tx.cypher("CREATE (:Person)")
 
         asyncio.run(_inner())
@@ -1826,3 +1827,136 @@ class TestRepeatedRollbackRetriesUnconfirmedCleanup:
             await client.close()
 
         asyncio.run(_inner())
+
+
+class TestCancelledNormalExitCleanupPropagates:
+    """Cancellation landing while the normal-exit indeterminate cleanup is
+    awaiting the server must propagate, not be swallowed into a
+    successful-looking exit — and the interrupted cleanup must be retried
+    detached so the server transaction is still freed."""
+
+    def test_cancellation_mid_cleanup_is_not_swallowed(self):
+        from contextlib import suppress as ctx_suppress
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def rollback(req, timeout=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    rollback_started.set()
+                    await asyncio.sleep(10)
+                return cypher_pb2.RollbackTransactionResponse()
+
+            client = _async_client(
+                CommitTransaction=AsyncMock(side_effect=_TransportError(grpc.StatusCode.DEADLINE_EXCEEDED)),
+                RollbackTransaction=AsyncMock(side_effect=rollback),
+            )
+
+            async def run_block() -> None:
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    with ctx_suppress(grpc.RpcError):
+                        await tx.commit()
+
+            t = asyncio.create_task(run_block())
+            await rollback_started.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+            await client.close()  # drains the detached retry
+            assert calls["n"] == 2, "the interrupted cleanup was never retried"
+
+        asyncio.run(_inner())
+
+
+class TestAbandonedInFlightCommitIsContested:
+    """A block that starts commit() in a background task and then raises has
+    asked for a rollback it can no longer perform itself: the exit must send
+    the best-effort rollback to CONTEST the in-flight commit, so the server
+    race decides the outcome instead of the commit silently applying despite
+    the exception."""
+
+    def test_exceptional_exit_sends_a_contesting_rollback(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            commit_in_flight = asyncio.Event()
+            release_commit = asyncio.Event()
+
+            async def gated_commit(req, timeout=None):
+                commit_in_flight.set()
+                await release_commit.wait()
+                return cypher_pb2.CommitTransactionResponse(applied_index=7)
+
+            client = _async_client(CommitTransaction=AsyncMock(side_effect=gated_commit))
+            bg = None
+            with pytest.raises(ValueError):
+                async with client.transaction() as tx:
+                    await tx.cypher("CREATE (:A)")
+                    bg = asyncio.create_task(tx.commit())
+                    await commit_in_flight.wait()
+                    raise ValueError("boom")
+            await asyncio.sleep(0.02)  # the detached contesting rollback runs
+            assert client._cypher_stub.RollbackTransaction.await_count == 1, (
+                "an abandoned in-flight commit was left uncontested"
+            )
+            release_commit.set()
+            await bg  # the fake server lets the commit win; that is its call
+            await client.close()
+
+        asyncio.run(_inner())
+
+
+class TestFailedExplicitRollbackStaysRetriable:
+    """An explicit rollback() whose request is lost in transit must not leave
+    the handle permanently rolled_back: the server may still hold the
+    transaction, so once connectivity recovers a later rollback() has to be
+    able to retry instead of being rejected as already finished."""
+
+    def test_rollback_can_be_retried_after_a_transport_failure(self):
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            rollback = AsyncMock(
+                side_effect=[
+                    _TransportError(grpc.StatusCode.UNAVAILABLE),
+                    cypher_pb2.RollbackTransactionResponse(),
+                ]
+            )
+            client = _async_client(RollbackTransaction=rollback)
+            tx = await client.begin_transaction()
+            with pytest.raises(_TransportError):
+                await tx.rollback()
+            assert tx.is_open is False, "a failed rollback left the handle usable"
+            await tx.rollback()  # connectivity recovered; the retry must go through
+            assert client._cypher_stub.RollbackTransaction.await_count == 2
+            await client.close()
+
+        asyncio.run(_inner())
+
+
+class TestSyncStatementInterruptedInsideTheTask:
+    """KeyboardInterrupt raised while the statement coroutine itself is
+    stepping completes the task before _run() can cancel-and-drain it, so no
+    async handler closes the handle; the sync wrapper must then settle the
+    outcome conservatively instead of leaving the handle parked in
+    "executing" forever."""
+
+    def test_interrupted_statement_closes_the_handle(self):
+        from unittest.mock import AsyncMock
+
+        async def ki(req, timeout=None):
+            raise KeyboardInterrupt
+
+        client = _sync_client(ExecuteCypher=AsyncMock(side_effect=ki))
+        tx = client.begin_transaction()
+        with pytest.raises(KeyboardInterrupt):
+            tx.cypher("CREATE (:A)")
+        assert tx._inner._state == "aborted", "the interruption left the handle parked in-flight"
+        # The server may still hold the transaction; an explicit rollback
+        # must send the cleanup rather than trusting one that never ran.
+        tx.rollback()
+        assert client._async._cypher_stub.RollbackTransaction.await_count == 1
