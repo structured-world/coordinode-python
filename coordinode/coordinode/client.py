@@ -5,10 +5,11 @@ CoordinodeClient: synchronous and asynchronous gRPC client for CoordiNode.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import logging
 import re
-from collections.abc import AsyncIterator, Coroutine, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from typing import Any
 
@@ -137,27 +138,52 @@ def _make_channel(host: str, port: int, tls: bool) -> grpc.Channel:
     return grpc.insecure_channel(target)
 
 
-def _stands_in_for_a_coroutine_function(fn: Any) -> Any:
-    """Mark *fn* so introspection sees the coroutine function it replaces.
+class _tracks_its_call_site:  # noqa: N801 — reads as a decorator at the use site
+    """Read the caller's location when the method is looked up, not when its
+    coroutine runs.
 
-    The query methods are plain methods returning a coroutine, so that the
-    call site can be read while the caller is still on the stack. A caller
-    still writes ``await client.cypher(...)``, but code that ASKS instead of
-    awaiting would get the wrong answer: `unittest.mock.create_autospec` reads
-    the predicate to decide whether to build an async double, and a
-    synchronous double hands back a plain value where the test awaits one.
+    Both moments matter and they are different. A query handed to
+    ``create_task``, ``gather``, ``wait_for``, ``shield`` or a ``TaskGroup``
+    starts its body long after the frame that wrote it has returned, so a
+    location read inside the body names an event-loop frame for all of them.
+    Attribute lookup, on the other hand, happens in the caller's own frame,
+    every time and for every one of those, since they all begin with
+    ``client.cypher(...)``.
 
-    Marked two ways because the levers differ by version: from 3.12 there is a
-    supported one, and before it the answer comes from an attribute that
-    ``asyncio.iscoroutinefunction`` (and therefore mock) reads.
+    The method it wraps stays a coroutine function, and what a caller gets is
+    a partial over it. That keeps both halves of the contract: the location is
+    read at the right moment, and code that ASKS whether this is a coroutine
+    function still gets yes — `inspect.iscoroutinefunction` looks through a
+    partial, and `unittest.mock.create_autospec`, which reads the class, finds
+    the coroutine function itself. A double that came out synchronous would
+    hand back a plain value where the test awaits one.
+
+    With tracking off there is no partial and no frame read: the lookup
+    returns the ordinary bound method.
     """
-    mark = getattr(inspect, "markcoroutinefunction", None)
-    if mark is not None:
-        return mark(fn)
-    marker = getattr(asyncio.coroutines, "_is_coroutine", None)
-    if marker is not None:
-        fn._is_coroutine = marker
-    return fn
+
+    def __init__(self, fn: Any) -> None:
+        self._fn = fn
+        functools.update_wrapper(self, fn)
+        # Drop `self` from the advertised signature. A descriptor that is not
+        # a plain function is not recognised as a method by
+        # `unittest.mock.create_autospec`, which then leaves `self` in and
+        # binds the first real argument to it, so an autospecced call reports
+        # the wrong argument missing. Saying the signature outright is what
+        # the caller sees anyway, since the method is always reached through
+        # an instance.
+        parameters = list(inspect.signature(fn).parameters.values())[1:]
+        fn.__signature__ = inspect.Signature(parameters)
+
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+        if obj is None:
+            return self._fn
+        if not obj._source_tracking_enabled():
+            return self._fn.__get__(obj, objtype)
+        # One frame up from here is whoever wrote `obj.cypher`. A location
+        # bound as a keyword stays a default: the synchronous client passes
+        # its own, read at ITS boundary, and that one wins.
+        return functools.partial(self._fn, obj, _source_location=_source.capture(1))
 
 
 async def _execute_cypher(
@@ -397,6 +423,14 @@ class AsyncTransaction:
         """True while the transaction can still take statements and be committed."""
         return self._state == "open"
 
+    def _source_tracking_enabled(self) -> bool:
+        """Whether a statement's lookup should read its call site.
+
+        A transaction has no setting of its own: it is the client's, since the
+        connection is what carries the tracking.
+        """
+        return self._client._source_tracking
+
     def _require_open(self, action: str) -> None:
         if self._state == "open":
             return
@@ -543,14 +577,14 @@ class AsyncTransaction:
             if _caller_is_being_cancelled():
                 raise
 
-    @_stands_in_for_a_coroutine_function
-    def cypher(
+    @_tracks_its_call_site
+    async def cypher(
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
         *,
         _source_location: _source.SourceLocation | None = None,
-    ) -> Coroutine[Any, Any, list[dict[str, Any]]]:
+    ) -> list[dict[str, Any]]:
         """Run one statement inside this transaction and return its rows.
 
         The write is buffered rather than applied, so it is visible to later
@@ -568,20 +602,9 @@ class AsyncTransaction:
         as-is, and any later use of this object raises instead of reporting the
         server's "unknown transaction id".
 
-        A plain method returning a coroutine, for the reason given on
-        :meth:`AsyncCoordinodeClient.cypher`: the call site is read here, while
-        the caller's frame is still on the stack.
+        The call site is read at lookup, for the reason given on
+        :meth:`AsyncCoordinodeClient.cypher`.
         """
-        return self._cypher(query, params, source_location=_source_location or self._client._call_site())
-
-    async def _cypher(
-        self,
-        query: str,
-        params: dict[str, PyValue] | None = None,
-        *,
-        source_location: _source.SourceLocation | None = None,
-    ) -> list[dict[str, Any]]:
-        """Body of :meth:`cypher`; see there."""
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
         )
@@ -596,7 +619,7 @@ class AsyncTransaction:
             parameters=dict_to_props(params or {}),
             transaction_id=self._id,
         )
-        metadata = self._client._source_metadata(source_location)
+        metadata = self._client._source_metadata(_source_location)
         # Transition BEFORE the await, mirroring commit(): a concurrent
         # commit slipping in while this statement is in flight could land
         # without the statement's write, and the statement's late "unknown
@@ -944,16 +967,13 @@ class AsyncCoordinodeClient:
     async def __aexit__(self, *_: Any) -> None:
         await self.close()
 
-    def _call_site(self) -> _source.SourceLocation | None:
-        """Where the public query method that calls this was called from.
+    def _source_tracking_enabled(self) -> bool:
+        """Whether to read the call site when a query method is looked up.
 
-        Call it DIRECTLY from that method: two frames up from here is the
-        method, then the caller to attribute. Nothing is read while tracking
-        is off.
+        Read by the lookup itself, so it has to be answerable without
+        touching anything else: with tracking off, nothing at all happens.
         """
-        if not self._source_tracking:
-            return None
-        return _source.capture(2)
+        return self._source_tracking
 
     def _source_metadata(
         self,
@@ -1049,8 +1069,8 @@ class AsyncCoordinodeClient:
         # backstop for those.
         self._closing = True
 
-    @_stands_in_for_a_coroutine_function
-    def cypher(
+    @_tracks_its_call_site
+    async def cypher(
         self,
         query: str,
         params: dict[str, PyValue] | None = None,
@@ -1061,7 +1081,7 @@ class AsyncCoordinodeClient:
         after_index: int | None = None,
         at_timestamp: int | None = None,
         _source_location: _source.SourceLocation | None = None,
-    ) -> Coroutine[Any, Any, list[dict[str, Any]]]:
+    ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts.
 
         Consistency parameters (all optional; server defaults apply when omitted):
@@ -1088,38 +1108,10 @@ class AsyncCoordinodeClient:
           opposite requests, and the pair is rejected. Zero is rejected too: it is how the
           wire says "no pin", so it cannot also ask for one.
 
-        Awaiting this is the whole of its use; it is a plain method returning a
-        coroutine only so that source tracking can read the call site HERE,
-        while the caller's frame is still on the stack. Everything that runs a
-        coroutine as a task — ``create_task``, ``gather``, ``wait_for``,
-        ``shield``, a ``TaskGroup`` — starts the body long after that frame has
-        returned, so a location read inside the body would name the event loop
-        for all of them.
+        The call site is read when this method is looked up rather than when
+        its body runs, because everything that starts a coroutine as a task
+        runs the body after the calling frame has returned.
         """
-        return self._cypher(
-            query,
-            params,
-            read_concern=read_concern,
-            write_concern=write_concern,
-            read_preference=read_preference,
-            after_index=after_index,
-            at_timestamp=at_timestamp,
-            source_location=_source_location or self._call_site(),
-        )
-
-    async def _cypher(
-        self,
-        query: str,
-        params: dict[str, PyValue] | None = None,
-        *,
-        read_concern: str | None = None,
-        write_concern: str | None = None,
-        read_preference: str | None = None,
-        after_index: int | None = None,
-        at_timestamp: int | None = None,
-        source_location: _source.SourceLocation | None = None,
-    ) -> list[dict[str, Any]]:
-        """Body of :meth:`cypher`; see there."""
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
         )
@@ -1164,7 +1156,7 @@ class AsyncCoordinodeClient:
             self._cypher_stub,
             req,
             self._timeout,
-            self._source_metadata(source_location),
+            self._source_metadata(_source_location),
         )
         return _rows_to_dicts(resp)
 
