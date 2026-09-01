@@ -10,7 +10,7 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/01_llama_index_property_graph.ipynb) **LlamaIndex** | `CoordinodePropertyGraphStore`: upsert, triplets, structured query | nothing |
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/02_langchain_graph_chain.ipynb) **LangChain** | `CoordinodeGraph`: add_graph_documents, schema, GraphCypherQAChain | nothing |
 | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) **LangGraph** | Agent with CoordiNode as graph memory (save/query/traverse) | nothing |
-| [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/04_whats_new_in_0_5.ipynb) **What 0.5 Added** | Batch insert, `element_id`, schema revision, write/read concerns, time travel | a server (`COORDINODE_ADDR`) |
+| [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/04_whats_new_in_0_5.ipynb) **What 0.5 Added** | Batch insert, `element_id`, schema revision, write/read concerns, time travel, transactions | a server (`COORDINODE_ADDR`) |
 
 > **Note:** **LangGraph** runs the engine in-process rather than against a
 > server, in a database file of its own that the graph outlives a kernel
@@ -19,7 +19,7 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 > alternative was filtering model-written Cypher by a session tag, which leaks
 > the first time the filter misses a case. `COORDINODE_AGENT_DB` moves that
 > file; deleting it starts the agent with no memory.
-> The Docker Compose stack below pins the CoordiNode **server** image v0.5.5 by
+> The Docker Compose stack below pins the CoordiNode **server** image v0.5.7 by
 > digest. Do not move it below that: 0.5.1 crashes its Raft core when the oplog
 > rolls a segment that already exists, and a single-node stack never regains
 > leadership afterwards.

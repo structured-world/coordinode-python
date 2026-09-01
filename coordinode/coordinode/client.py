@@ -1,5 +1,5 @@
 """
-CoordinodeClient — synchronous and asynchronous gRPC client for CoordiNode.
+CoordinodeClient: synchronous and asynchronous gRPC client for CoordiNode.
 """
 
 from __future__ import annotations
@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager, suppress
 from typing import Any
 
 import grpc
@@ -32,6 +33,87 @@ _HOST_PORT_RE = re.compile(r"^(\[.+\]|[^:]+):(\d+)$")
 # letters, digits, or underscores.  Validated before interpolating user-supplied
 # names/labels/properties into DDL strings to surface clear errors early.
 _CYPHER_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# gRPC codes that do NOT prove the server processed the request: the request or
+# its reply was lost somewhere in transit. Every other code is the server
+# answering, and an answered failure consumes the transaction's handle.
+#
+# This is consulted for the COMMIT only, where the question is "were the writes
+# applied", which no follow-up request can answer. Statement failures do not
+# consult it: there the only question is whether server-side state needs
+# freeing, and asking for that is harmless whatever the answer, so the
+# statement path cleans up unconditionally rather than risk misjudging a code.
+# Codes the transport layer never fabricates on its own: seeing one proves
+# the server answered, so the commit was definitively rejected and nothing
+# was applied. The list is deliberately NOT the complement of "transport
+# codes": RESOURCE_EXHAUSTED, INTERNAL, DATA_LOSS and the like can be
+# generated inside the CLIENT while receiving or decoding a reply the server
+# already acted on, so on their own they prove nothing.
+_DEFINITIVE_REJECTION_CODES = frozenset(
+    {
+        grpc.StatusCode.ABORTED,
+        grpc.StatusCode.NOT_FOUND,
+        grpc.StatusCode.INVALID_ARGUMENT,
+        grpc.StatusCode.FAILED_PRECONDITION,
+        grpc.StatusCode.ALREADY_EXISTS,
+        grpc.StatusCode.OUT_OF_RANGE,
+        grpc.StatusCode.PERMISSION_DENIED,
+        grpc.StatusCode.UNAUTHENTICATED,
+        grpc.StatusCode.UNIMPLEMENTED,
+    }
+)
+
+
+# The transient states an operation passes through while its RPC is in
+# flight, mapped to what to call the operation in a message. A handle in one
+# of these is neither open nor settled: nothing else may run on it, and a
+# context manager exiting over one is exiting over unfinished work.
+_IN_FLIGHT_STATES = {
+    "executing": "statement",
+    "committing": "commit",
+    "rolling_back": "rollback",
+}
+
+
+def _caller_is_being_cancelled() -> bool:
+    """Whether a cancellation of the running task is actually pending.
+
+    A cleanup RPC can raise :exc:`asyncio.CancelledError` on its own — a
+    channel closing under it, say — with nobody having cancelled this task.
+    Propagating that would replace the outcome the caller needs (the
+    statement's failure, the commit's error, a clean exit) with a
+    cancellation that never happened. Only a real pending cancellation
+    supersedes those, and asyncio does not re-inject a swallowed one, so it
+    must be re-raised rather than dropped.
+    """
+    task = asyncio.current_task()
+    return task is not None and bool(task.cancelling())
+
+
+def _rpc_outcome_is_ambiguous(exc: grpc.RpcError) -> bool:
+    """Whether this failure leaves the server's state unknowable.
+
+    Only positive proof that the server ANSWERED reads as a decided rejection:
+    either a status code the transport never generates locally, or the
+    server's structured error details riding the trailing metadata (every
+    rejection the server classifies carries them). Everything else — codes a
+    client can produce mid-reply, an error that cannot even report a code —
+    is ambiguous, because the two mistakes are not symmetric: warning about an
+    outcome that turned out to be a clean rejection costs the caller one
+    verification, while a wrongly claimed abort invites a retry that
+    duplicates every write.
+    """
+    try:
+        if exc.code() in _DEFINITIVE_REJECTION_CODES:
+            return False
+        trailing = exc.trailing_metadata()
+        for entry in trailing or ():
+            key = entry[0] if isinstance(entry, tuple) else getattr(entry, "key", None)
+            if key == "grpc-status-details-bin":
+                return False
+        return True
+    except Exception:
+        return True
 
 
 def _validate_cypher_identifier(value: str, param_name: str) -> None:
@@ -198,6 +280,521 @@ class TextIndexInfo:
 
 # ── Async client ─────────────────────────────────────────────────────────────
 
+# Deadline for cleanup RPCs whose result nobody reads (the best-effort
+# rollback). Deliberately short and NOT the client's request timeout: cleanup
+# runs on paths that may already have burned the full deadline, and doubling
+# a 30-second worst case for an ignored answer helps no one. The server's
+# idle sweep remains the backstop when even this expires.
+_CLEANUP_TIMEOUT_SECS = 5.0
+
+
+class AsyncTransaction:
+    """One interactive transaction, held open across several statements.
+
+    Obtained from :meth:`AsyncCoordinodeClient.begin_transaction`, or from
+    :meth:`AsyncCoordinodeClient.transaction`, which commits on a clean exit and
+    rolls back on an exception.
+
+    Every statement reads the snapshot pinned when the transaction began, and
+    its writes buffer on the server until :meth:`commit`. So the transaction
+    sees a stable view of the database plus its own writes, and a conflict with
+    another transaction that touched the same data surfaces at the commit rather
+    than at the statement.
+
+    Two properties of the server matter before holding one open. The handle
+    lives in the memory of the node that served the begin, so every request of
+    the transaction has to reach that same node: connect to a node's own
+    address, or through a balancer configured for backend affinity. A balancer
+    that routes each request independently breaks this even through a single
+    client, since a reconnection can land on another backend mid-transaction,
+    and the next statement then fails with an unknown transaction id. And an
+    idle transaction is reaped, after 30 seconds by default, swept when some
+    other transaction begins rather than on a timer, so a long pause between
+    statements can lose the handle without a wall-clock guarantee of when.
+    """
+
+    def __init__(self, client: AsyncCoordinodeClient, transaction_id: int) -> None:
+        self._client = client
+        self._id = transaction_id
+        # open -> committed | rolled_back | aborted | indeterminate, with two
+        # transient in-flight states (executing, committing) that strictly
+        # serialize operations on one handle.
+        # "aborted" is the server having closed the transaction under us, which
+        # it does on any statement error and on a rejected commit.
+        # "indeterminate" is a commit whose reply was lost in transit: the
+        # writes may all be applied or none may be, and nothing on the client
+        # can tell which.
+        self._state = "open"
+        # Whether the last best-effort cleanup RPC actually completed. False
+        # after a cleanup that itself failed (both RPCs lost to the same
+        # outage, say): the server may still hold the transaction, so an
+        # explicit rollback() on the aborted handle retries the cleanup
+        # instead of declaring the transaction already gone.
+        self._cleanup_confirmed = True
+        # Set by the context manager when it exits while an operation started
+        # inside the block is still in flight: the straggler, on completion,
+        # hands the transaction to cleanup instead of returning the handle to
+        # "open" with nobody left to commit or roll it back.
+        self._abandoned = False
+        # The pending detached cleanup, if any: several unwinding layers can
+        # each ask for one (rollback() itself, then the context manager), and
+        # one bounded attempt per transaction is enough.
+        self._cleanup_task: asyncio.Task[None] | None = None
+
+    def __repr__(self) -> str:
+        return f"AsyncTransaction(id={self._id}, state={self._state})"
+
+    @property
+    def transaction_id(self) -> int:
+        """Server-side handle for this transaction. Non-zero while it exists."""
+        return self._id
+
+    @property
+    def is_open(self) -> bool:
+        """True while the transaction can still take statements and be committed."""
+        return self._state == "open"
+
+    def _require_open(self, action: str) -> None:
+        if self._state == "open":
+            return
+        if self._state in _IN_FLIGHT_STATES:
+            in_flight = _IN_FLIGHT_STATES[self._state]
+            raise RuntimeError(
+                f"Cannot {action} this transaction: a {in_flight} on it is already in "
+                "flight. Concurrent operations on one transaction handle would race "
+                "its outcome; await the in-flight operation instead."
+            )
+        if self._state == "aborted":
+            raise RuntimeError(
+                f"Cannot {action} this transaction: an earlier failure closed it on the "
+                "server, which discards its buffered writes. Nothing was applied; begin "
+                "a new transaction to retry."
+            )
+        if self._state == "indeterminate":
+            raise RuntimeError(
+                f"Cannot {action} this transaction: the commit's reply was lost and the "
+                "outcome is unknown. The writes may or may not be applied; verify the "
+                "data before retrying, since a blind retry can duplicate them."
+            )
+        raise RuntimeError(f"Cannot {action} this transaction: it was already {self._state.replace('_', ' ')}.")
+
+    def _spawn_cleanup(self) -> None:
+        """Run :meth:`_best_effort_rollback` as a detached task.
+
+        Used from cancellation handlers, where awaiting the rollback in place
+        would only be cancelled again. The task is tracked on the CLIENT so
+        that (a) it stays referenced until done — an unreferenced task can be
+        garbage-collected mid-flight — and (b) `close()` drains it before the
+        channel goes away, so the cleanup never races the transport it needs.
+        If the event loop stops before it runs, the server's idle sweep
+        remains the backstop, which is exactly what best-effort means.
+        """
+        # Unconfirmed from the moment the cleanup is REQUESTED, not from its
+        # first step — including when the closing gate below skips the spawn
+        # entirely: the statement may have reached the server, and an
+        # explicit rollback() (before the detached task's first turn, or
+        # after a reconnect) must see the cleanup as not-yet-done and retry
+        # it rather than trust one that never ran.
+        self._cleanup_confirmed = False
+        if self._client._closing:
+            # The channel is (about to be) gone: a spawn now could only fail
+            # against it. The server's idle sweep collects the transaction.
+            return
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            # Several unwinding layers can each request the cleanup (the
+            # rollback that was cancelled, then the context manager on its
+            # way out); one pending bounded attempt is enough.
+            return
+        pending = self._client._pending_cleanups
+        task = asyncio.get_running_loop().create_task(self._best_effort_rollback())
+        self._cleanup_task = task
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    def _settle_cancelled_scope(self) -> None:
+        """Settle this handle when its owning scope is unwound by cancellation.
+
+        A scope unwound this way must not hold for a rollback round trip: the
+        caught CancelledError is not re-injected, so an inline await could
+        overrun a surrounding timeout by the whole cleanup deadline. Every
+        branch therefore detaches (bounded, drained at close) and returns at
+        once. Synchronous by design, so a cancellation arriving at any await
+        of the exit path can call it.
+        """
+        if self.is_open:
+            self._state = "aborted"
+            self._spawn_cleanup()
+        elif self._state == "indeterminate":
+            # A manual commit() inside the block was cancelled mid-flight:
+            # its request may never have reached the server, leaving the
+            # transaction open there with the caller gone. The verdict stays
+            # indeterminate either way.
+            self._spawn_cleanup()
+        elif self._state in _IN_FLIGHT_STATES:
+            # An operation started in a background task is still in flight
+            # while this scope unwinds; it cannot be awaited or cancelled
+            # from here, so the straggler is marked to hand the transaction
+            # to cleanup when it completes. An in-flight COMMIT is
+            # additionally contested with a detached rollback: a successful
+            # commit cannot be retracted afterwards, so the only honest shot
+            # at the rollback-on-cancellation contract is letting the server
+            # race decide which request wins.
+            self._abandoned = True
+            if self._state == "committing":
+                self._spawn_cleanup()
+        elif self._state == "aborted" and not self._cleanup_confirmed:
+            # A manual rollback() cancelled mid-RPC: the request was
+            # interrupted, not answered, so the server may still hold the
+            # transaction. Retry detached before the scope is gone.
+            self._spawn_cleanup()
+
+    async def _best_effort_rollback(self) -> None:
+        """Ask the server to drop the transaction, ignoring every failure.
+
+        Used where the rollback is cleanup rather than the caller's request: a
+        transaction that may or may not still exist server-side. When it does
+        exist this frees its buffered writes now instead of at the idle sweep;
+        when it does not, the server answers "unknown transaction id" and there
+        was nothing to free. Neither answer changes what the caller is told.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            RollbackTransactionRequest,
+        )
+
+        self._cleanup_confirmed = False
+        try:
+            await self._client._cypher_stub.RollbackTransaction(
+                RollbackTransactionRequest(transaction_id=self._id),
+                # Capped by the client's own timeout too: a caller who
+                # configured 100ms requests must not find a failed statement
+                # holding the line for a 5-second cleanup.
+                timeout=min(_CLEANUP_TIMEOUT_SECS, self._client._timeout),
+            )
+            self._cleanup_confirmed = True
+        except grpc.RpcError as exc:
+            # NOT_FOUND is the server's "unknown transaction id": a definitive
+            # statement that nothing is held under this id any more — as
+            # settled as a successful rollback. Every other failure (a lost
+            # request most of all) leaves the cleanup unconfirmed, retriable.
+            with suppress(Exception):
+                if exc.code() == grpc.StatusCode.NOT_FOUND:
+                    self._cleanup_confirmed = True
+        except Exception:
+            pass
+
+    async def _cleanup_preserving_outcome(self) -> None:
+        """Run the bounded cleanup where the outcome is already decided.
+
+        Every exit path that reaches here has something of its own to report:
+        the block's exception, or a clean exit. A cleanup failure is never
+        worth replacing that, so it stays swallowed. A REAL cancellation is
+        the exception, because asyncio does not re-inject a swallowed one and
+        silence would turn a cancelled exit into a successful-looking one; it
+        propagates, handing the interrupted request to a detached retry first
+        so the server transaction is still freed.
+        """
+        try:
+            await self._best_effort_rollback()
+        except asyncio.CancelledError:
+            self._spawn_cleanup()
+            if _caller_is_being_cancelled():
+                raise
+
+    async def cypher(
+        self,
+        query: str,
+        params: dict[str, PyValue] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run one statement inside this transaction and return its rows.
+
+        The write is buffered rather than applied, so it is visible to later
+        statements of this transaction and to nobody else until :meth:`commit`.
+
+        This deliberately takes no consistency arguments, unlike
+        :meth:`AsyncCoordinodeClient.cypher`. Read concern, write concern, read
+        preference and ``after_index`` describe a single self-contained
+        statement; here the snapshot was already fixed at the begin and
+        durability is decided once at the commit, so the server ignores them.
+        Accepting them would only let a caller believe otherwise.
+
+        A statement that fails on the server ends the transaction: the buffered
+        writes are discarded and the handle is consumed. The failure propagates
+        as-is, and any later use of this object raises instead of reporting the
+        server's "unknown transaction id".
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            ExecuteCypherRequest,
+        )
+
+        self._require_open("run a statement in")
+        # The request is built BEFORE the state transition: parameter
+        # encoding can fail locally (an unsupported Python type), and that
+        # failure changes nothing server-side, so it must leave the handle
+        # open rather than marooned in an in-flight state.
+        req = ExecuteCypherRequest(
+            query=query,
+            parameters=dict_to_props(params or {}),
+            transaction_id=self._id,
+        )
+        # Transition BEFORE the await, mirroring commit(): a concurrent
+        # commit slipping in while this statement is in flight could land
+        # without the statement's write, and the statement's late "unknown
+        # transaction" failure would then overwrite the real outcome.
+        self._state = "executing"
+        try:
+            resp = await self._client._cypher_stub.ExecuteCypher(req, timeout=self._client._timeout)
+        except grpc.RpcError:
+            # Always attempt the cleanup, without classifying the failure.
+            # Whether the server processed the statement decides only whether
+            # the rollback finds anything: if it aborted the transaction the
+            # request is answered "unknown transaction id" and swallowed, and
+            # if it kept the transaction open (a lost request, or a limit the
+            # CLIENT hit while receiving an oversized reply) the buffered
+            # writes are freed now instead of at the idle sweep.
+            #
+            # Classifying here was a way to miss cases: every code judged
+            # "answered" that the server did not actually act on leaks a
+            # transaction for the idle timeout. The cost of not classifying is
+            # one wasted RPC on a path that is already failing.
+            self._state = "aborted"
+            try:
+                await self._best_effort_rollback()
+            except asyncio.CancelledError:
+                # A cancellation landing DURING the inline cleanup would lose
+                # it (the handle is already closed, nothing retries later):
+                # detach a fresh attempt. Only a REAL pending cancellation of
+                # this task then supersedes the statement's own failure; a
+                # CancelledError raised by the transport itself (a closing
+                # channel) must not replace the error the caller needs.
+                self._spawn_cleanup()
+                if _caller_is_being_cancelled():
+                    raise
+            raise
+        except asyncio.CancelledError:
+            # Cancellation is a BaseException, so the handler above never sees
+            # it. No commit was sent, so nothing of this transaction can apply;
+            # the handle is closed rather than left open for reuse. The
+            # cancellation may still have arrived AFTER the server accepted
+            # the statement, leaving the transaction alive there with its
+            # buffered writes and a pinned snapshot — and with the handle
+            # closed, nothing later can free it before the idle sweep. The
+            # cleanup therefore runs as its own task: awaiting it here would
+            # only be cancelled again, while a detached task survives this
+            # task's cancellation. (A commit is different — see commit().)
+            self._state = "aborted"
+            self._spawn_cleanup()
+            raise
+        except BaseException:
+            # KeyboardInterrupt / SystemExit raised from inside the awaited
+            # call (or any failure that is neither gRPC nor cancellation)
+            # matches none of the handlers above and would park the handle
+            # in "executing" forever. Settle conservatively: no commit was
+            # sent, so nothing can apply — close as aborted with a detached
+            # bounded cleanup, and let the exception propagate.
+            self._state = "aborted"
+            self._spawn_cleanup()
+            raise
+        if self._abandoned:
+            # The owning context exited while this statement was still in
+            # flight: nobody is left to commit or roll back, so the buffered
+            # writes and pinned snapshot are handed to cleanup now instead of
+            # leaking until the idle sweep. The rows still go to whoever
+            # awaits the straggler.
+            self._state = "aborted"
+            self._spawn_cleanup()
+            return _rows_to_dicts(resp)
+        self._state = "open"
+        return _rows_to_dicts(resp)
+
+    async def commit(self) -> int:
+        """Apply every buffered write as one unit.
+
+        Returns the Raft applied index of the commit, which a later read can
+        pass as ``after_index`` (with ``read_concern="majority"``) when it must
+        observe these writes.
+
+        Raises if another transaction has written the same data since this one
+        began: conflicts are detected here, not at the statement. A rejected
+        commit applies nothing and closes the transaction.
+
+        One failure is different from the rest: a commit whose reply is lost in
+        transit (a deadline, an unavailable channel). The server may have
+        applied everything before the failure, or never received the request,
+        and nothing on the client can tell which. The transaction is then
+        marked indeterminate rather than aborted, and every later call on it
+        says so: retrying such a commit blindly can duplicate the writes, so
+        the data has to be verified first.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            CommitTransactionRequest,
+        )
+
+        self._require_open("commit")
+        # Transition BEFORE the await: a concurrent operation on this handle
+        # would otherwise pass its own open-check while the commit is in
+        # flight, and the loser's "unknown transaction" rejection would
+        # overwrite the real outcome (committed) with a claimed abort.
+        self._state = "committing"
+        try:
+            resp = await self._client._cypher_stub.CommitTransaction(
+                CommitTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
+            )
+        except grpc.RpcError as exc:
+            if _rpc_outcome_is_ambiguous(exc):
+                self._state = "indeterminate"
+                if self._abandoned:
+                    # The owning context is gone; nobody will run the
+                    # indeterminate cleanup, so it goes detached from here.
+                    self._spawn_cleanup()
+            else:
+                # An answered rejection (a write conflict, most commonly): the
+                # server consumed the handle and applied nothing, so a
+                # follow-up rollback would find nothing to discard.
+                self._state = "aborted"
+            raise
+        except asyncio.CancelledError:
+            # Cancellation is a BaseException, so the gRPC handler above never
+            # sees it, and a deadline enforced by `asyncio.timeout()` arrives
+            # this way rather than as DEADLINE_EXCEEDED. The request may have
+            # reached the server and applied everything, which is exactly the
+            # case the indeterminate state exists for: leaving the transaction
+            # open here would invite the retry that duplicates the writes.
+            self._state = "indeterminate"
+            if self._abandoned:
+                # The owning context is gone; nobody will run the
+                # indeterminate cleanup, so it goes detached from here.
+                self._spawn_cleanup()
+            raise
+        except BaseException:
+            # KeyboardInterrupt / SystemExit raised from inside the awaited
+            # call matches neither handler above and would park the handle in
+            # "committing" forever. The request may already have applied, so
+            # the only honest settlement is indeterminate — as the sync
+            # wrapper already does for interrupts at the loop boundary.
+            self._state = "indeterminate"
+            if self._abandoned:
+                self._spawn_cleanup()
+            raise
+        self._state = "committed"
+        return int(resp.applied_index)
+
+    async def rollback(self) -> None:
+        """Discard every buffered write. Nothing reaches the database.
+
+        After a commit whose reply was lost, that promise cannot be made: the
+        writes may already be applied. This then sends the rollback anyway, in
+        case the commit never arrived, and still raises, so nobody walks away
+        believing the discard is certain.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            RollbackTransactionRequest,
+        )
+
+        if self._state == "indeterminate":
+            # If the commit never reached the server this frees the
+            # transaction; if it was applied, nothing can un-apply it.
+            try:
+                await self._best_effort_rollback()
+            except asyncio.CancelledError:
+                # A direct caller has no context manager to retry for it:
+                # hand the interrupted cleanup to a detached task. Only a
+                # real cancellation then supersedes the indeterminate
+                # verdict below; a transport-raised one must not hide it.
+                self._spawn_cleanup()
+                if _caller_is_being_cancelled():
+                    raise
+            raise RuntimeError(
+                "Cannot promise a rollback: the commit's reply was lost, so its writes "
+                "may already be applied. A rollback request was sent in case the commit "
+                "never arrived, but verify the data rather than assuming either outcome."
+            )
+        if self._state == "aborted":
+            # The failure that closed the transaction already discarded the
+            # writes, so this call's contract is met. Asking the server would
+            # only get "unknown transaction id" for a transaction that is
+            # correctly gone — UNLESS the cleanup that was supposed to free it
+            # never got through (both RPCs lost to the same outage): then the
+            # server may still hold it, and connectivity may have recovered
+            # since, so the cleanup is retried here before settling.
+            if not self._cleanup_confirmed:
+                try:
+                    await self._best_effort_rollback()
+                except asyncio.CancelledError:
+                    # Same rule as the open and indeterminate branches: a
+                    # direct caller has no exit handler to retry for it, so
+                    # the interrupted retry goes detached. Only a real
+                    # cancellation propagates; a transport-raised one must
+                    # not fail a rollback that has met its contract.
+                    self._spawn_cleanup()
+                    if _caller_is_being_cancelled():
+                        raise
+                if not self._cleanup_confirmed:
+                    # The retry failed too. The discard promise still holds
+                    # (no commit was ever sent), but the server may hold the
+                    # transaction until its idle sweep — so stay "aborted",
+                    # keeping a later explicit rollback() able to retry once
+                    # connectivity recovers, instead of settling into a
+                    # state that refuses to.
+                    return
+            self._state = "rolled_back"
+            return
+        self._require_open("roll back")
+        # Closed before the call, not after it. If the request is lost the
+        # server may hold the transaction until the idle sweep, but no commit
+        # was ever sent, so nothing of it can apply and the discard this method
+        # promises still holds. What must not happen is the handle staying
+        # usable: a caller who asked to discard should not be able to add
+        # another statement, or commit, because their rollback did not land.
+        # The failure still propagates, so they know the request did not
+        # arrive. The state is transient rather than terminal until the RPC
+        # settles, so a context manager exiting over a rollback still in
+        # flight sees an in-flight operation rather than a finished one.
+        self._state = "rolling_back"
+        try:
+            await self._client._cypher_stub.RollbackTransaction(
+                RollbackTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
+            )
+        except asyncio.CancelledError:
+            # A cancelled owner may never call again, and a direct caller
+            # has no context manager to retry for it: hand the cleanup to a
+            # detached task (which also marks it unconfirmed) before the
+            # cancellation propagates.
+            self._state = "aborted"
+            self._spawn_cleanup()
+            raise
+        except grpc.RpcError as exc:
+            # NOT_FOUND means the server holds nothing under this id, which
+            # for a transaction that was never committed is the discard this
+            # method promises, already done — most often by the idle sweep
+            # reclaiming a long-open transaction. Reporting that as a failure
+            # would send the caller back for a second rollback that can only
+            # be answered the same way. Every other code leaves the request's
+            # fate unknown and falls through to the retriable handling below.
+            with suppress(Exception):
+                if exc.code() == grpc.StatusCode.NOT_FOUND:
+                    self._cleanup_confirmed = True
+                    self._state = "rolled_back"
+                    return
+            self._state = "aborted"
+            self._cleanup_confirmed = False
+            if self._abandoned:
+                self._spawn_cleanup()
+            raise
+        except BaseException:
+            # The request may never have arrived: the discard promise still
+            # holds (no commit was ever sent), but the server may hold the
+            # transaction until its idle sweep. "aborted" with the cleanup
+            # unconfirmed keeps the handle unusable for statements while a
+            # later rollback() can still retry once connectivity recovers;
+            # the failure propagates so the caller knows it did not land.
+            self._state = "aborted"
+            self._cleanup_confirmed = False
+            if self._abandoned:
+                # The owning scope is gone; nobody is left to retry.
+                self._spawn_cleanup()
+            raise
+        self._state = "rolled_back"
+
 
 class AsyncCoordinodeClient:
     """
@@ -242,6 +839,19 @@ class AsyncCoordinodeClient:
         self._tls = tls
         self._timeout = timeout
         self._channel: grpc.aio.Channel | None = None
+        # Detached cleanup tasks spawned by cancellation handlers, referenced
+        # here until done (an unreferenced task can be garbage-collected
+        # mid-flight) and drained by close() BEFORE the channel goes away, so
+        # a cleanup never races the transport it needs.
+        self._pending_cleanups: set[asyncio.Task[None]] = set()
+        # Set once close() has finished draining AND released the channel:
+        # later cancellations forfeit their cleanup to the server's idle
+        # sweep instead of spawning a task that could only fail against the
+        # closed channel.
+        self._closing = False
+        # The single finalization task behind close(); shared by concurrent
+        # and repeated close() calls, and immune to their cancellation.
+        self._close_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> AsyncCoordinodeClient:
         await self.connect()
@@ -251,6 +861,27 @@ class AsyncCoordinodeClient:
         await self.close()
 
     async def connect(self) -> None:
+        # A reconnect must not race an in-flight shutdown: when it resumes,
+        # the finalizer unconditionally clears the channel and raises the
+        # closing gate, which would clobber a transport installed under it —
+        # cleanup silently disabled, the new channel unreleasable. Wait for
+        # the old teardown to finish first (shielded, so cancelling this
+        # connect does not abandon that shutdown midway).
+        task = self._close_task
+        if task is not None and not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    # It was the CALLER of connect() that got cancelled, not
+                    # the finalizer; the cancellation must propagate.
+                    raise
+            except Exception:
+                # A failed shutdown left a broken transport behind; that is
+                # no reason to refuse a fresh one.
+                pass
+        self._closing = False
+        self._close_task = None
         self._channel = _make_async_channel(self._host, self._port, self._tls)
         self._cypher_stub = _cypher_stub(self._channel)
         self._vector_stub = _vector_stub(self._channel)
@@ -260,9 +891,59 @@ class AsyncCoordinodeClient:
         self._health_stub = _health_stub(self._channel)
 
     async def close(self) -> None:
-        if self._channel:
-            await self._channel.close()
+        # Shutdown runs in its own task so that cancelling the CALLER of
+        # close() cannot abandon it midway: only the shielded await here is
+        # cancelled, while the finalization drains the cleanups and releases
+        # the channel to the end. A finalization that itself failed is not
+        # cached — the next close() starts over against whatever transport
+        # state the failure left behind.
+        task = self._close_task
+        if task is None or (task.done() and not task.cancelled() and task.exception() is not None):
+            task = asyncio.get_running_loop().create_task(self._finalize_close())
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _finalize_close(self) -> None:
+        # Detached cancellation cleanups first: closing the channel under a
+        # cleanup in flight would strand its transaction on the server until
+        # the idle sweep. Drained until the set is STABLE, not from a single
+        # snapshot — a statement cancelled while the drain awaits an earlier
+        # cleanup adds its task after the snapshot, and one gather would
+        # strand it against a closed transport. Each task is bounded by the
+        # cleanup deadline and each round only exists because a new one was
+        # spawned, so the loop ends as soon as callers stop cancelling work.
+        while True:
+            while self._pending_cleanups:
+                batch = list(self._pending_cleanups)
+                await asyncio.gather(*batch, return_exceptions=True)
+                # Removed explicitly rather than trusting the done-callbacks:
+                # awaiting an already-finished task does not yield to the loop,
+                # so the callbacks may not have run yet and the while would spin.
+                self._pending_cleanups.difference_update(batch)
+            channel = self._channel
+            if channel is None:
+                break
+            # The closing gate stays OPEN through the channel close: a
+            # statement cancelled while the close is in progress spawns its
+            # cleanup, which runs concurrently against the still-live
+            # transport — and the next drain round above collects it. The
+            # rollback stays possible until the transport is conclusively
+            # gone, not merely scheduled to go.
+            #
+            # One window remains open BY DESIGN: a cleanup registered in the
+            # very loop turn in which the transport finishes closing is still
+            # drained below, but its request meets a dead channel and is
+            # suppressed. Closing that window would require holding the
+            # channel open until every in-flight operation settles, letting a
+            # single hung statement block shutdown forever; the server's idle
+            # sweep is the documented backstop for that residue instead.
+            await channel.close()
             self._channel = None
+        # Only now is the transport conclusively unavailable: a statement
+        # cancelled later must not spawn a cleanup that could only fail
+        # against the closed channel — the server's idle sweep is the
+        # backstop for those.
+        self._closing = True
 
     async def cypher(
         self,
@@ -280,15 +961,17 @@ class AsyncCoordinodeClient:
         Consistency parameters (all optional; server defaults apply when omitted):
 
         - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
+          Causal reads (``after_index`` > 0) require ``"majority"`` here.
         - ``write_concern``: ``"w0"``, ``"memory"``, ``"cache"``, ``"w1"`` (default, leader-ack),
           ``"majority"``, in rising order of durability. ``"memory"`` and ``"cache"`` acknowledge
           before the write reaches Raft, so a leader crash before the background drain loses them;
-          reach for those only where losing recent writes is acceptable. Causal reads
-          (``after_index`` > 0) require ``"majority"``.
+          reach for those only where losing recent writes is acceptable.
         - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
           ``"secondary_preferred"``, ``"nearest"``.
         - ``after_index``: raft log index for causal reads, a fence. Returned rows reflect at
-          least the state at this index.
+          least the state at this index. Needs ``read_concern="majority"``: the fence is about
+          which replica may answer, so it is the read's concern that has to be raised, not the
+          write's.
         - ``at_timestamp``: timestamp to read at, a pin rather than a fence. Reads the
           database exactly as of that version without waiting, for time travel. Microseconds
           since the Unix epoch, so ``int(time.time() * 1_000_000)`` is now. Requires
@@ -311,13 +994,23 @@ class AsyncCoordinodeClient:
             not isinstance(after_index, int) or isinstance(after_index, bool) or after_index < 0
         ):
             raise ValueError(f"after_index must be a non-negative integer, got {after_index!r}")
-        # Causal reads (after_index > 0) are only satisfiable when writes were
-        # acknowledged by a majority; otherwise the referenced index may never
-        # replicate and the read would hang. Mirror the server's rejection.
-        if after_index is not None and after_index > 0 and (write_concern or "").strip().lower() != "majority":
+        # Causal reads (after_index > 0) need a majority READ concern: the
+        # server refuses the pair otherwise, with "readConcern=LOCAL is
+        # incompatible with afterClusterTime". The concern that matters is the
+        # read's, not the write's, because the fence is about which replicas
+        # may answer, not about how the referenced write was acknowledged.
+        # The isinstance guard keeps a non-string read_concern (e.g. an int)
+        # on the ValueError path here, instead of crashing on `.strip()`
+        # before the concern validators get their chance to reject it.
+        if (
+            after_index is not None
+            and after_index > 0
+            and (not isinstance(read_concern, str) or read_concern.strip().lower() != "majority")
+        ):
             raise ValueError(
-                "after_index > 0 requires write_concern='majority' — causal reads "
-                "depend on majority-committed writes. Pass write_concern='majority'."
+                "after_index > 0 requires read_concern='majority': a causal read has to be "
+                "answered by a majority-acknowledged replica, or the referenced index may "
+                "not be there yet. Pass read_concern='majority'."
             )
         req = ExecuteCypherRequest(
             query=query,
@@ -330,8 +1023,230 @@ class AsyncCoordinodeClient:
         if read_preference is not None:
             req.read_preference = _make_read_preference(read_preference)
         resp = await self._cypher_stub.ExecuteCypher(req, timeout=self._timeout)
-        columns = list(resp.columns)
-        return [{col: from_property_value(val) for col, val in zip(columns, row.values)} for row in resp.rows]
+        return _rows_to_dicts(resp)
+
+    def _reclaim_cancelled_begin(self, begin: asyncio.Task[Any]) -> None:
+        """Collect the late reply of a cancelled begin and roll it back.
+
+        Tracked in the same pending set the cancellation cleanups use, so
+        close() drains it before the channel goes away; every failure is
+        best-effort-suppressed, with the server's idle sweep as backstop.
+        """
+        if self._closing:
+            return
+
+        async def _reclaim() -> None:
+            with suppress(Exception):
+                # Bounded by the cleanup deadline, not the request timeout:
+                # close() drains this before releasing the transport, and a
+                # stalled begin must not hold shutdown for the whole 30
+                # seconds. wait_for cancels the begin on expiry; whatever the
+                # server may have allocated then falls to its idle sweep.
+                resp = await asyncio.wait_for(begin, timeout=min(_CLEANUP_TIMEOUT_SECS, self._timeout))
+                if resp.transaction_id != 0:
+                    await AsyncTransaction(self, resp.transaction_id)._best_effort_rollback()
+
+        pending = self._pending_cleanups
+        task = asyncio.get_running_loop().create_task(_reclaim())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    async def begin_transaction(self) -> AsyncTransaction:
+        """Open an interactive transaction and return its handle.
+
+        Prefer :meth:`transaction`, which cannot leave one open. Reach for this
+        when the commit point is decided somewhere the ``async with`` block
+        cannot follow.
+
+        The caller owns the outcome: a transaction left neither committed nor
+        rolled back holds its buffered writes on the server until the idle
+        sweep collects it.
+        """
+        from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
+            BeginTransactionRequest,
+        )
+
+        # The begin RPC runs in its own task, shielded: cancellation landing
+        # after the server has ALLOCATED the transaction but before the reply
+        # reaches this frame would otherwise lose the only copy of the id —
+        # no handle, nothing for close() to drain, a pinned snapshot until
+        # the idle sweep. On cancellation the task keeps running detached and
+        # its late reply is handed straight to a rollback.
+        # Wrapped in a coroutine: a real grpc.aio stub returns a
+        # UnaryUnaryCall — an awaitable, NOT a coroutine object — and
+        # create_task() accepts only the latter.
+        async def _begin() -> Any:
+            return await self._cypher_stub.BeginTransaction(BeginTransactionRequest(), timeout=self._timeout)
+
+        begin = asyncio.get_running_loop().create_task(_begin())
+        try:
+            resp = await asyncio.shield(begin)
+        except asyncio.CancelledError:
+            if not begin.cancelled():
+                self._reclaim_cancelled_begin(begin)
+            raise
+        if resp.transaction_id == 0:
+            # Zero is what ExecuteCypherRequest uses for "no transaction", so a
+            # zero handle would silently turn every statement of this
+            # transaction into its own auto-committed write. The protocol
+            # promises a non-zero id here; refuse a server that breaks it.
+            raise RuntimeError(
+                "server answered BeginTransaction with transaction_id=0, which the wire "
+                "reserves for auto-commit; refusing to run statements outside a transaction"
+            )
+        return AsyncTransaction(self, resp.transaction_id)
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[AsyncTransaction]:
+        """Run a block of statements as one transaction.
+
+        Commits when the block finishes, rolls back when it raises::
+
+            async with client.transaction() as tx:
+                await tx.cypher("CREATE (:Person {name: $n})", {"n": "Alice"})
+                await tx.cypher("CREATE (:Person {name: $n})", {"n": "Bob"})
+
+        Committing or rolling back inside the block is allowed; this then leaves
+        the finished transaction alone rather than committing it twice.
+
+        An exception from the block propagates unchanged. A rollback that itself
+        fails on the way out is swallowed, since the failure being reported is
+        the one the caller needs and the server drops an unresolved transaction
+        on its own.
+        """
+        tx = await self.begin_transaction()
+        try:
+            yield tx
+        except asyncio.CancelledError:
+            tx._settle_cancelled_scope()
+            raise
+        except BaseException as exc:
+            if tx.is_open and not isinstance(exc, Exception):
+                # KeyboardInterrupt / SystemExit: the exit must not hold for
+                # the full request deadline on a stalled server. The handle
+                # closes and the cleanup goes detached (bounded, drained at
+                # close) while the interrupt propagates — mirroring the sync
+                # context manager.
+                tx._state = "aborted"
+                tx._spawn_cleanup()
+            elif tx.is_open:
+                # An ordinary rollback failure must never replace the error
+                # that caused the rollback — but a CANCELLATION landing
+                # mid-rollback propagates (asyncio does not re-inject a
+                # swallowed one). Either way an interrupted or failed
+                # rollback leaves the cleanup unconfirmed: hand it to a
+                # detached retry before the scope is gone.
+                try:
+                    await tx.rollback()
+                except asyncio.CancelledError:
+                    if not tx._cleanup_confirmed:
+                        tx._spawn_cleanup()
+                    if _caller_is_being_cancelled():
+                        raise
+                except Exception:
+                    if not tx._cleanup_confirmed:
+                        tx._spawn_cleanup()
+            elif tx._state == "indeterminate" or (tx._state == "aborted" and not tx._cleanup_confirmed):
+                # Two ways to reach the same unfinished business. A lost
+                # commit reply may mean the commit never REACHED the server,
+                # leaving the transaction open there with the caller gone; a
+                # failed statement whose own cleanup also failed leaves it
+                # open for the same reason. Either way the bounded request
+                # frees it, and if there is nothing to free the server
+                # answers "unknown id" and nothing changes. The block's own
+                # exception, and an indeterminate verdict, stand untouched.
+                await tx._cleanup_preserving_outcome()
+            elif tx._state in _IN_FLIGHT_STATES:
+                # The block raised while an operation it started (in a
+                # background task) is still in flight. Raising over the
+                # block's own error would mask it, and the operation cannot
+                # be awaited or cancelled from here — so the straggler is
+                # marked to hand the transaction to cleanup when it
+                # completes, instead of returning the handle to "open" with
+                # nobody left to use it. An in-flight COMMIT is additionally
+                # contested with a detached rollback: a successful commit
+                # cannot be retracted afterwards, so the only honest shot at
+                # the rollback-on-exception contract is letting the server
+                # race decide which request wins.
+                tx._abandoned = True
+                if tx._state == "committing":
+                    tx._spawn_cleanup()
+            raise
+        else:
+            # One loop turn before deciding anything: an operation the block
+            # QUEUED with create_task and never awaited has not run yet, so
+            # its state reservation has not happened and the handle still
+            # reads "open" — auto-committing here would report success while
+            # that write is silently dropped. The ready queue is FIFO, so a
+            # task created inside the block runs its first step (up to its
+            # own state reservation, which is synchronous) ahead of this
+            # continuation, and the guard below sees it.
+            #
+            # Guarded: this yield sits in the `else` suite, so a cancellation
+            # landing on it escapes the handlers above — an open transaction
+            # would walk away with neither rollback nor detached cleanup.
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                tx._settle_cancelled_scope()
+                raise
+            if tx._state in _IN_FLIGHT_STATES:
+                # The block exited while an operation it started (in a
+                # background task) is still in flight: reporting a successful
+                # exit then would let that operation race an owner that has
+                # already returned — buffered writes and a pinned snapshot can
+                # outlive the block unnoticed. Surface the misuse instead.
+                #
+                # An operation that queued and then failed instantly is NOT
+                # caught here, and cannot be. By the time the exit looks, it
+                # has finished, and its handle reads exactly like one belonging
+                # to a block that awaited the failure and chose to ignore it:
+                #
+                #     bg = asyncio.create_task(tx.cypher(q, bad_params))  # dropped
+                #     try: await tx.cypher(q, bad_params)                 # handled
+                #     except Exception: pass
+                #
+                # Both leave a failed statement and an open handle. Whether the
+                # result was ever retrieved lives inside the asyncio.Task and
+                # is not observable from the coroutine, and a task nobody
+                # awaits still runs to completion, so there is no signal to
+                # read. Treating a failed statement as misuse would reject the
+                # second case, which is legitimate. The guard covers what is
+                # unambiguous: work that has not finished.
+                in_flight = _IN_FLIGHT_STATES[tx._state]
+                # The raise below leaves the scope with the operation still
+                # running; the straggler hands the transaction to cleanup on
+                # completion, same as on an exceptional exit.
+                tx._abandoned = True
+                raise RuntimeError(
+                    f"Transaction context exited while a {in_flight} on it is still "
+                    "in flight. Await every operation started inside the block "
+                    "before leaving it."
+                )
+            if tx.is_open:
+                try:
+                    await tx.commit()
+                except asyncio.CancelledError:
+                    # Caught cancellation is not re-injected at the next
+                    # await, so an inline bounded rollback here would delay
+                    # its propagation by the whole cleanup deadline — the
+                    # same reason cancellation of the block itself detaches
+                    # its cleanup. Spawn, then let the cancellation go.
+                    if tx._state == "indeterminate":
+                        tx._spawn_cleanup()
+                    raise
+                except BaseException:
+                    if tx._state == "indeterminate":
+                        # Same reasoning as above, for the automatic commit.
+                        await tx._cleanup_preserving_outcome()
+                    raise
+            elif tx._state == "indeterminate" or (tx._state == "aborted" and not tx._cleanup_confirmed):
+                # The exit is normal because the block CAUGHT the failure, but
+                # the transaction it left behind may still be held: a manual
+                # commit() whose reply was lost, or a failed statement whose
+                # own cleanup also failed. Same bounded request as the
+                # exception path, and the indeterminate verdict survives it.
+                await tx._cleanup_preserving_outcome()
 
     async def vector_search(
         self,
@@ -875,6 +1790,77 @@ class AsyncCoordinodeClient:
 # ── Sync client (wraps async) ─────────────────────────────────────────────────
 
 
+class Transaction:
+    """Synchronous view of an :class:`AsyncTransaction`.
+
+    Same semantics throughout, including the node affinity and the idle sweep
+    described there. Obtained from :meth:`CoordinodeClient.transaction` or
+    :meth:`CoordinodeClient.begin_transaction`.
+    """
+
+    def __init__(self, client: CoordinodeClient, inner: AsyncTransaction) -> None:
+        self._client = client
+        self._inner = inner
+
+    def __repr__(self) -> str:
+        return f"Transaction(id={self._inner.transaction_id}, state={self._inner._state})"
+
+    @property
+    def transaction_id(self) -> int:
+        """Server-side handle for this transaction. Non-zero while it exists."""
+        return self._inner.transaction_id
+
+    @property
+    def is_open(self) -> bool:
+        """True while the transaction can still take statements and be committed."""
+        return self._inner.is_open
+
+    def cypher(
+        self,
+        query: str,
+        params: dict[str, PyValue] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run one statement inside this transaction. See :meth:`AsyncTransaction.cypher`."""
+        try:
+            return self._client._run(self._inner.cypher(query, params))  # type: ignore[no-any-return]
+        except BaseException as exc:
+            # An interruption raised INSIDE the stepping coroutine (Ctrl-C
+            # delivered mid-call) completes the task before _run() can
+            # cancel-and-drain it, so no async handler closes the handle.
+            # Mirror commit()'s conservative settlement: no commit was sent,
+            # so nothing can apply — the handle closes as aborted, with the
+            # cleanup unconfirmed so a later rollback() frees the server
+            # side. Only for REAL interruptions (non-Exception): a local
+            # failure such as an unsupported parameter type raises an
+            # ordinary Exception before any RPC and must leave the handle
+            # open, exactly as the async path does. An outcome the inner
+            # handler already decided is kept either way.
+            if not isinstance(exc, Exception) and self._inner._state in ("open", "executing"):
+                self._inner._state = "aborted"
+                self._inner._cleanup_confirmed = False
+            raise
+
+    def commit(self) -> int:
+        """Apply every buffered write as one unit. See :meth:`AsyncTransaction.commit`."""
+        try:
+            return self._client._run(self._inner.commit())  # type: ignore[no-any-return]
+        except BaseException:
+            # An interruption at the loop boundary (Ctrl-C, SystemExit) never
+            # reaches the async handlers, so without this the handle would
+            # read "open" (or stay parked mid-"committing") while the server
+            # may already have applied the writes — inviting the duplicate
+            # retry the indeterminate state exists to prevent. An outcome the
+            # inner handler already decided (aborted, indeterminate,
+            # committed) is kept.
+            if self._inner._state in ("open", "committing"):
+                self._inner._state = "indeterminate"
+            raise
+
+    def rollback(self) -> None:
+        """Discard every buffered write. See :meth:`AsyncTransaction.rollback`."""
+        self._client._run(self._inner.rollback())
+
+
 class CoordinodeClient:
     """
     Synchronous gRPC client for CoordiNode.
@@ -921,7 +1907,26 @@ class CoordinodeClient:
         if not self._connected:
             self._loop.run_until_complete(self._async.connect())
             self._connected = True
-        return self._loop.run_until_complete(coro)
+        # Driven through an explicit task so an interruption at the loop
+        # boundary (Ctrl-C escapes run_until_complete while the task is still
+        # pending) can cancel and DRAIN it. Left pending, the task would
+        # silently resume inside the next _run() call, racing a statement the
+        # caller believes interrupted against whatever runs next; cancelling
+        # it also fires the async cancellation handlers, so a transaction
+        # statement closes its handle exactly as it does under async
+        # cancellation.
+        task = self._loop.create_task(coro)
+        try:
+            return self._loop.run_until_complete(task)
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                # Swallows the CancelledError (and a second interrupt in this
+                # short window): the exception the caller sees is the
+                # interruption that started this.
+                with suppress(BaseException):
+                    self._loop.run_until_complete(task)
+            raise
 
     def cypher(
         self,
@@ -946,6 +1951,82 @@ class CoordinodeClient:
                 at_timestamp=at_timestamp,
             )
         )
+
+    def begin_transaction(self) -> Transaction:
+        """Open an interactive transaction. See :meth:`AsyncCoordinodeClient.begin_transaction`."""
+        return Transaction(self, self._run(self._async.begin_transaction()))
+
+    @contextmanager
+    def transaction(self) -> Iterator[Transaction]:
+        """Run a block of statements as one transaction.
+
+        Commits when the block finishes, rolls back when it raises::
+
+            with client.transaction() as tx:
+                tx.cypher("CREATE (:Person {name: $n})", {"n": "Alice"})
+                tx.cypher("CREATE (:Person {name: $n})", {"n": "Bob"})
+
+        See :meth:`AsyncCoordinodeClient.transaction` for the details.
+        """
+        tx = self.begin_transaction()
+        try:
+            yield tx
+        except BaseException as exc:
+            if tx.is_open:
+                if isinstance(exc, Exception):
+                    # CancelledError included, mirroring the async context
+                    # manager: the cleanup's failure must never replace the
+                    # block's own exception.
+                    with suppress(Exception, asyncio.CancelledError):
+                        tx.rollback()
+                else:
+                    # Ctrl-C / SystemExit must not hold this exit for the
+                    # full request deadline on a stalled server. Close the
+                    # handle; the trailing check below sends one BOUNDED
+                    # best-effort request instead of the ordinary rollback.
+                    tx._inner._state = "aborted"
+                    tx._inner._cleanup_confirmed = False
+            elif tx._inner._state == "indeterminate":
+                # Mirrors the async context manager: the commit may never
+                # have reached the server, so the bounded best-effort request
+                # frees the transaction in that case without touching the
+                # indeterminate verdict. Ordinary cleanup failures stay
+                # suppressed; a FRESH Ctrl-C or SystemExit arriving
+                # mid-cleanup is the user's word and propagates.
+                with suppress(Exception, asyncio.CancelledError):
+                    self._run(tx._inner._best_effort_rollback())
+            # A rollback that itself failed, or an in-task interruption's
+            # conservative settlement, leaves the handle aborted with the
+            # cleanup unconfirmed: retry the bounded best-effort request
+            # before the exception propagates, or the server holds the
+            # transaction until its idle sweep.
+            if tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed:
+                with suppress(Exception, asyncio.CancelledError):
+                    self._run(tx._inner._best_effort_rollback())
+            raise
+        else:
+            if tx.is_open:
+                try:
+                    tx.commit()
+                except BaseException:
+                    if tx._inner._state == "indeterminate":
+                        # Ordinary cleanup failures stay suppressed (the
+                        # commit's own error is the story); a FRESH Ctrl-C
+                        # or SystemExit arriving mid-cleanup is the user's
+                        # word and propagates instead.
+                        with suppress(Exception, asyncio.CancelledError):
+                            self._run(tx._inner._best_effort_rollback())
+                    raise
+            elif tx._inner._state == "indeterminate" or (
+                tx._inner._state == "aborted" and not tx._inner._cleanup_confirmed
+            ):
+                # Mirrors the async context manager's normal-exit rule: a
+                # manual commit() that failed ambiguously, or a failed
+                # statement whose own cleanup also failed, still gets the
+                # bounded request when the block caught the error, with the
+                # indeterminate verdict preserved.
+                with suppress(Exception, asyncio.CancelledError):
+                    self._run(tx._inner._best_effort_rollback())
 
     def vector_search(
         self,
@@ -1086,6 +2167,22 @@ _READ_PREFERENCE_MAP = {
     "secondary_preferred": "READ_PREFERENCE_SECONDARY_PREFERRED",
     "nearest": "READ_PREFERENCE_NEAREST",
 }
+
+
+def _rows_to_dicts(resp: Any) -> list[dict[str, Any]]:
+    """Decode an ExecuteCypher response into one dict per row.
+
+    Shared by the auto-commit path and the in-transaction one: both answer with
+    the same message, and a second copy of this loop is a second place for a
+    decoding fix to be forgotten.
+
+    Pairs strictly. A row carrying more or fewer values than there are columns
+    is a wire-shape mismatch, and pairing loosely would hand the caller a dict
+    with a key quietly missing, indistinguishable from a property the node does
+    not have. Raising here names the real problem at the point it is visible.
+    """
+    columns = list(resp.columns)
+    return [{col: from_property_value(val) for col, val in zip(columns, row.values, strict=True)} for row in resp.rows]
 
 
 def _normalize_consistency_key(value: Any, field: str, mapping: dict[str, str]) -> str:

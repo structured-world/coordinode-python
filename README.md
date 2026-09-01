@@ -19,7 +19,7 @@ Graph + Vector + Full-Text in a single transactional engine. One client, one que
 
 ## Try It in Google Colab
 
-No setup required — runs entirely in-browser using the embedded engine:
+The first four need no setup and run entirely in-browser on the embedded engine:
 
 | Notebook | Open |
 |----------|------|
@@ -27,9 +27,16 @@ No setup required — runs entirely in-browser using the embedded engine:
 | 01 · LlamaIndex PropertyGraph query | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/01_llama_index_property_graph.ipynb) |
 | 02 · LangChain GraphCypherQAChain | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/02_langchain_graph_chain.ipynb) |
 | 03 · LangGraph agent over graph | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/03_langgraph_agent.ipynb) |
+| 04 · What 0.5 added, transactions included | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/structured-world/coordinode-python/blob/main/demo/notebooks/04_whats_new_in_0_5.ipynb) |
 
-> Start with **00** to seed the graph — the other notebooks read from it.
+> Start with **00** to seed the graph, which the other notebooks read from.
 > The first cell installs pre-built wheels from PyPI (~30 sec).
+>
+> **04 is the exception:** batch writes, consistency levels, time travel and
+> transactions are distribution and durability features, so it needs a server
+> rather than the embedded engine. Point `COORDINODE_ADDR` at one, or run the
+> Docker Compose stack in `demo/`. Without it the notebook stops with an
+> explanation instead of failing cell by cell.
 
 ## Quick Start
 
@@ -55,6 +62,83 @@ with CoordinodeClient("localhost:7080") as db:
     for row in rows:
         print(row["name"])
 ```
+
+## Transactions
+
+`db.cypher(...)` commits each statement on its own. To make several statements
+land together, or not at all, run them in a transaction (each snippet opens
+its own client, so it runs as pasted):
+
+```python
+from coordinode import CoordinodeClient
+
+with CoordinodeClient("localhost:7080") as db:
+    with db.transaction() as tx:
+        tx.cypher("CREATE (:Person {name: $n})", params={"n": "Alice"})
+        tx.cypher("CREATE (:Person {name: $n})", params={"n": "Bob"})
+        # commits here; an exception anywhere in the block rolls back
+        # instead, leaving neither person in the database
+```
+
+The same surface is on `AsyncCoordinodeClient`, with `async with` and awaited
+statements. When the commit point sits outside a block, drive it by hand:
+
+```python
+from contextlib import suppress
+
+from coordinode import CoordinodeClient
+
+with CoordinodeClient("localhost:7080") as db:
+    tx = db.begin_transaction()
+    try:
+        tx.cypher("MERGE (n:Entity {name: $n})", params={"n": "Alice"})
+        applied_index = tx.commit()
+    except BaseException:
+        # BaseException so an interrupt (Ctrl-C) still frees the server-side
+        # transaction; the rollback failure is suppressed so it cannot
+        # replace the error that caused it.
+        with suppress(Exception):
+            tx.rollback()
+        raise
+```
+
+Requires a CoordiNode server of **v0.5.7 or newer** — the release this client
+is integration-tested against. `health()` exercises a different service, so a
+server without the transaction RPCs passes the health check and then refuses
+`transaction()`.
+
+Each statement reads the snapshot taken when the transaction began, so the
+transaction sees a stable view of the database plus its own uncommitted writes,
+which nobody else can see until the commit. A conflict with another transaction
+that wrote the same data is reported by `commit()`, not by the statement, and a
+rejected commit applies nothing. `commit()` returns the Raft applied index, which
+a later read can pass as `after_index` (with `read_concern="majority"`) when it
+must observe these writes.
+
+`tx.cypher()` takes no consistency arguments, unlike `db.cypher()`: the snapshot
+is already fixed and durability is decided once at the commit, so a per-statement
+read or write concern has nothing left to mean.
+
+Three constraints are worth knowing before holding a transaction open:
+
+- **It belongs to one node.** The handle lives in the memory of the server that
+  opened it, so every request of the transaction must reach that same node.
+  Connect to a node's own address, or through a proxy configured for backend
+  affinity. A single client is *not* by itself a guarantee: against a layer-7
+  or per-request gRPC balancer the calls can be spread across backends, and a
+  reconnection can move to another backend mid-transaction, after which the
+  next statement fails with an unknown transaction id.
+- **Idle transactions are collected.** The server reaps one that has been idle
+  (30 seconds by default), and it sweeps when another transaction begins rather
+  than on a timer, so a long pause between statements can lose the handle. A
+  failed statement also ends the transaction outright: its writes are discarded
+  and the handle is closed, so reusing it raises rather than reporting a
+  confusing error from the server.
+- **A lost reply is not an abort.** If the connection drops or a deadline
+  expires while committing, the server may have applied everything or nothing,
+  and the client cannot tell. The transaction is marked indeterminate: later
+  calls on it say so, and `rollback()` raises instead of promising a discard.
+  Verify the data rather than blindly retrying, which can duplicate the writes.
 
 ## LangChain — GraphRAG Pipeline
 

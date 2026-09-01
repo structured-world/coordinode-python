@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-cluster"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "coordinode-storage",
  "parking_lot",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-core"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "bytes",
  "rmp",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-embed"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "coordinode-core",
  "coordinode-lsm-tree",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-embedded"
-version = "1.0.6"
+version = "2.0.0"
 dependencies = [
  "coordinode-core",
  "coordinode-embed",
@@ -588,9 +588,9 @@ dependencies = [
 
 [[package]]
 name = "coordinode-lsm-tree"
-version = "5.7.0"
+version = "5.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c18dafd43ebda2d9f2cc29b7aaf7897c168bc62896a6d4ec2e81a45bc02791dd"
+checksum = "ad26b0c73ee5b2070f376602394efa2a54797d8f29a0ef2caa75a0a0d6e04e6d"
 dependencies = [
  "arc-swap",
  "cpufeatures 0.3.0",
@@ -599,7 +599,7 @@ dependencies = [
  "libc",
  "libm",
  "log",
- "lz4_flex 0.13.0",
+ "lz4_flex 0.14.0",
  "once_cell",
  "parking_lot",
  "portable-atomic",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-modality"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "coordinode-core",
  "coordinode-lsm-tree",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-query"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "coordinode-cluster",
  "coordinode-core",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-raft"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "bytes",
  "coordinode-core",
@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-search"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "aes-gcm",
  "coordinode-storage",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-storage"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "byteorder-lite",
  "bytes",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-vector"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "coordinode-core",
  "coordinode-storage",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-wire"
-version = "0.5.5"
+version = "0.5.7"
 dependencies = [
  "bytes",
  "prost",
@@ -1147,7 +1147,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1900,7 +1900,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2798,7 +2798,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3343,7 +3343,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
