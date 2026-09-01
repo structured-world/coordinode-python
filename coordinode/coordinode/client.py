@@ -637,6 +637,25 @@ class AsyncCoordinodeClient:
         await self.close()
 
     async def connect(self) -> None:
+        # A reconnect must not race an in-flight shutdown: when it resumes,
+        # the finalizer unconditionally clears the channel and raises the
+        # closing gate, which would clobber a transport installed under it —
+        # cleanup silently disabled, the new channel unreleasable. Wait for
+        # the old teardown to finish first (shielded, so cancelling this
+        # connect does not abandon that shutdown midway).
+        task = self._close_task
+        if task is not None and not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    # It was the CALLER of connect() that got cancelled, not
+                    # the finalizer; the cancellation must propagate.
+                    raise
+            except Exception:
+                # A failed shutdown left a broken transport behind; that is
+                # no reason to refuse a fresh one.
+                pass
         self._closing = False
         self._close_task = None
         self._channel = _make_async_channel(self._host, self._port, self._tls)

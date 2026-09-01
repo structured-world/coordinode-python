@@ -1628,3 +1628,38 @@ class TestLateCancellationDuringChannelCloseStillRollsBack:
             await closer
 
         asyncio.run(_inner())
+
+
+class TestReconnectWaitsForActiveShutdown:
+    """connect() during a detached, still-running shutdown must serialize
+    with it: the finalizer clears the channel and raises the closing gate
+    when it resumes, and doing that to a freshly installed transport would
+    disable cleanup on the new connection and leak its channel."""
+
+    def test_connect_serializes_with_an_inflight_close(self):
+        async def _inner() -> None:
+            release_close = asyncio.Event()
+
+            class _BlockedChannel:
+                async def close(self) -> None:
+                    await release_close.wait()
+
+            client = _async_client()
+            client._channel = _BlockedChannel()
+            closer = asyncio.create_task(client.close())
+            await asyncio.sleep(0.02)  # finalizer is awaiting channel.close()
+            closer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closer
+
+            reconnect = asyncio.create_task(client.connect())
+            await asyncio.sleep(0.05)
+            assert not reconnect.done(), "connect() replaced the transport under an active shutdown"
+            release_close.set()
+            await reconnect
+            await asyncio.sleep(0.05)  # give a stale finalizer time to clobber, if any
+            assert client._channel is not None, "the old finalizer cleared the new channel"
+            assert client._closing is False, "the old finalizer disabled cleanup on the new connection"
+            await client.close()
+
+        asyncio.run(_inner())
