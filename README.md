@@ -93,9 +93,10 @@ with CoordinodeClient("localhost:7080") as db:
     try:
         tx.cypher("MERGE (n:Entity {name: $n})", params={"n": "Alice"})
         applied_index = tx.commit()
-    except Exception:
-        # Suppressed so a failing rollback cannot replace the error that
-        # caused it.
+    except BaseException:
+        # BaseException so an interrupt (Ctrl-C) still frees the server-side
+        # transaction; the rollback failure is suppressed so it cannot
+        # replace the error that caused it.
         with suppress(Exception):
             tx.rollback()
         raise
