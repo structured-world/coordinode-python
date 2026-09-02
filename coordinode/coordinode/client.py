@@ -1765,6 +1765,7 @@ class AsyncCoordinodeClient:
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)
 
+    @_tracks_its_call_site
     async def create_text_index(
         self,
         name: str,
@@ -1772,6 +1773,7 @@ class AsyncCoordinodeClient:
         properties: str | list[str] | tuple[str, ...],
         *,
         language: str = "",
+        _source_location: _source.SourceLocation | None = None,
     ) -> TextIndexInfo:
         """Create a full-text (BM25) index on one or more node properties.
 
@@ -1815,7 +1817,10 @@ class AsyncCoordinodeClient:
         props_expr = ", ".join(prop_list)
         lang_clause = f" DEFAULT LANGUAGE {language}" if language else ""
         cypher = f"CREATE TEXT INDEX {name} ON :{label}({props_expr}){lang_clause}"
-        rows = await self.cypher(cypher)
+        # Passed on rather than left to the statement below to read: that
+        # lookup happens here, inside the package, which is not a call site
+        # and would leave this public query path unattributed.
+        rows = await self.cypher(cypher, _source_location=_source_location)
         if rows:
             return TextIndexInfo(rows[0])
         effective_language = language or "english"
@@ -1823,7 +1828,13 @@ class AsyncCoordinodeClient:
             {"index": name, "label": label, "properties": ", ".join(prop_list), "default_language": effective_language}
         )
 
-    async def drop_text_index(self, name: str) -> None:
+    @_tracks_its_call_site
+    async def drop_text_index(
+        self,
+        name: str,
+        *,
+        _source_location: _source.SourceLocation | None = None,
+    ) -> None:
         """Drop a full-text index by name.
 
         Args:
@@ -1837,7 +1848,9 @@ class AsyncCoordinodeClient:
             await client.drop_text_index("article_body")
         """
         _validate_cypher_identifier(name, "name")
-        await self.cypher(f"DROP TEXT INDEX {name}")
+        # The caller's location, passed on for the reason given in
+        # create_text_index.
+        await self.cypher(f"DROP TEXT INDEX {name}", _source_location=_source_location)
 
     async def traverse(
         self,
@@ -2311,11 +2324,21 @@ class CoordinodeClient:
         language: str = "",
     ) -> TextIndexInfo:
         """Create a full-text (BM25) index on one or more node properties."""
-        return self._run(self._async.create_text_index(name, label, properties, language=language))
+        return self._run(
+            self._async.create_text_index(
+                name,
+                label,
+                properties,
+                language=language,
+                # Read here rather than deeper in, for the reason given on
+                # _caller_location.
+                _source_location=self._caller_location(),
+            )
+        )
 
     def drop_text_index(self, name: str) -> None:
         """Drop a full-text index by name."""
-        return self._run(self._async.drop_text_index(name))
+        return self._run(self._async.drop_text_index(name, _source_location=self._caller_location()))
 
     def traverse(
         self,

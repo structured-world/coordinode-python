@@ -571,3 +571,62 @@ class TestSavedBoundMethods:
             assert lines == [str(first_line), str(first_line + 1)]
 
         asyncio.run(_inner())
+
+
+class TestHelperQueries:
+    """The public helpers that reach the server through `cypher` are attributed
+    to the line that called the HELPER.
+
+    Their internal `self.cypher(...)` sits in this package, so a location read
+    there is not a call site and is dropped — leaving two public query paths
+    silently outside the per-query attribution the client advertises.
+    """
+
+    def test_create_text_index_reports_the_calling_line(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            await client.create_text_index("article_body", "Article", "body")
+            expected_line = _inner.__code__.co_firstlineno + 2
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-file"] == __file__
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_drop_text_index_reports_the_calling_line(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            await client.drop_text_index("article_body")
+            expected_line = _inner.__code__.co_firstlineno + 2
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_sync_create_text_index_reports_the_calling_line(self):
+        client = _sync_client(debug_source_tracking=True)
+        client.create_text_index("article_body", "Article", "body")
+        expected_line = self.test_sync_create_text_index_reports_the_calling_line.__code__.co_firstlineno + 2
+
+        md = _sent_metadata(client._async._cypher_stub.ExecuteCypher)
+        assert md["x-source-file"] == __file__
+        assert md["x-source-line"] == str(expected_line)
+
+    def test_sync_drop_text_index_reports_the_calling_line(self):
+        client = _sync_client(debug_source_tracking=True)
+        client.drop_text_index("article_body")
+        expected_line = self.test_sync_drop_text_index_reports_the_calling_line.__code__.co_firstlineno + 2
+
+        md = _sent_metadata(client._async._cypher_stub.ExecuteCypher)
+        assert md["x-source-line"] == str(expected_line)
+
+    def test_helper_query_still_unattributed_without_the_flag(self):
+        async def _inner() -> None:
+            client = _async_client()
+            await client.drop_text_index("article_body")
+            call = client._cypher_stub.ExecuteCypher.await_args
+            assert "metadata" not in call.kwargs
+
+        asyncio.run(_inner())
