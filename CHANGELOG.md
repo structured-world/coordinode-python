@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0](https://github.com/structured-world/coordinode-python/compare/v2.0.0...v2.1.0) (2026-09-02)
+
+
+### Features
+
+* **client:** interactive transactions ([#87](https://github.com/structured-world/coordinode-python/issues/87)) ([f41185c](https://github.com/structured-world/coordinode-python/commit/f41185c1efecd38eccf42bef0ece07bf5c269361))
+* **client:** report where a query was written ([#89](https://github.com/structured-world/coordinode-python/issues/89)) ([9aced54](https://github.com/structured-world/coordinode-python/commit/9aced548f309a683f7a453110ce4b964606ca71d))
+
 ## [2.0.0](https://github.com/structured-world/coordinode-python/compare/v1.0.6...v2.0.0) (2026-08-31)
 
 
