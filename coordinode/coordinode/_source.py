@@ -81,11 +81,12 @@ def capture(levels_up: int) -> SourceLocation | None:
 
     ``None`` comes back when the frame cannot be had — an interpreter with no
     Python-level frame support, a stack shorter than the walk, or a hardened
-    application whose audit hook refuses the ``sys._getframe`` event and
-    raises whatever it likes in place of an answer. Every one of those is the
-    same thing to a caller: no location. None of them is worth failing a
-    query over, which is why the read is caught broadly rather than by the
-    ValueError a short stack happens to give.
+    application whose audit hook refuses the ``sys._getframe`` event, or the
+    ``object.__getattr__`` one that reading the frame's own attributes
+    raises, and answers with whatever exception it likes. Every one of those
+    is the same thing to a caller: no location. None of them is worth failing
+    a query over, which is why the whole read is caught broadly rather than
+    by the ValueError a short stack happens to give.
     """
     getframe = getattr(sys, "_getframe", None)
     if getframe is None:
@@ -93,16 +94,21 @@ def capture(levels_up: int) -> SourceLocation | None:
     try:
         # +1 for this frame, which the caller counts from rather than into.
         frame: FrameType = getframe(levels_up + 1)
+        # Reading the frame's attributes is guarded with the read of the frame
+        # itself, because it is a second thing an audit hook can refuse:
+        # CPython raises `object.__getattr__` when `f_code` is read, separately
+        # from the `sys._getframe` event, and a hook may object to either. Both
+        # leave the same nothing behind, and neither is worth a failed query.
+        code = frame.f_code
+        return SourceLocation(
+            file=code.co_filename,
+            line=frame.f_lineno,
+            # Qualified, so a method reads as "Class.method" rather than a bare
+            # name that says nothing about which class it belongs to.
+            function=code.co_qualname,
+        )
     except Exception:
         return None
-    code = frame.f_code
-    return SourceLocation(
-        file=code.co_filename,
-        line=frame.f_lineno,
-        # Qualified, so a method reads as "Class.method" rather than a bare
-        # name that says nothing about which class it belongs to.
-        function=code.co_qualname,
-    )
 
 
 def _header_safe(value: str) -> str:

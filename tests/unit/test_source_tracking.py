@@ -630,3 +630,86 @@ class TestHelperQueries:
             assert "metadata" not in call.kwargs
 
         asyncio.run(_inner())
+
+
+class TestUnboundCallForm:
+    """Reaching the method through the class, with the instance passed in, is
+    a valid way to call it, and it must still be attributed.
+
+    That form bypasses the binding entirely, so nothing on the way in reads
+    the caller. A client with tracking on would send the query with no
+    location at all — quietly, since an unattributed query is exactly what
+    the feature's own failure paths produce.
+    """
+
+    def test_unbound_call_reports_the_awaiting_line(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            await AsyncCoordinodeClient.cypher(client, "RETURN 1")
+            expected_line = _inner.__code__.co_firstlineno + 2
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-file"] == __file__
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_unbound_call_sends_nothing_without_the_flag(self):
+        async def _inner() -> None:
+            client = _async_client()
+            await AsyncCoordinodeClient.cypher(client, "RETURN 1")
+            call = client._cypher_stub.ExecuteCypher.await_args
+            assert "metadata" not in call.kwargs
+
+        asyncio.run(_inner())
+
+
+class TestRefusedFrameAttributes:
+    """An audit hook can refuse the frame's attributes as readily as the frame
+    itself.
+
+    CPython raises a separate `object.__getattr__` event when `f_code` is
+    read, so a hook that permits `sys._getframe` and rejects that one would
+    have the exception come out of the read — and, since the query is already
+    on its way, fail it. A debugging aid must never be the reason a query
+    fails, whichever of the two events the hook objects to.
+    """
+
+    def _frame_refusing(self, attribute):
+        class _Frame:
+            def __getattr__(self, name):
+                if name == attribute:
+                    raise RuntimeError(f"audit hook refused frame.{name}")
+                raise AssertionError(f"unexpected attribute {name}")
+
+        return _Frame()
+
+    @pytest.mark.parametrize("attribute", ["f_code", "f_lineno"])
+    def test_a_refused_frame_attribute_yields_no_location(self, monkeypatch, attribute):
+        import coordinode._source as source_module
+
+        with monkeypatch.context() as patched:
+            patched.setattr(
+                source_module.sys,
+                "_getframe",
+                lambda _depth: self._frame_refusing(attribute),
+                raising=False,
+            )
+            assert source_module.capture(1) is None
+
+    def test_a_refused_frame_attribute_does_not_fail_the_query(self, monkeypatch):
+        import coordinode._source as source_module
+
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            with monkeypatch.context() as patched:
+                patched.setattr(
+                    source_module.sys,
+                    "_getframe",
+                    lambda _depth: self._frame_refusing("f_code"),
+                    raising=False,
+                )
+                await client.cypher("RETURN 1")
+            assert _sent_metadata(client._cypher_stub.ExecuteCypher) == {}
+
+        asyncio.run(_inner())
