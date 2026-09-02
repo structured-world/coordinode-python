@@ -496,3 +496,38 @@ class TestFailurePaths:
             assert _sent_metadata(client._cypher_stub.ExecuteCypher) == {}
 
         asyncio.run(_inner())
+
+
+class TestBoundSignatures:
+    """Looking a query method up must not cost it a parameter.
+
+    The descriptor tells `unittest.mock.create_autospec` what the method's
+    parameters are, and the obvious way to do that — rewriting the underlying
+    function's signature without `self` — is read again every time Python
+    binds the method, taking `query` off with it. Frameworks that inspect a
+    bound callable to validate arguments, inject dependencies or generate a
+    wrapper would then build the wrong interface, and would do it with
+    tracking off as well, which is the default.
+    """
+
+    def test_bound_query_signature_keeps_query(self):
+        import inspect
+
+        client = _async_client()
+        assert "query" in inspect.signature(client.cypher).parameters
+
+    def test_tracked_bound_query_signature_keeps_query(self):
+        import inspect
+
+        client = _async_client(debug_source_tracking=True)
+        assert "query" in inspect.signature(client.cypher).parameters
+
+    def test_bound_transaction_signature_keeps_query(self):
+        import inspect
+
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            tx = await client.begin_transaction()
+            assert "query" in inspect.signature(tx.cypher).parameters
+
+        asyncio.run(_inner())

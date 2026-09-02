@@ -138,6 +138,33 @@ def _make_channel(host: str, port: int, tls: bool) -> grpc.Channel:
     return grpc.insecure_channel(target)
 
 
+def _without_self(fn: Any) -> Any:
+    """*fn* again, advertising the parameters a caller actually passes.
+
+    Only for reaching the method through the CLASS, which is how
+    `unittest.mock.create_autospec` reads it. A descriptor that is not a plain
+    function is not recognised as a method there, so `self` is left in and the
+    first real argument binds to it — an autospecced call then reports the
+    wrong argument missing.
+
+    It has to be a separate object. Rewriting the original function's own
+    signature would be read again every time Python binds the method, taking
+    the first REMAINING parameter off with it: `client.cypher` would advertise
+    itself as taking no `query`, and anything inspecting a bound callable to
+    validate arguments, inject dependencies or generate a wrapper would build
+    that interface. The original therefore keeps its true signature, which is
+    the one every binding is derived from.
+    """
+
+    @functools.wraps(fn)
+    async def unbound(*args: Any, **kwargs: Any) -> Any:
+        return await fn(*args, **kwargs)
+
+    parameters = list(inspect.signature(fn).parameters.values())[1:]
+    unbound.__signature__ = inspect.Signature(parameters)  # type: ignore[attr-defined]
+    return unbound
+
+
 class _tracks_its_call_site:  # noqa: N801 — reads as a decorator at the use site
     """Read the caller's location when the method is looked up, not when its
     coroutine runs.
@@ -165,19 +192,11 @@ class _tracks_its_call_site:  # noqa: N801 — reads as a decorator at the use s
     def __init__(self, fn: Any) -> None:
         self._fn = fn
         functools.update_wrapper(self, fn)
-        # Drop `self` from the advertised signature. A descriptor that is not
-        # a plain function is not recognised as a method by
-        # `unittest.mock.create_autospec`, which then leaves `self` in and
-        # binds the first real argument to it, so an autospecced call reports
-        # the wrong argument missing. Saying the signature outright is what
-        # the caller sees anyway, since the method is always reached through
-        # an instance.
-        parameters = list(inspect.signature(fn).parameters.values())[1:]
-        fn.__signature__ = inspect.Signature(parameters)
+        self._unbound = _without_self(fn)
 
     def __get__(self, obj: Any, objtype: Any = None) -> Any:
         if obj is None:
-            return self._fn
+            return self._unbound
         if not obj._source_tracking_enabled():
             return self._fn.__get__(obj, objtype)
         # One frame up from here is whoever wrote `obj.cypher`. A location
