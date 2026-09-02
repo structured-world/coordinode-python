@@ -154,10 +154,20 @@ def _without_self(fn: Any) -> Any:
     validate arguments, inject dependencies or generate a wrapper would build
     that interface. The original therefore keeps its true signature, which is
     the one every binding is derived from.
+
+    Calling it is a real, if uncommon, way to run a query —
+    ``AsyncCoordinodeClient.cypher(client, "…")`` passes the instance itself —
+    so it reads the call site too. It reads it from inside the coroutine,
+    which is as early as this form allows and right for the direct ``await``
+    that is how it is written; a caller who instead schedules THIS form as a
+    task lands on an event-loop frame and is left unattributed rather than
+    misattributed, which is what every unreadable location does here.
     """
 
     @functools.wraps(fn)
     async def unbound(*args: Any, **kwargs: Any) -> Any:
+        if args and kwargs.get("_source_location") is None and args[0]._source_tracking_enabled():
+            kwargs["_source_location"] = _source.capture(1)
         return await fn(*args, **kwargs)
 
     parameters = list(inspect.signature(fn).parameters.values())[1:]
