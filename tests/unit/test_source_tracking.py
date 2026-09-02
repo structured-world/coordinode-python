@@ -531,3 +531,43 @@ class TestBoundSignatures:
             assert "query" in inspect.signature(tx.cypher).parameters
 
         asyncio.run(_inner())
+
+
+class TestSavedBoundMethods:
+    """A query method kept and called later reports where it was CALLED.
+
+    Dependency injection and callback-style code routinely hold on to a bound
+    method, so a location read when the method is looked up would file every
+    later query under the one line that did the wiring — exactly the merging
+    of unrelated call sites the feature exists to undo.
+    """
+
+    def test_saved_bound_method_reports_the_invoking_line(self):
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            run_query = client.cypher
+            await run_query("RETURN 1")
+            expected_line = _inner.__code__.co_firstlineno + 3
+
+            md = _sent_metadata(client._cypher_stub.ExecuteCypher)
+            assert md["x-source-line"] == str(expected_line)
+
+        asyncio.run(_inner())
+
+    def test_two_calls_of_one_saved_method_report_two_lines(self):
+        """The consequence that matters: distinct call sites stay distinct."""
+
+        async def _inner() -> None:
+            client = _async_client(debug_source_tracking=True)
+            run_query = client.cypher
+            await run_query("RETURN 1")
+            await run_query("RETURN 2")
+            first_line = _inner.__code__.co_firstlineno + 3
+
+            lines = [
+                dict(call.kwargs.get("metadata", ()))["x-source-line"]
+                for call in client._cypher_stub.ExecuteCypher.await_args_list
+            ]
+            assert lines == [str(first_line), str(first_line + 1)]
+
+        asyncio.run(_inner())

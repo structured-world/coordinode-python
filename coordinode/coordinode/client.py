@@ -165,28 +165,43 @@ def _without_self(fn: Any) -> Any:
     return unbound
 
 
+class _bound_query(functools.partial):  # noqa: N801 — an implementation detail, named like one
+    """A query method bound to its client, reading the call site when CALLED.
+
+    The moment matters, and two nearby ones are wrong. Inside the coroutine's
+    body is too late: a query handed to ``create_task``, ``gather``,
+    ``wait_for``, ``shield`` or a ``TaskGroup`` starts its body long after the
+    frame that wrote it has returned, so the location would name an
+    event-loop frame for all of them. Attribute lookup is too early: a bound
+    method kept for later — which dependency injection and callback-style code
+    do routinely — is looked up once at the wiring and called from everywhere
+    afterwards, so every one of those queries would be filed under the line
+    that stored it. The call is the moment they all share: ``client.cypher(…)``
+    evaluates in the caller's own frame whatever is then done with the
+    coroutine.
+
+    Deriving from ``functools.partial`` is what keeps the coroutine contract.
+    Code that ASKS whether this is a coroutine function still gets yes, since
+    the predicates unwrap partials to the function underneath, and a double
+    that came out synchronous would hand back a plain value where the caller
+    awaits one.
+    """
+
+    def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
+        # One frame up is whoever wrote the call. A location passed in stays:
+        # the synchronous client and the helper methods read theirs at THEIR
+        # boundary, which is the caller's frame rather than this package's.
+        kwargs.setdefault("_source_location", _source.capture(1))
+        return super().__call__(*args, **kwargs)
+
+
 class _tracks_its_call_site:  # noqa: N801 — reads as a decorator at the use site
-    """Read the caller's location when the method is looked up, not when its
-    coroutine runs.
+    """Make a query method report where each of its calls was written.
 
-    Both moments matter and they are different. A query handed to
-    ``create_task``, ``gather``, ``wait_for``, ``shield`` or a ``TaskGroup``
-    starts its body long after the frame that wrote it has returned, so a
-    location read inside the body names an event-loop frame for all of them.
-    Attribute lookup, on the other hand, happens in the caller's own frame,
-    every time and for every one of those, since they all begin with
-    ``client.cypher(...)``.
-
-    The method it wraps stays a coroutine function, and what a caller gets is
-    a partial over it. That keeps both halves of the contract: the location is
-    read at the right moment, and code that ASKS whether this is a coroutine
-    function still gets yes — `inspect.iscoroutinefunction` looks through a
-    partial, and `unittest.mock.create_autospec`, which reads the class, finds
-    the coroutine function itself. A double that came out synchronous would
-    hand back a plain value where the test awaits one.
-
-    With tracking off there is no partial and no frame read: the lookup
-    returns the ordinary bound method.
+    With tracking on, a lookup hands back a :class:`_bound_query`, which reads
+    the caller when it is called. With tracking off there is no wrapper and no
+    frame read: the lookup returns the ordinary bound method, and the query
+    makes the call it made before this feature existed.
     """
 
     def __init__(self, fn: Any) -> None:
@@ -199,10 +214,7 @@ class _tracks_its_call_site:  # noqa: N801 — reads as a decorator at the use s
             return self._unbound
         if not obj._source_tracking_enabled():
             return self._fn.__get__(obj, objtype)
-        # One frame up from here is whoever wrote `obj.cypher`. A location
-        # bound as a keyword stays a default: the synchronous client passes
-        # its own, read at ITS boundary, and that one wins.
-        return functools.partial(self._fn, obj, _source_location=_source.capture(1))
+        return _bound_query(self._fn, obj)
 
 
 async def _execute_cypher(
@@ -621,7 +633,7 @@ class AsyncTransaction:
         as-is, and any later use of this object raises instead of reporting the
         server's "unknown transaction id".
 
-        The call site is read at lookup, for the reason given on
+        The call site is read when the call is made, for the reason given on
         :meth:`AsyncCoordinodeClient.cypher`.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
@@ -1127,9 +1139,9 @@ class AsyncCoordinodeClient:
           opposite requests, and the pair is rejected. Zero is rejected too: it is how the
           wire says "no pin", so it cannot also ask for one.
 
-        The call site is read when this method is looked up rather than when
-        its body runs, because everything that starts a coroutine as a task
-        runs the body after the calling frame has returned.
+        The call site is read when this method is called rather than when its
+        body runs, because everything that starts a coroutine as a task runs
+        the body after the calling frame has returned.
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             ExecuteCypherRequest,
