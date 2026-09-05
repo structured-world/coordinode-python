@@ -9,7 +9,7 @@ description = "LlamaIndex PropertyGraphStore backed by CoordiNode"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "structured.world", email = "dev@structured.world" }]
+authors = [{ name = "Dmitry Prudnikov", email = "mail@polaz.com" }]
 keywords = ["llama-index", "graph", "knowledge-graph", "rag", "coordinode"]
 classifiers = [
     "Development Status :: 3 - Alpha",

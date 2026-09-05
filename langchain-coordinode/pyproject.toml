@@ -9,7 +9,7 @@ description = "LangChain integration for CoordiNode — GraphStore backed by gra
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "structured.world", email = "dev@structured.world" }]
+authors = [{ name = "Dmitry Prudnikov", email = "mail@polaz.com" }]
 keywords = ["langchain", "graph", "rag", "graphrag", "coordinode"]
 classifiers = [
     "Development Status :: 3 - Alpha",
