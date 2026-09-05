@@ -235,22 +235,25 @@ SDK versions track the server: `coordinode 0.3.x` is compatible with `coordinode
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Copyright 2026 Dmitry Prudnikov.
+
+Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Every published package carries its own copy of both.
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
 ## Support the Project
 
-If you believe graph + vector + full-text retrieval should live in one engine under a genuine open-source license, consider sponsoring:
+The SDK and the [CoordiNode](https://github.com/structured-world/coordinode) server are developed by [Dmitry Prudnikov](https://github.com/polaz) and contributors. Donations go directly to the maintainer and fund development time.
 
-- [GitHub Sponsors](https://github.com/sponsors/structured-world)
-- [Open Collective](https://opencollective.com/structured-world)
+If you believe graph + vector + full-text retrieval should live in one engine under a genuine open-source license, you can support the work:
 
 <div align="center">
 
 ![USDT TRC-20 Donation QR](assets/usdt-qr.svg)
 
-**USDT (TRC-20):** `TFDsezHa1cBkoeZT5q2T49Wp66K8t2DmdA`
+**USDT (TRC-20), maintainer's personal wallet:** `TFDsezHa1cBkoeZT5q2T49Wp66K8t2DmdA`
 
 </div>
 

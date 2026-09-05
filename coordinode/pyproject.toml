@@ -9,7 +9,7 @@ description = "Python client for CoordiNode — graph + vector + full-text datab
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "structured.world", email = "dev@structured.world" }]
+authors = [{ name = "Dmitry Prudnikov", email = "mail@polaz.com" }]
 keywords = ["graph", "vector", "database", "rag", "graphrag", "grpc"]
 classifiers = [
     "Development Status :: 3 - Alpha",
