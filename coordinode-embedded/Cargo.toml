@@ -10,6 +10,7 @@ edition = "2021"
 rust-version = "1.90"
 description = "CoordiNode embedded Python bindings — in-process graph database, no server required"
 license = "Apache-2.0"
+authors = ["Dmitry Prudnikov <mail@polaz.com>"]
 repository = "https://github.com/structured-world/coordinode-python"
 readme = "README.md"
 
