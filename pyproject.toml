@@ -5,6 +5,8 @@
 [project]
 name = "coordinode-workspace"
 version = "2.1.1"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Dmitry Prudnikov", email = "mail@polaz.com" }]
 requires-python = ">=3.11"
 dependencies = [
     "googleapis-common-protos>=1.74.0",
