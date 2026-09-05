@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/structured-world/coordinode-python/compare/v2.1.0...v2.1.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* name the embedded maintainer and repair the PyPI upload ([#95](https://github.com/structured-world/coordinode-python/issues/95)) ([e3a639e](https://github.com/structured-world/coordinode-python/commit/e3a639e7180f9f1582cf3a21cbd05e1936893db1)), closes [#90](https://github.com/structured-world/coordinode-python/issues/90)
+
 ## [2.1.0](https://github.com/structured-world/coordinode-python/compare/v2.0.0...v2.1.0) (2026-09-02)
 
 
