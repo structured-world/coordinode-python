@@ -180,11 +180,9 @@ store = CoordinodePropertyGraphStore("localhost:7080", timeout=60.0)
 
 <div align="center">
 
-[![USDT TRC-20](https://raw.githubusercontent.com/structured-world/coordinode-python/main/assets/usdt-qr.svg)](https://github.com/sponsors/structured-world)
+![USDT TRC-20](https://raw.githubusercontent.com/structured-world/coordinode-python/main/assets/usdt-qr.svg)
 
-**USDT (TRC-20):** `TFDsezHa1cBkoeZT5q2T49Wp66K8t2DmdA`
-
-[GitHub Sponsors](https://github.com/sponsors/structured-world) · [Open Collective](https://opencollective.com/structured-world)
+**USDT (TRC-20), maintainer's personal wallet:** `TFDsezHa1cBkoeZT5q2T49Wp66K8t2DmdA`
 
 </div>
 
