@@ -7,6 +7,7 @@ name = "coordinode-embedded"
 description = "CoordiNode embedded Python bindings — in-process graph database, no server required"
 readme = "README.md"
 license = { text = "Apache-2.0" }
+authors = [{ name = "Dmitry Prudnikov", email = "mail@polaz.com" }]
 requires-python = ">=3.11"
 keywords = ["graph", "database", "cypher", "embedded", "knowledge-graph"]
 classifiers = [
