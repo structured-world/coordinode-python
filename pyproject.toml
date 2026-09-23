@@ -14,6 +14,10 @@ dependencies = [
 
 [tool.uv]
 package = false  # virtual root — not installed as a package
+# CI and the release run `--no-build`, relying on uv exempting this
+# workspace's own packages from it; older uv applied it to them too and
+# refused to install or build them. Verified on 0.12.12 and 0.12.18.
+required-version = ">=0.12.12"
 
 [tool.uv.workspace]
 members = [
