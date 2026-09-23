@@ -37,7 +37,6 @@ dev = [
     "coordinode",
     "langchain-coordinode",
     "llama-index-graph-stores-coordinode",
-    "build>=1.2",
     "grpcio-tools>=1.83.1",
     "ipykernel>=7.3.0",
     "langchain>=1.0",
