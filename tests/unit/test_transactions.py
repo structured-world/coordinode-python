@@ -343,6 +343,21 @@ class TestExplicitApi:
 
         asyncio.run(_inner())
 
+    def test_a_commit_without_a_timestamp_leaves_commit_ts_unset(self):
+        """Zero is how the wire says "no timestamp" (a server older than 0.6).
+
+        Storing it would hand `at_timestamp=tx.commit_ts` a value that reads
+        as the epoch and is refused as not positive.
+        """
+
+        async def _inner() -> None:
+            client = _async_client()  # the default reply carries no commit_ts
+            tx = await client.begin_transaction()
+            assert await tx.commit() == 7
+            assert tx.commit_ts is None
+
+        asyncio.run(_inner())
+
     def test_commit_sends_expected_versions(self):
         """A version pins the node; None asks for the node not to exist (create-if-absent)."""
 

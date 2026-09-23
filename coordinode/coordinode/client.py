@@ -873,7 +873,9 @@ class AsyncTransaction:
                 self._spawn_cleanup()
             raise
         self._state = "committed"
-        self.commit_ts = int(resp.commit_ts)
+        # Zero is how the wire says "no timestamp" (a server older than 0.6);
+        # it is never a real commit time.
+        self.commit_ts = int(resp.commit_ts) or None
         return int(resp.applied_index)
 
     async def rollback(self) -> None:
