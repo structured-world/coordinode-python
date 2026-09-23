@@ -9,8 +9,9 @@ import functools
 import inspect
 import logging
 import re
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
+from dataclasses import dataclass
 from typing import Any
 
 import grpc
@@ -266,9 +267,44 @@ class NodeResult:
         self.element_id: str = proto_node.element_id
         self.labels: list[str] = list(proto_node.labels)
         self.properties: dict[str, PyValue] = props_to_dict(proto_node.properties)
+        #: Timestamp of the commit that last wrote this node: the value to pass
+        #: in ``commit(expect=...)`` to write only if nobody changed it since.
+        #: ``None`` when the server did not resolve one (the wire sends zero,
+        #: which is never a real version).
+        self.version: int | None = proto_node.version or None
 
     def __repr__(self) -> str:
-        return f"Node(id={self.id}, element_id={self.element_id!r}, labels={self.labels}, properties={self.properties})"
+        return (
+            f"Node(id={self.id}, element_id={self.element_id!r}, labels={self.labels}, "
+            f"properties={self.properties}, version={self.version})"
+        )
+
+
+_UINT32_MAX = 0xFFFF_FFFF
+_UINT64_MAX = 0xFFFF_FFFF_FFFF_FFFF
+
+
+@dataclass(frozen=True)
+class WriteConcern:
+    """How a write is acknowledged: by how many members, holding it how durably.
+
+    ``w`` is ``"majority"`` (the server default, survives the loss of a
+    minority) or a member count, the leader included: ``1`` is the leader
+    alone, ``0`` is fire-and-forget (the caller is not told whether the write
+    committed). ``journal`` is the state each counted member holds the write
+    in: ``"journal"`` (fsynced, the default), ``"cache"`` (RAM + NVMe overlay,
+    lost on power failure before the drain) or ``"memory"`` (RAM only, lost on
+    process crash before the drain). The volatile states are accepted only
+    with ``w`` of 0 or 1. ``timeout_ms`` bounds the wait for ``w``; 0 waits
+    without a limit, and a timed-out write is not rolled back.
+
+    ``write_concern="majority"`` and ``write_concern=1`` are shorthands for
+    ``WriteConcern(w="majority")`` and ``WriteConcern(w=1)``.
+    """
+
+    w: str | int = "majority"
+    journal: str = "journal"
+    timeout_ms: int = 0
 
 
 class EdgeResult:
@@ -435,6 +471,10 @@ class AsyncTransaction:
         # writes may all be applied or none may be, and nothing on the client
         # can tell which.
         self._state = "open"
+        #: Timestamp (microseconds since the epoch) every write of the
+        #: transaction landed at; ``None`` until a commit succeeds. Pass it as
+        #: ``at_timestamp`` to read exactly this commit.
+        self.commit_ts: int | None = None
         # Whether the last best-effort cleanup RPC actually completed. False
         # after a cleanup that itself failed (both RPCs lost to the same
         # outage, say): the server may still hold the transaction, so an
@@ -736,12 +776,21 @@ class AsyncTransaction:
         self._state = "open"
         return _rows_to_dicts(resp)
 
-    async def commit(self) -> int:
+    async def commit(self, *, expect: Mapping[int, int | None] | None = None) -> int:
         """Apply every buffered write as one unit.
 
         Returns the Raft applied index of the commit, which a later read can
         pass as ``after_index`` (with ``read_concern="majority"``) when it must
-        observe these writes.
+        observe these writes. The commit's timestamp is kept in
+        :attr:`commit_ts`: ``at_timestamp=tx.commit_ts`` reads exactly this
+        commit and nothing later.
+
+        ``expect`` maps node ids to the version they must still be at
+        (:attr:`NodeResult.version`), or to ``None`` for a node that must not
+        exist. The check runs at commit, so it covers the window between the
+        read and this write; a mismatch refuses the whole transaction with
+        ABORTED, reason ``REVISION_MISMATCH``, and the expected and current
+        versions in the error metadata.
 
         Raises if another transaction has written the same data since this one
         began: conflicts are detected here, not at the statement. A rejected
@@ -757,8 +806,26 @@ class AsyncTransaction:
         """
         from coordinode._proto.coordinode.v1.query.cypher_pb2 import (  # type: ignore[import]
             CommitTransactionRequest,
+            ExpectedNodeVersion,
         )
 
+        # Validated before the open-check and the state transition: a bad
+        # argument is the caller's mistake, not a reason to consume the
+        # transaction.
+        expected = []
+        for node_id, version in (expect or {}).items():
+            if not isinstance(node_id, int) or isinstance(node_id, bool) or not 0 <= node_id <= _UINT64_MAX:
+                raise ValueError(f"expect keys must be node ids (non-negative integers), got {node_id!r}")
+            if version is None:
+                expected.append(ExpectedNodeVersion(node_id=node_id))
+            elif isinstance(version, int) and not isinstance(version, bool) and 0 < version <= _UINT64_MAX:
+                expected.append(ExpectedNodeVersion(node_id=node_id, version=version))
+            else:
+                # Zero is not a version a node can have; `None` is how to ask
+                # for absence.
+                raise ValueError(
+                    f"expected version for node {node_id} must be a positive integer or None, got {version!r}"
+                )
         self._require_open("commit")
         # Transition BEFORE the await: a concurrent operation on this handle
         # would otherwise pass its own open-check while the commit is in
@@ -767,7 +834,7 @@ class AsyncTransaction:
         self._state = "committing"
         try:
             resp = await self._client._cypher_stub.CommitTransaction(
-                CommitTransactionRequest(transaction_id=self._id), timeout=self._client._timeout
+                CommitTransactionRequest(transaction_id=self._id, expect=expected), timeout=self._client._timeout
             )
         except grpc.RpcError as exc:
             if _rpc_outcome_is_ambiguous(exc):
@@ -806,6 +873,7 @@ class AsyncTransaction:
                 self._spawn_cleanup()
             raise
         self._state = "committed"
+        self.commit_ts = int(resp.commit_ts)
         return int(resp.applied_index)
 
     async def rollback(self) -> None:
@@ -1117,7 +1185,7 @@ class AsyncCoordinodeClient:
         params: dict[str, PyValue] | None = None,
         *,
         read_concern: str | None = None,
-        write_concern: str | None = None,
+        write_concern: WriteConcern | str | int | None = None,
         read_preference: str | None = None,
         after_index: int | None = None,
         at_timestamp: int | None = None,
@@ -1129,10 +1197,11 @@ class AsyncCoordinodeClient:
 
         - ``read_concern``: ``"local"`` (default), ``"majority"``, ``"linearizable"``, ``"snapshot"``.
           Causal reads (``after_index`` > 0) require ``"majority"`` here.
-        - ``write_concern``: ``"w0"``, ``"memory"``, ``"cache"``, ``"w1"`` (default, leader-ack),
-          ``"majority"``, in rising order of durability. ``"memory"`` and ``"cache"`` acknowledge
-          before the write reaches Raft, so a leader crash before the background drain loses them;
-          reach for those only where losing recent writes is acceptable.
+        - ``write_concern``: a :class:`WriteConcern`, or its shorthands ``"majority"`` (the
+          default: journaled on a majority, survives the loss of a minority) and a member count
+          (``1`` = leader only, ``0`` = fire-and-forget). Weaker concerns are for writes that may
+          be lost with their leader; ``WriteConcern(w=1, journal="memory")`` answers before the
+          write reaches the log, so a leader crash before the drain loses it.
         - ``read_preference``: ``"primary"`` (default), ``"primary_preferred"``, ``"secondary"``,
           ``"secondary_preferred"``, ``"nearest"``.
         - ``after_index``: raft log index for causal reads, a fence. Returned rows reflect at
@@ -2034,21 +2103,29 @@ class Transaction:
                 self._inner._cleanup_confirmed = False
             raise
 
-    def commit(self) -> int:
+    def commit(self, *, expect: Mapping[int, int | None] | None = None) -> int:
         """Apply every buffered write as one unit. See :meth:`AsyncTransaction.commit`."""
         try:
-            return self._client._run(self._inner.commit())  # type: ignore[no-any-return]
-        except BaseException:
+            return self._client._run(self._inner.commit(expect=expect))  # type: ignore[no-any-return]
+        except BaseException as exc:
             # An interruption at the loop boundary (Ctrl-C, SystemExit) never
             # reaches the async handlers, so without this the handle would
             # read "open" (or stay parked mid-"committing") while the server
             # may already have applied the writes — inviting the duplicate
             # retry the indeterminate state exists to prevent. An outcome the
             # inner handler already decided (aborted, indeterminate,
-            # committed) is kept.
-            if self._inner._state in ("open", "committing"):
+            # committed) is kept. Only for real interruptions: an ordinary
+            # Exception is either settled by the inner handlers already or a
+            # rejected argument raised before any RPC, which leaves the
+            # transaction open.
+            if not isinstance(exc, Exception) and self._inner._state in ("open", "committing"):
                 self._inner._state = "indeterminate"
             raise
+
+    @property
+    def commit_ts(self) -> int | None:
+        """Timestamp of the commit, once it succeeded. See :attr:`AsyncTransaction.commit_ts`."""
+        return self._inner.commit_ts
 
     def rollback(self) -> None:
         """Discard every buffered write. See :meth:`AsyncTransaction.rollback`."""
@@ -2155,7 +2232,7 @@ class CoordinodeClient:
         params: dict[str, PyValue] | None = None,
         *,
         read_concern: str | None = None,
-        write_concern: str | None = None,
+        write_concern: WriteConcern | str | int | None = None,
         read_preference: str | None = None,
         after_index: int | None = None,
         at_timestamp: int | None = None,
@@ -2385,15 +2462,13 @@ _READ_CONCERN_MAP = {
     "linearizable": "READ_CONCERN_LEVEL_LINEARIZABLE",
     "snapshot": "READ_CONCERN_LEVEL_SNAPSHOT",
 }
-# Durability rises W0 < MEMORY < CACHE < W1 < MAJORITY. Anything below W1
-# acknowledges before the write is replicated through Raft: a leader crash
-# before the background drain loses every in-flight MEMORY or CACHE write.
-_WRITE_CONCERN_MAP = {
-    "w0": "WRITE_CONCERN_LEVEL_W0",
-    "memory": "WRITE_CONCERN_LEVEL_MEMORY",
-    "cache": "WRITE_CONCERN_LEVEL_CACHE",
-    "w1": "WRITE_CONCERN_LEVEL_W1",
-    "majority": "WRITE_CONCERN_LEVEL_MAJORITY",
+# The state each acknowledging member holds the write in. CACHE and MEMORY
+# answer before the write reaches the log: a leader crash before the drain
+# loses every write still in that overlay.
+_JOURNAL_MAP = {
+    "journal": "JOURNAL_JOURNAL",
+    "cache": "JOURNAL_CACHE",
+    "memory": "JOURNAL_MEMORY",
 }
 _READ_PREFERENCE_MAP = {
     "primary": "READ_PREFERENCE_PRIMARY",
@@ -2470,10 +2545,41 @@ def _make_read_concern(level: str | None, after_index: int | None, at_timestamp:
     return pb.ReadConcern(**kwargs)
 
 
-def _make_write_concern(level: str) -> Any:
+def _make_write_concern(concern: WriteConcern | str | int) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
-    return pb.WriteConcern(level=getattr(pb, _normalize_consistency_key(level, "write_concern", _WRITE_CONCERN_MAP)))
+    # The two shorthands name only `w`; journal and timeout keep their defaults.
+    if isinstance(concern, str) or (isinstance(concern, int) and not isinstance(concern, bool)):
+        concern = WriteConcern(w=concern)
+    if not isinstance(concern, WriteConcern):
+        raise ValueError(f"write_concern must be a WriteConcern, 'majority' or a member count; got {concern!r}")
+    kwargs: dict[str, Any] = {
+        "journal": getattr(pb, _normalize_consistency_key(concern.journal, "journal", _JOURNAL_MAP)),
+    }
+    w = concern.w
+    if isinstance(w, str):
+        if w.strip().lower() != "majority":
+            raise ValueError(f"invalid write_concern w {w!r}; expected 'majority' or a member count")
+        kwargs["mode"] = pb.WRITE_CONCERN_MODE_MAJORITY
+        acks = None
+    elif isinstance(w, int) and not isinstance(w, bool) and 0 <= w <= _UINT32_MAX:
+        kwargs["acks"] = w
+        acks = w
+    else:
+        raise ValueError(f"write_concern w must be 'majority' or a non-negative integer, got {w!r}")
+    # A volatile state cannot be confirmed across members, so the server
+    # refuses CACHE / MEMORY with MAJORITY or with more than one ack
+    # (INVALID_ARGUMENT). Say so here rather than a round trip later.
+    if kwargs["journal"] != pb.JOURNAL_JOURNAL and (acks is None or acks > 1):
+        raise ValueError(
+            f"journal={concern.journal!r} is accepted only with w=0 or w=1: a volatile write "
+            "cannot be confirmed across members"
+        )
+    t = concern.timeout_ms
+    if not isinstance(t, int) or isinstance(t, bool) or not 0 <= t <= _UINT32_MAX:
+        raise ValueError(f"write_concern timeout_ms must be a non-negative 32-bit integer, got {t!r}")
+    kwargs["timeout_ms"] = t
+    return pb.WriteConcern(**kwargs)
 
 
 def _make_read_preference(pref: str) -> Any:

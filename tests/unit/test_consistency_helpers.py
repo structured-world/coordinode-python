@@ -6,6 +6,7 @@ import pytest
 
 from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb
 from coordinode.client import (
+    WriteConcern,
     _make_read_concern,
     _make_read_preference,
     _make_write_concern,
@@ -114,38 +115,79 @@ class TestAtTimestamp:
 
 
 class TestWriteConcern:
+    """Two independent axes: `w` (count or majority) and `journal` (state per member)."""
+
+    def test_majority_shorthand_sets_the_mode_not_a_count(self) -> None:
+        wc = _make_write_concern("majority")
+        assert wc.WhichOneof("w") == "mode"
+        assert wc.mode == pb.WRITE_CONCERN_MODE_MAJORITY
+        assert wc.journal == pb.JOURNAL_JOURNAL
+
+    def test_majority_is_case_insensitive(self) -> None:
+        assert _make_write_concern(" Majority ").mode == pb.WRITE_CONCERN_MODE_MAJORITY
+
+    @pytest.mark.parametrize("acks", [0, 1, 3])
+    def test_count_shorthand_sets_acks(self, acks: int) -> None:
+        """`acks: 0` must be on the wire: unset `w` means MAJORITY, not fire-and-forget."""
+        wc = _make_write_concern(acks)
+        assert wc.WhichOneof("w") == "acks"
+        assert wc.acks == acks
+
+    def test_default_writeconcern_is_journaled_majority(self) -> None:
+        wc = _make_write_concern(WriteConcern())
+        assert (wc.WhichOneof("w"), wc.mode, wc.journal, wc.timeout_ms) == (
+            "mode",
+            pb.WRITE_CONCERN_MODE_MAJORITY,
+            pb.JOURNAL_JOURNAL,
+            0,
+        )
+
     @pytest.mark.parametrize(
-        ("level", "expected"),
-        [
-            ("w0", pb.WRITE_CONCERN_LEVEL_W0),
-            ("memory", pb.WRITE_CONCERN_LEVEL_MEMORY),
-            ("cache", pb.WRITE_CONCERN_LEVEL_CACHE),
-            ("w1", pb.WRITE_CONCERN_LEVEL_W1),
-            ("majority", pb.WRITE_CONCERN_LEVEL_MAJORITY),
-        ],
+        ("journal", "expected"),
+        [("journal", pb.JOURNAL_JOURNAL), ("cache", pb.JOURNAL_CACHE), ("memory", pb.JOURNAL_MEMORY)],
     )
-    def test_valid_levels(self, level: str, expected: int) -> None:
-        assert _make_write_concern(level).level == expected
+    def test_journal_states_on_a_single_ack(self, journal: str, expected: int) -> None:
+        wc = _make_write_concern(WriteConcern(w=1, journal=journal))
+        assert (wc.acks, wc.journal) == (1, expected)
 
-    def test_every_documented_level_is_reachable(self) -> None:
-        """The proto orders durability W0 < MEMORY < CACHE < W1 < MAJORITY."""
-        names = ("w0", "memory", "cache", "w1", "majority")
-        assert [_make_write_concern(n).level for n in names] == [
-            pb.WRITE_CONCERN_LEVEL_W0,
-            pb.WRITE_CONCERN_LEVEL_MEMORY,
-            pb.WRITE_CONCERN_LEVEL_CACHE,
-            pb.WRITE_CONCERN_LEVEL_W1,
-            pb.WRITE_CONCERN_LEVEL_MAJORITY,
-        ]
+    def test_volatile_journal_is_allowed_fire_and_forget(self) -> None:
+        wc = _make_write_concern(WriteConcern(w=0, journal="memory"))
+        assert (wc.WhichOneof("w"), wc.acks, wc.journal) == ("acks", 0, pb.JOURNAL_MEMORY)
 
-    def test_invalid_raises(self) -> None:
-        with pytest.raises(ValueError, match="invalid write_concern"):
-            _make_write_concern("w9")
+    @pytest.mark.parametrize("w", ["majority", 2, 5])
+    @pytest.mark.parametrize("journal", ["cache", "memory"])
+    def test_volatile_journal_across_members_is_refused(self, w: object, journal: str) -> None:
+        """The server answers INVALID_ARGUMENT: a volatile write cannot be confirmed by several members."""
+        with pytest.raises(ValueError, match="accepted only with w=0 or w=1"):
+            _make_write_concern(WriteConcern(w=w, journal=journal))  # type: ignore[arg-type]
 
-    @pytest.mark.parametrize("bad", ["", "   ", None, 1])
-    def test_rejects_blank_or_non_string(self, bad: object) -> None:
-        with pytest.raises(ValueError, match="write_concern must be a non-empty string"):
+    def test_timeout_is_carried(self) -> None:
+        assert _make_write_concern(WriteConcern(timeout_ms=250)).timeout_ms == 250
+
+    @pytest.mark.parametrize("bad", ["w1", "w0", "", "   ", "all"])
+    def test_rejects_unknown_named_w(self, bad: str) -> None:
+        """The retired level names are not silently mapped to a guess."""
+        with pytest.raises(ValueError, match="invalid write_concern w"):
+            _make_write_concern(bad)
+
+    @pytest.mark.parametrize("bad", [-1, 2**32, 1.5, True])
+    def test_rejects_a_count_that_is_not_a_uint32(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="write_concern"):
+            _make_write_concern(WriteConcern(w=bad))  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("bad", [None, 1.0, True, ["majority"]])
+    def test_rejects_a_value_of_the_wrong_type(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="write_concern must be a WriteConcern"):
             _make_write_concern(bad)  # type: ignore[arg-type]
+
+    def test_rejects_an_unknown_journal(self) -> None:
+        with pytest.raises(ValueError, match="invalid journal"):
+            _make_write_concern(WriteConcern(w=1, journal="disk"))
+
+    @pytest.mark.parametrize("bad", [-1, 2**32, True, 1.5])
+    def test_rejects_a_bad_timeout(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="timeout_ms must be a non-negative 32-bit integer"):
+            _make_write_concern(WriteConcern(timeout_ms=bad))  # type: ignore[arg-type]
 
 
 class TestReadPreference:

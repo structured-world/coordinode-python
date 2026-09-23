@@ -19,10 +19,10 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 > alternative was filtering model-written Cypher by a session tag, which leaks
 > the first time the filter misses a case. `COORDINODE_AGENT_DB` moves that
 > file; deleting it starts the agent with no memory.
-> The Docker Compose stack below pins the CoordiNode **server** image v0.5.7 by
-> digest. Do not move it below that: 0.5.1 crashes its Raft core when the oplog
-> rolls a segment that already exists, and a single-node stack never regains
-> leadership afterwards.
+> The Docker Compose stack below pins the CoordiNode **server** image v0.6.0 by
+> digest. Do not move it below that: the client speaks the two-axis write
+> concern 0.6 introduced, and an older server ignores it and applies its own
+> default.
 >
 > The first four run in Colab with no setup. **What 0.5 Added** does not: write
 > concerns, read concerns and time travel are distribution and durability features,

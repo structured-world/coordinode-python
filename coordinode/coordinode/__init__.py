@@ -33,6 +33,7 @@ from coordinode.client import (
     Transaction,
     TraverseResult,
     VectorResult,
+    WriteConcern,
 )
 
 try:
@@ -52,6 +53,8 @@ __all__ = [
     # requires the constructor, not just the shape.
     "MultiVector",
     "Path",
+    # How a write is acknowledged: member count or majority, and how durably.
+    "WriteConcern",
     "NodeResult",
     "EdgeResult",
     "VectorResult",
