@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/structured-world/coordinode-python/compare/v2.1.1...v3.0.0) (2026-09-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* write_concern no longer accepts "w0", "w1", "memory" or "cache"; use 0, 1, or WriteConcern(w=1, journal="memory" | "cache").
+
+### Features
+
+* adopt the CoordiNode v0.6.0 protocol ([#102](https://github.com/structured-world/coordinode-python/issues/102)) ([73e7291](https://github.com/structured-world/coordinode-python/commit/73e7291069abe2d6e31c7bdb081380e0a0375059))
+
 ## [2.1.1](https://github.com/structured-world/coordinode-python/compare/v2.1.0...v2.1.1) (2026-09-05)
 
 
