@@ -326,6 +326,131 @@ class TestExplicitApi:
 
         asyncio.run(_inner())
 
+    def test_commit_keeps_the_commit_timestamp(self):
+        """The timestamp is the exact snapshot anchor of the write, so it has to reach the caller."""
+        from unittest.mock import AsyncMock
+
+        async def _inner() -> None:
+            client = _async_client(
+                CommitTransaction=AsyncMock(
+                    return_value=cypher_pb2.CommitTransactionResponse(applied_index=7, commit_ts=1_700_000_000_000_001)
+                )
+            )
+            tx = await client.begin_transaction()
+            assert tx.commit_ts is None
+            await tx.commit()
+            assert tx.commit_ts == 1_700_000_000_000_001
+
+        asyncio.run(_inner())
+
+    def test_a_commit_without_a_timestamp_leaves_commit_ts_unset(self):
+        """Zero is how the wire says "no timestamp" (a server older than 0.6).
+
+        Storing it would hand `at_timestamp=tx.commit_ts` a value that reads
+        as the epoch and is refused as not positive.
+        """
+
+        async def _inner() -> None:
+            client = _async_client()  # the default reply carries no commit_ts
+            tx = await client.begin_transaction()
+            assert await tx.commit() == 7
+            assert tx.commit_ts is None
+
+        asyncio.run(_inner())
+
+    def test_commit_sends_expected_versions(self):
+        """A version pins the node; None asks for the node not to exist (create-if-absent)."""
+
+        async def _inner() -> None:
+            client = _async_client()
+            tx = await client.begin_transaction()
+            await tx.commit(expect={5: 123, 9: None})
+            sent = client._cypher_stub.CommitTransaction.call_args.args[0]
+            assert [(e.node_id, e.HasField("version"), e.version) for e in sent.expect] == [
+                (5, True, 123),
+                (9, False, 0),
+            ]
+
+        asyncio.run(_inner())
+
+    def test_commit_keeps_the_conditions_of_a_mapping_that_reads_as_false(self):
+        """Only None drops the condition, never the mapping's truthiness.
+
+        A Mapping whose __len__ reports zero still carries entries. Choosing
+        the fallback by truthiness would replace it with an empty one and
+        commit without the precondition the caller asked for.
+        """
+        from collections.abc import Mapping
+
+        class _Falsy(Mapping):
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return 0
+
+        async def _inner() -> None:
+            client = _async_client()
+            tx = await client.begin_transaction()
+            await tx.commit(expect=_Falsy({5: 123}))
+            sent = client._cypher_stub.CommitTransaction.call_args.args[0]
+            assert [(e.node_id, e.version) for e in sent.expect] == [(5, 123)]
+
+        asyncio.run(_inner())
+
+    def test_commit_without_expect_is_unconditional(self):
+        async def _inner() -> None:
+            client = _async_client()
+            tx = await client.begin_transaction()
+            await tx.commit()
+            assert list(client._cypher_stub.CommitTransaction.call_args.args[0].expect) == []
+
+        asyncio.run(_inner())
+
+    @pytest.mark.parametrize(
+        "expect",
+        [
+            {5: 0},
+            {5: -1},
+            {5: True},
+            {5: "7"},
+            {-1: 3},
+            {True: 3},
+            {"5": 3},
+            {5: 2**64},
+            # Not a mapping at all. The falsy ones matter most: treated as
+            # "no condition", they would commit unconditionally.
+            [],
+            0,
+            "",
+            [(5, 3)],
+        ],
+    )
+    def test_bad_expect_is_refused_before_any_rpc_and_leaves_the_transaction_open(self, expect):
+        """A malformed argument is the caller's mistake, not a reason to consume the transaction.
+
+        Zero is refused as a version because no node is at version zero; None
+        is the way to ask for absence. A value that is not a mapping is refused
+        rather than read as "no condition", which would apply the writes.
+        """
+
+        async def _inner() -> None:
+            client = _async_client()
+            tx = await client.begin_transaction()
+            with pytest.raises(ValueError, match="expect"):
+                await tx.commit(expect=expect)
+            assert client._cypher_stub.CommitTransaction.await_count == 0
+            assert tx.is_open is True
+            assert await tx.commit() == 7
+
+        asyncio.run(_inner())
+
 
 # ── Sync wrapper ─────────────────────────────────────────────────────────────
 
@@ -353,6 +478,29 @@ class TestSyncClient:
         assert tx.transaction_id == 42
         assert tx.commit() == 7
         assert tx.is_open is False
+
+    def test_sync_commit_passes_expect_and_exposes_the_timestamp(self):
+        from unittest.mock import AsyncMock
+
+        client = _sync_client(
+            CommitTransaction=AsyncMock(
+                return_value=cypher_pb2.CommitTransactionResponse(applied_index=7, commit_ts=99)
+            )
+        )
+        tx = client.begin_transaction()
+        tx.commit(expect={5: 123})
+        sent = client._async._cypher_stub.CommitTransaction.call_args.args[0]
+        assert [(e.node_id, e.version) for e in sent.expect] == [(5, 123)]
+        assert tx.commit_ts == 99
+
+    def test_sync_bad_expect_leaves_the_transaction_open(self):
+        """The loop-boundary guard settles only real interruptions as indeterminate, not a rejected argument."""
+        client = _sync_client()
+        tx = client.begin_transaction()
+        with pytest.raises(ValueError, match="expect"):
+            tx.commit(expect={5: 0})
+        assert tx.is_open is True
+        assert tx.commit() == 7
 
     def test_reuse_after_commit_raises(self):
         client = _sync_client()

@@ -171,8 +171,12 @@ db.cypher(
     read_concern="majority",
 )
 
-# Durable write, acknowledged by a majority of the cluster
-db.cypher("CREATE (n:Event {t: timestamp()})", write_concern="majority")
+# Writes default to a journaled majority. Weaken it explicitly per write,
+# only for data that may be lost with its leader:
+from coordinode import WriteConcern
+
+db.cypher("CREATE (n:Hit {t: timestamp()})", write_concern=1)  # leader only
+db.cypher("CREATE (n:Hit {t: timestamp()})", write_concern=WriteConcern(w=1, journal="memory"))
 
 # Causal read: see at least the state at raft index 42. The fence is about
 # which replica may answer, so it is the READ concern that has to be majority.
@@ -181,12 +185,19 @@ db.cypher(
     after_index=42,
     read_concern="majority",
 )
+
+# Write only if the node is still at the version you read.
+node = db.get_node(node_id)
+with db.transaction() as tx:
+    tx.cypher("MATCH (n) WHERE id(n) = $id SET n.seen = true", params={"id": node_id})
+    tx.commit(expect={node.id: node.version})  # ABORTED / REVISION_MISMATCH if it moved
+# tx.commit_ts is when the write landed: at_timestamp=tx.commit_ts reads exactly it.
 ```
 
 Accepted values:
 
 - ``read_concern``: ``local`` (default) · ``majority`` · ``linearizable`` · ``snapshot``. Causal reads (``after_index`` > 0) require ``majority`` here.
-- ``write_concern``: ``w0`` · ``memory`` · ``cache`` · ``w1`` (default) · ``majority``
+- ``write_concern``: ``"majority"`` (default) · a member count (``1`` leader only, ``0`` fire-and-forget) · ``WriteConcern(w, journal, timeout_ms)`` with ``journal`` one of ``journal`` (default) · ``cache`` · ``memory``. The volatile ``cache`` and ``memory`` states are accepted only with ``w`` of 0 or 1.
 - ``read_preference``: ``primary`` (default) · ``primary_preferred`` · ``secondary`` · ``secondary_preferred`` · ``nearest``
 
 ## Related Packages

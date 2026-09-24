@@ -22,6 +22,7 @@ from coordinode import (
     TextIndexInfo,
     TextResult,
     TraverseResult,
+    WriteConcern,
 )
 
 ADDR = os.environ.get("COORDINODE_ADDR", "localhost:7080")
@@ -304,17 +305,6 @@ def test_traverse_returns_neighbours(client):
         client.cypher("MATCH (n:TraverseRPC {tag: $tag}) DETACH DELETE n", params={"tag": tag})
 
 
-@pytest.mark.xfail(
-    strict=False,
-    raises=AssertionError,
-    # strict=False: XPASS is good news (server gained inbound support), not an error.
-    # strict=True would break CI exactly when the server improves, which is undesirable.
-    # The XPASS report in pytest output is the signal to remove this marker.
-    # raises=AssertionError: narrows xfail to the known failure mode (empty result set →
-    # assertion fails). Unexpected errors (gRPC RpcError, wrong enum, etc.) are NOT covered
-    # and will still propagate as CI failures.
-    reason="CoordiNode Traverse RPC does not yet support inbound direction — server returns empty result set",
-)
 def test_traverse_inbound_direction(client):
     """traverse() with direction='inbound' reaches nodes that point TO start_id."""
     tag = uid()
@@ -323,8 +313,8 @@ def test_traverse_inbound_direction(client):
         params={"tag": tag},
     )
     try:
-        # Capture both src and dst so that when the server gains inbound support
-        # (XPASS), the assertion verifies the *correct* node was returned, not just any node.
+        # Capture both src and dst so the assertion verifies the *correct* node
+        # was returned, not just any node.
         rows = client.cypher(
             "MATCH (src:TraverseIn {tag: $tag})-[:INBOUND_TEST]->(dst:TraverseIn {tag: $tag}) "
             "RETURN src AS src_id, dst AS dst_id",
@@ -718,12 +708,35 @@ def test_cypher_accepts_consistency_kwargs(client):
         client.cypher(f"MATCH (n:{label} {{tag: $tag}}) DELETE n", params={"tag": tag})
 
 
+@pytest.mark.parametrize(
+    "concern",
+    [1, 0, WriteConcern(w=1, journal="cache"), WriteConcern(w=1, journal="memory"), WriteConcern(timeout_ms=5000)],
+)
+def test_weaker_and_bounded_write_concerns_are_accepted(client, concern):
+    """Every combination the client lets through is one the server accepts.
+
+    Fire-and-forget (w=0) answers before the write is known to commit, so its
+    visibility is not asserted; the others are read back.
+    """
+    tag = uid()
+    try:
+        client.cypher("CREATE (:WcDemo {tag: $tag})", params={"tag": tag}, write_concern=concern)
+        if concern != 0:
+            rows = client.cypher("MATCH (n:WcDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+            assert rows[0]["c"] == 1
+    finally:
+        client.cypher("MATCH (n:WcDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
 def test_cypher_rejects_invalid_consistency_values(client):
     """Invalid consistency kwargs raise ValueError before the RPC."""
     with pytest.raises(ValueError, match="invalid read_concern"):
         client.cypher("RETURN 1", read_concern="strong")
-    with pytest.raises(ValueError, match="invalid write_concern"):
+    with pytest.raises(ValueError, match="invalid write_concern w"):
         client.cypher("RETURN 1", write_concern="w9")
+    # A volatile state on several members is refused here, as the server would.
+    with pytest.raises(ValueError, match="accepted only with w=0 or w=1"):
+        client.cypher("RETURN 1", write_concern=WriteConcern(journal="memory"))
     with pytest.raises(ValueError, match="invalid read_preference"):
         client.cypher("RETURN 1", read_preference="leader")
     with pytest.raises(ValueError, match="after_index must be a non-negative integer"):
@@ -854,6 +867,103 @@ def test_commit_returns_an_index_a_read_can_be_fenced_on(client):
             read_concern="majority",
         )
         assert [r["name"] for r in rows] == ["Alice"]
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_commit_ts_reads_exactly_that_commit(client):
+    """A read pinned at commit_ts sees the commit; one pinned just before it does not."""
+    tag = uid()
+    try:
+        tx = client.begin_transaction()
+        tx.cypher("CREATE (:TxDemo {tag: $tag, name: 'Alice'})", params={"tag": tag})
+        tx.commit()
+        assert tx.commit_ts and tx.commit_ts > 0
+
+        def count_at(ts):
+            rows = client.cypher(
+                "MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag}, at_timestamp=ts
+            )
+            return rows[0]["c"]
+
+        assert count_at(tx.commit_ts) == 1
+        assert count_at(tx.commit_ts - 1) == 0
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def _error_info(exc: grpc.RpcError):
+    """The ErrorInfo the server attaches to a classified rejection."""
+    from google.rpc import error_details_pb2, status_pb2
+
+    for key, value in exc.trailing_metadata() or ():
+        if key == "grpc-status-details-bin":
+            status = status_pb2.Status.FromString(value)
+            for detail in status.details:
+                info = error_details_pb2.ErrorInfo()
+                if detail.Unpack(info):
+                    return info
+    raise AssertionError(f"no ErrorInfo on the rejection: {exc!r}")
+
+
+def test_commit_with_the_current_version_applies(client):
+    tag = uid()
+    node = client.create_node(["TxDemo"], {"tag": tag, "name": "Alice"})
+    try:
+        assert node.version, "the server resolves a version for a node it just wrote"
+        assert client.get_node(node.id).version == node.version
+        with client.transaction() as tx:
+            tx.cypher("MATCH (n:TxDemo {tag: $tag}) SET n.name = 'Bob'", params={"tag": tag})
+            tx.commit(expect={node.id: node.version})
+        after = client.get_node(node.id)
+        assert after.properties["name"] == "Bob"
+        # The version moves to the commit that changed the node.
+        assert after.version == tx.commit_ts
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_commit_against_a_stale_version_is_refused_and_applies_nothing(client):
+    """The check runs at commit, so a write between the read and the commit loses the race cleanly."""
+    tag = uid()
+    node = client.create_node(["TxDemo"], {"tag": tag, "name": "Alice"})
+    try:
+        stale = node.version
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) SET n.name = 'Carol'", params={"tag": tag})
+        current = client.get_node(node.id).version
+        assert current != stale
+
+        tx = client.begin_transaction()
+        tx.cypher("MATCH (n:TxDemo {tag: $tag}) SET n.name = 'Bob'", params={"tag": tag})
+        with pytest.raises(grpc.RpcError) as info:
+            tx.commit(expect={node.id: stale})
+        assert info.value.code() == grpc.StatusCode.ABORTED
+        error = _error_info(info.value)
+        assert error.reason == "REVISION_MISMATCH"
+        # The caller decides its next move from these without reading again.
+        assert (error.metadata["expected_version"], error.metadata["current_version"]) == (str(stale), str(current))
+        assert tx.is_open is False
+        assert client.get_node(node.id).properties["name"] == "Carol"
+    finally:
+        client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
+
+
+def test_expecting_absence_of_an_existing_node_is_refused(client):
+    tag = uid()
+    node = client.create_node(["TxDemo"], {"tag": tag})
+    try:
+        tx = client.begin_transaction()
+        tx.cypher("CREATE (:TxDemo {tag: $tag, extra: true})", params={"tag": tag})
+        with pytest.raises(grpc.RpcError) as info:
+            tx.commit(expect={node.id: None})
+        assert info.value.code() == grpc.StatusCode.ABORTED
+        error = _error_info(info.value)
+        assert error.reason == "REVISION_MISMATCH"
+        # Absence was expected, so there is no expected version to report.
+        assert "expected_version" not in error.metadata
+        assert error.metadata["current_version"] == str(node.version)
+        rows = client.cypher("MATCH (n:TxDemo {tag: $tag}) RETURN count(n) AS c", params={"tag": tag})
+        assert rows[0]["c"] == 1, "the refused commit must apply nothing"
     finally:
         client.cypher("MATCH (n:TxDemo {tag: $tag}) DELETE n", params={"tag": tag})
 

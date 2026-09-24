@@ -24,9 +24,13 @@ RUN pip install --no-cache-dir \
     langchain-openai \
     langchain-community \
     langgraph \
-    # coordinode SDK packages (installed from mounted /sdk)
-    grpcio \
-    grpcio-tools \
-    protobuf
+    # coordinode SDK packages (installed from mounted /sdk). Pinned to the
+    # versions uv.lock resolves: install-sdk.sh generates the proto stubs into
+    # the mounted checkout, and gRPC stubs refuse to import under a grpcio
+    # older than the grpcio-tools that generated them. An unpinned, newer
+    # grpcio-tools here would break the host's own test runs on the same tree.
+    grpcio==1.83.1 \
+    grpcio-tools==1.83.1 \
+    protobuf==7.36.0
 
 WORKDIR /home/jovyan/work

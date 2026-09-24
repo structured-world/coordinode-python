@@ -16,35 +16,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Plain `uv sync`, deliberately, on two counts.
+      # --locked: install exactly what uv.lock pins, and fail if the lock no
+      # longer matches pyproject.toml; a pull request that changes
+      # dependencies commits the regenerated lock with them. The release PR
+      # gets its lock refreshed by release-please.yml, so it passes too.
       #
-      # Resolving fresh is wanted on the pull requests where it actually
-      # happens, which is not all of them. `uv sync` follows the committed lock
-      # while that lock satisfies pyproject.toml, so an ordinary pull request
-      # installs the locked versions. When a pull request moves dependency
-      # metadata without regenerating the lock, uv resolves the new set and
-      # these jobs exercise it. `--locked` would instead refuse to run and
-      # report that the lock needs updating, which says nothing about whether
-      # the new version works.
-      #
-      # The two flags tried here also break the release, and for one shared
-      # reason: the release bumps the version in pyproject.toml and leaves
-      # uv.lock naming the old one, so uv has to re-resolve.
-      #
-      #   --locked     fails on exactly that mismatch, reporting that the
-      #                lockfile needs to be updated.
-      #   --no-build   fails because re-resolving means building this
-      #                workspace's own three packages, which are source rather
-      #                than wheels: "Building source distributions for
-      #                coordinode is disabled".
-      #
-      # Verified on the release branch with a cold cache: both fail there, and
-      # both pass on that same branch once uv.lock carries the new version. So
-      # restoring either one means first making the release regenerate the
-      # lock, and even then it gives up the fresh resolution described above.
-      - run: uv sync
-      - run: uv run ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
-      - run: uv run ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      # --no-build: third-party packages come from wheels only, so no setup
+      # script from a source distribution runs here. uv still builds this
+      # workspace's own three packages from a matching lock; only resolving a
+      # stale one would need those builds, and --locked refuses that first.
+      - run: uv sync --locked --no-build
+      - run: uv run --locked --no-build ruff check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
+      - run: uv run --locked --no-build ruff format --check coordinode/ langchain-coordinode/ llama-index-coordinode/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -62,14 +45,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # --locked --no-build: see the lint job.
       - name: Install dependencies
-        run: uv sync --all-packages
+        run: uv sync --all-packages --locked --no-build
 
       - name: Generate proto stubs
-        run: uv run make proto
+        run: uv run --all-packages --locked --no-build make proto
 
       - name: Unit tests
-        run: uv run pytest tests/unit/ -v
+        run: uv run --all-packages --locked --no-build pytest tests/unit/ -v
 
   build-embedded:
     name: Build embedded (CI check)
@@ -106,13 +90,14 @@ jobs:
         # the wheel goes to ./dist/ (workspace-relative), not /tmp/.
         run: |
           set -euo pipefail
-          WHL=$(ls dist/coordinode_embedded-*.whl | head -1)
+          WHL=$(find dist -name 'coordinode_embedded-*.whl' -print -quit)
           test -n "$WHL"
           uv venv --python 3.12 /tmp/test-venv
           # Pinned to the versions uv.lock already resolves for the workspace,
           # so this throwaway venv tests against the same stack as the other
           # jobs instead of whatever is newest on PyPI that morning.
-          uv pip install --python /tmp/test-venv/bin/python "$WHL" \
+          # Wheels only (--no-build), as everywhere else in this workflow.
+          uv pip install --no-build --python /tmp/test-venv/bin/python "$WHL" \
             numpy==2.4.6 pytest==9.1.1 pytest-timeout==2.4.0
           # Every test file that needs the extension belongs here: the main
           # `test` job skips them all for want of a wheel, so a file left out
@@ -140,10 +125,10 @@ jobs:
     services:
       coordinode:
         # Pinned by digest, not by tag: the proto submodule pins a server
-        # version, and a tag can be re-pushed, so `:0.5.7` alone does not name
-        # one fixed server. The digest below is 0.5.7; bump both together with
+        # version, and a tag can be re-pushed, so `:0.6.0` alone does not name
+        # one fixed server. The digest below is 0.6.0; bump both together with
         # the submodule.
-        image: ghcr.io/structured-world/coordinode@sha256:75a6242beb4cea8ab6726c842898fafc03ca9f59c6f7e36e462934a4ca64874c
+        image: ghcr.io/structured-world/coordinode@sha256:f7e0ee8515868bc068f1e2f66d499a4acf5e9b7bce76bd5913bf805c7f9fd6da
         ports:
           - 7080:7080
           - 7084:7084
@@ -171,12 +156,13 @@ jobs:
           echo "Error: coordinode did not become healthy after 150s" >&2
           exit 1
 
+      # --locked --no-build: see the lint job.
       - name: Install + generate proto
         run: |
-          uv sync --all-packages
-          uv run make proto
+          uv sync --all-packages --locked --no-build
+          uv run --all-packages --locked --no-build make proto
 
       - name: Integration tests
         env:
           COORDINODE_ADDR: "localhost:7080"
-        run: uv run pytest tests/integration/ -v --timeout=30
+        run: uv run --all-packages --locked --no-build pytest tests/integration/ -v --timeout=30

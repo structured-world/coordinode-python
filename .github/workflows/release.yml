@@ -38,19 +38,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      # --locked --no-build: install exactly the locked set, third-party
+      # packages from wheels only (see ci.yml).
       - name: Install build tools
-        run: uv sync
+        run: uv sync --locked --no-build
 
       - name: Generate proto stubs (coordinode only)
         if: matrix.package.name == 'coordinode'
-        run: uv run make proto
+        run: uv run --locked --no-build make proto
 
       - name: Build wheel + sdist
         working-directory: ${{ matrix.package.path }}
         run: |
           # Force hatch-vcs / setuptools_scm to use the tag version, not dirty-tree dev version
           export SETUPTOOLS_SCM_PRETEND_VERSION="${GITHUB_REF_NAME#v}"
-          uv run python -m build
+          # Builds this package; --no-build keeps its build backend
+          # (hatchling, hatch-vcs) to wheels, so nothing else's setup runs.
+          uv build --no-build --out-dir dist
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4

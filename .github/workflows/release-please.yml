@@ -26,3 +26,49 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # The release PR bumps the workspace version in pyproject.toml, and
+      # uv.lock records that version too. Left stale, every `uv sync --locked`
+      # in CI refuses the branch, and without --locked uv re-resolves, which
+      # builds source distributions. release-please cannot edit the lock
+      # itself: its TOML updater cannot select the workspace entry by name.
+      # So the lock is refreshed here, on the release branch, whenever the
+      # release PR was created or updated. Pushed with the bot token so CI
+      # runs on the new commit.
+      - name: Check out the release branch
+        if: steps.rp.outputs.pr
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+          token: ${{ steps.app-token.outputs.token }}
+          # hatch-vcs derives the member versions from tags while locking.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
+        if: steps.rp.outputs.pr
+        with:
+          python-version: "3.11"
+
+      - name: Sync uv.lock with the release version
+        if: steps.rp.outputs.pr
+        # Locking reads the workspace members' metadata, and their version is
+        # dynamic (hatch-vcs), so uv has to build these three packages of this
+        # repository; --no-build refuses exactly that. Third-party packages
+        # keep their locked versions, and the CI run this push triggers
+        # installs them with `--locked --no-build`, failing if any of them
+        # would need a source build.
+        run: uv lock  # NOSONAR
+      - name: Commit the refreshed lock
+        if: steps.rp.outputs.pr
+        env:
+          BRANCH: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+        run: |
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock already matches the release version"
+            exit 0
+          fi
+          git config user.name "sw-release-bot[bot]"
+          git config user.email "255865126+sw-release-bot[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "chore: sync uv.lock with the release version"
+          git push origin "HEAD:$BRANCH"
