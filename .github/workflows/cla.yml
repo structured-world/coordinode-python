@@ -33,3 +33,8 @@ jobs:
           custom-notsigned-prcomment: 'Thank you for the contribution. Before it can be merged, please read the [Contributor License Agreement](https://github.com/structured-world/coordinode-python/blob/main/CLA.md) and, if you agree, reply to this comment with the sentence below.'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA.'
+          # The action locks a merged pull request by default. release-please
+          # comments on its release PR right after the merge and marks the PR
+          # tagged only once that comment lands, so a lock left the PR pending
+          # and the next run refused to open a new release PR.
+          lock-pullrequest-aftermerge: false

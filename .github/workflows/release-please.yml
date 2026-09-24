@@ -60,9 +60,13 @@ jobs:
         run: uv lock  # NOSONAR
       - name: Commit the refreshed lock
         if: steps.rp.outputs.pr
+        # A step's env is evaluated before its if, so it carries the raw
+        # output and the branch is read here: fromJSON on the empty output of
+        # a run that opened no release PR would fail the whole job.
         env:
-          BRANCH: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+          RELEASE_PR: ${{ steps.rp.outputs.pr }}
         run: |
+          BRANCH=$(jq -r '.headBranchName' <<< "$RELEASE_PR")
           if git diff --quiet -- uv.lock; then
             echo "uv.lock already matches the release version"
             exit 0
