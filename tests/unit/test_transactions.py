@@ -384,13 +384,29 @@ class TestExplicitApi:
 
     @pytest.mark.parametrize(
         "expect",
-        [{5: 0}, {5: -1}, {5: True}, {5: "7"}, {-1: 3}, {True: 3}, {"5": 3}, {5: 2**64}],
+        [
+            {5: 0},
+            {5: -1},
+            {5: True},
+            {5: "7"},
+            {-1: 3},
+            {True: 3},
+            {"5": 3},
+            {5: 2**64},
+            # Not a mapping at all. The falsy ones matter most: treated as
+            # "no condition", they would commit unconditionally.
+            [],
+            0,
+            "",
+            [(5, 3)],
+        ],
     )
     def test_bad_expect_is_refused_before_any_rpc_and_leaves_the_transaction_open(self, expect):
         """A malformed argument is the caller's mistake, not a reason to consume the transaction.
 
         Zero is refused as a version because no node is at version zero; None
-        is the way to ask for absence.
+        is the way to ask for absence. A value that is not a mapping is refused
+        rather than read as "no condition", which would apply the writes.
         """
 
         async def _inner() -> None:

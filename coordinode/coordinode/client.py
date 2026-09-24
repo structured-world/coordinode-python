@@ -812,6 +812,11 @@ class AsyncTransaction:
         # Validated before the open-check and the state transition: a bad
         # argument is the caller's mistake, not a reason to consume the
         # transaction.
+        # Only None means "no condition". Anything else that is not a mapping
+        # is refused rather than read as none: a falsy [] or 0 would otherwise
+        # turn a conditional commit into an unconditional one.
+        if expect is not None and not isinstance(expect, Mapping):
+            raise ValueError(f"expect must be a mapping of node ids to versions, got {expect!r}")
         expected = []
         for node_id, version in (expect or {}).items():
             if not isinstance(node_id, int) or isinstance(node_id, bool) or not 0 <= node_id <= _UINT64_MAX:
