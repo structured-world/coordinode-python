@@ -373,6 +373,37 @@ class TestExplicitApi:
 
         asyncio.run(_inner())
 
+    def test_commit_keeps_the_conditions_of_a_mapping_that_reads_as_false(self):
+        """Only None drops the condition, never the mapping's truthiness.
+
+        A Mapping whose __len__ reports zero still carries entries. Choosing
+        the fallback by truthiness would replace it with an empty one and
+        commit without the precondition the caller asked for.
+        """
+        from collections.abc import Mapping
+
+        class _Falsy(Mapping):
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return 0
+
+        async def _inner() -> None:
+            client = _async_client()
+            tx = await client.begin_transaction()
+            await tx.commit(expect=_Falsy({5: 123}))
+            sent = client._cypher_stub.CommitTransaction.call_args.args[0]
+            assert [(e.node_id, e.version) for e in sent.expect] == [(5, 123)]
+
+        asyncio.run(_inner())
+
     def test_commit_without_expect_is_unconditional(self):
         async def _inner() -> None:
             client = _async_client()

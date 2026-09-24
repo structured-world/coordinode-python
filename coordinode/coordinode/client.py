@@ -818,7 +818,7 @@ class AsyncTransaction:
         if expect is not None and not isinstance(expect, Mapping):
             raise ValueError(f"expect must be a mapping of node ids to versions, got {expect!r}")
         expected = []
-        for node_id, version in (expect or {}).items():
+        for node_id, version in expect.items() if expect is not None else ():
             if not isinstance(node_id, int) or isinstance(node_id, bool) or not 0 <= node_id <= _UINT64_MAX:
                 raise ValueError(f"expect keys must be node ids (non-negative integers), got {node_id!r}")
             if version is None:
