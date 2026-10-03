@@ -129,16 +129,10 @@ class CoordinodeGraph(GraphStore):
             try:
                 node_props: dict[str, list[dict[str, str]]] = {}
                 for label in self._client.get_labels():
-                    node_props[label.name] = [
-                        {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
-                        for p in label.properties
-                    ]
+                    node_props[label.name] = [{"property": p.name, "type": p.type} for p in label.properties]
                 rel_props: dict[str, list[dict[str, str]]] = {}
                 for et in self._client.get_edge_types():
-                    rel_props[et.name] = [
-                        {"property": p.name, "type": _PROPERTY_TYPE_NAME.get(p.type, "UNSPECIFIED")}
-                        for p in et.properties
-                    ]
+                    rel_props[et.name] = [{"property": p.name, "type": p.type} for p in et.properties]
                 if node_props or rel_props:
                     structured: dict[str, Any] = {"node_props": node_props, "rel_props": rel_props, "relationships": []}
                     # Backfill text schema for clients that expose get_labels()/get_edge_types()
@@ -406,25 +400,6 @@ class CoordinodeGraph(GraphStore):
 
 
 # ── Schema helpers ────────────────────────────────────────────────────────
-
-# Maps PropertyType protobuf enum integers to LangChain-compatible type strings.
-# Values mirror coordinode.v1.graph.PropertyType (schema.proto).
-# A static dict is intentional: importing generated proto modules here would create
-# a hard dependency on coordinode's internal proto layout inside langchain-coordinode.
-# This package already receives integer enum values via LabelInfo/EdgeTypeInfo from
-# the coordinode SDK, so a local lookup table is the correct decoupling boundary.
-_PROPERTY_TYPE_NAME: dict[int, str] = {
-    0: "UNSPECIFIED",
-    1: "INT64",
-    2: "FLOAT64",
-    3: "STRING",
-    4: "BOOL",
-    5: "BYTES",
-    6: "TIMESTAMP",
-    7: "VECTOR",
-    8: "LIST",
-    9: "MAP",
-}
 
 
 def _stable_document_id(source: Any) -> str:

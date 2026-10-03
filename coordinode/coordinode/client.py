@@ -23,6 +23,7 @@ from coordinode._types import (
     dict_to_props,
     from_property_value,
     props_to_dict,
+    to_property_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -349,17 +350,43 @@ class TextResult:
         return f"TextResult(node_id={self.node_id}, score={self.score:.4f}, snippet={self.snippet!r})"
 
 
+def _render_property_type(proto_type: Any) -> str:
+    """Render a wire ``PropertyType`` the way DDL spells it: ``"STRING"``,
+    ``"VECTOR(384, COSINE)"``, ``"LIST<STRING>"``."""
+    from coordinode._proto.coordinode.v1.query.vector_pb2 import DistanceMetric  # type: ignore[import]
+    from coordinode._proto.coordinode.v2.graph.schema_pb2 import ScalarType  # type: ignore[import]
+
+    kind = proto_type.WhichOneof("type")
+    if kind == "scalar":
+        return ScalarType.Name(proto_type.scalar).removeprefix("SCALAR_TYPE_")
+    if kind == "vector":
+        metric = DistanceMetric.Name(proto_type.vector.metric).removeprefix("DISTANCE_METRIC_")
+        return f"VECTOR({proto_type.vector.dimensions}, {metric})"
+    if kind == "array":
+        return f"LIST<{_render_property_type(proto_type.array.element)}>"
+    return "UNSPECIFIED"
+
+
 class PropertyDefinitionInfo:
-    """A property definition from the schema (name, type, required, unique)."""
+    """A stored property of a label or edge type: its name, type, requiredness
+    and default. Uniqueness is not a property fact; see :class:`ConstraintInfo`."""
 
     def __init__(self, proto_def: Any) -> None:
         self.name: str = proto_def.name
-        self.type: int = proto_def.type
+        #: The declared type as DDL spells it, for example ``"STRING"``,
+        #: ``"VECTOR(384, COSINE)"`` or ``"LIST<STRING>"``.
+        self.type: str = _render_property_type(proto_def.type)
         self.required: bool = proto_def.required
-        self.unique: bool = proto_def.unique
+        #: The value a record reads when it lacks the property; ``None``: no default.
+        self.default: PyValue | None = (
+            from_property_value(proto_def.default_value) if proto_def.HasField("default_value") else None
+        )
 
     def __repr__(self) -> str:
-        return f"PropertyDefinitionInfo(name={self.name!r}, type={self.type}, required={self.required}, unique={self.unique})"
+        return (
+            f"PropertyDefinitionInfo(name={self.name!r}, type={self.type!r}, "
+            f"required={self.required}, default={self.default!r})"
+        )
 
 
 class LabelInfo:
@@ -367,16 +394,20 @@ class LabelInfo:
 
     def __init__(self, proto_label: Any) -> None:
         self.name: str = proto_label.name
-        #: DDL snapshot identity, bumped by every schema change to this label.
+        #: False for a label stored nodes carry without a definition.
+        self.declared: bool = proto_label.declared
+        #: Revision of the definition; every published change advances it.
         self.schema_revision: int = proto_label.schema_revision
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_label.properties]
         # schema_mode: 0=unspecified, 1=strict, 2=validated, 3=flexible
         self.schema_mode: int = proto_label.schema_mode
+        self.temporal: bool = proto_label.temporal
 
     def __repr__(self) -> str:
         return (
-            f"LabelInfo(name={self.name!r}, schema_revision={self.schema_revision}, "
-            f"properties={len(self.properties)}, schema_mode={self.schema_mode})"
+            f"LabelInfo(name={self.name!r}, declared={self.declared}, "
+            f"schema_revision={self.schema_revision}, properties={len(self.properties)}, "
+            f"schema_mode={self.schema_mode}, temporal={self.temporal})"
         )
 
 
@@ -385,14 +416,50 @@ class EdgeTypeInfo:
 
     def __init__(self, proto_edge_type: Any) -> None:
         self.name: str = proto_edge_type.name
-        #: DDL snapshot identity, bumped by every schema change to this edge type.
+        #: False for an edge type stored edges carry without a definition.
+        self.declared: bool = proto_edge_type.declared
+        #: Revision of the definition; every published change advances it.
         self.schema_revision: int = proto_edge_type.schema_revision
         self.properties: list[PropertyDefinitionInfo] = [PropertyDefinitionInfo(p) for p in proto_edge_type.properties]
+        self.temporal: bool = proto_edge_type.temporal
 
     def __repr__(self) -> str:
         return (
-            f"EdgeTypeInfo(name={self.name!r}, schema_revision={self.schema_revision}, "
-            f"properties={len(self.properties)})"
+            f"EdgeTypeInfo(name={self.name!r}, declared={self.declared}, "
+            f"schema_revision={self.schema_revision}, properties={len(self.properties)}, "
+            f"temporal={self.temporal})"
+        )
+
+
+class ConstraintInfo:
+    """A named constraint on the nodes of a label."""
+
+    def __init__(self, proto_constraint: Any) -> None:
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
+            ConstraintKind,
+            ConstraintState,
+        )
+
+        self.name: str = proto_constraint.name
+        self.label: str = proto_constraint.label
+        self.properties: list[str] = list(proto_constraint.properties)
+        #: ``"UNIQUE"``, ``"NOT_NULL"``, ``"NODE_KEY"`` or ``"PROPERTY_TYPE"``.
+        self.kind: str = ConstraintKind.Name(proto_constraint.kind).removeprefix("CONSTRAINT_KIND_")
+        #: The required type for a ``PROPERTY_TYPE`` constraint, else ``None``.
+        self.property_type: str | None = (
+            _render_property_type(proto_constraint.property_type)
+            if proto_constraint.HasField("property_type")
+            else None
+        )
+        #: ``"VALIDATING"`` while its index is checked against stored data, then ``"ACTIVE"``.
+        self.state: str = ConstraintState.Name(proto_constraint.state).removeprefix("CONSTRAINT_STATE_")
+        #: The index the constraint owns, for ``UNIQUE`` and ``NODE_KEY``; else ``None``.
+        self.backing_index: str | None = proto_constraint.backing_index or None
+
+    def __repr__(self) -> str:
+        return (
+            f"ConstraintInfo(name={self.name!r}, label={self.label!r}, properties={self.properties!r}, "
+            f"kind={self.kind!r}, state={self.state!r}, backing_index={self.backing_index!r})"
         )
 
 
@@ -1623,126 +1690,149 @@ class AsyncCoordinodeClient:
 
     async def get_schema_text(self) -> str:
         """Return schema as a human/LLM-readable string."""
-        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
             ListEdgeTypesRequest,
             ListLabelsRequest,
-            PropertyType,  # type: ignore[import]
         )
-
-        _type_name = {
-            PropertyType.PROPERTY_TYPE_INT64: "INT64",
-            PropertyType.PROPERTY_TYPE_FLOAT64: "FLOAT64",
-            PropertyType.PROPERTY_TYPE_STRING: "STRING",
-            PropertyType.PROPERTY_TYPE_BOOL: "BOOL",
-            PropertyType.PROPERTY_TYPE_BYTES: "BYTES",
-            PropertyType.PROPERTY_TYPE_TIMESTAMP: "TIMESTAMP",
-            PropertyType.PROPERTY_TYPE_VECTOR: "VECTOR",
-            PropertyType.PROPERTY_TYPE_LIST: "LIST",
-            PropertyType.PROPERTY_TYPE_MAP: "MAP",
-        }
 
         labels_resp = await self._schema_stub.ListLabels(ListLabelsRequest(), timeout=self._timeout)
         edges_resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
 
         lines = ["Node labels:"]
         for label in labels_resp.labels:
-            props = ", ".join(f"{p.name}: {_type_name.get(p.type, '?')}" for p in label.properties)
+            props = ", ".join(f"{p.name}: {_render_property_type(p.type)}" for p in label.properties)
             lines.append(f"  - {label.name} (properties: {props})" if props else f"  - {label.name}")
 
         lines.append("\nEdge types:")
         for et in edges_resp.edge_types:
-            props = ", ".join(f"{p.name}: {_type_name.get(p.type, '?')}" for p in et.properties)
+            props = ", ".join(f"{p.name}: {_render_property_type(p.type)}" for p in et.properties)
             lines.append(f"  - {et.name} (properties: {props})" if props else f"  - {et.name}")
 
         return "\n".join(lines)
 
     async def get_labels(self) -> list[LabelInfo]:
-        """Return all node labels defined in the schema."""
-        from coordinode._proto.coordinode.v1.graph.schema_pb2 import ListLabelsRequest  # type: ignore[import]
+        """Return all node labels: every definition, and every label stored nodes
+        carry without one (``declared`` is ``False`` for those)."""
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import ListLabelsRequest  # type: ignore[import]
 
         resp = await self._schema_stub.ListLabels(ListLabelsRequest(), timeout=self._timeout)
         return [LabelInfo(label) for label in resp.labels]
 
     async def get_edge_types(self) -> list[EdgeTypeInfo]:
-        """Return all edge types defined in the schema."""
-        from coordinode._proto.coordinode.v1.graph.schema_pb2 import ListEdgeTypesRequest  # type: ignore[import]
+        """Return all edge types: every definition, and every edge type stored
+        edges carry without one (``declared`` is ``False`` for those)."""
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import ListEdgeTypesRequest  # type: ignore[import]
 
         resp = await self._schema_stub.ListEdgeTypes(ListEdgeTypesRequest(), timeout=self._timeout)
         return [EdgeTypeInfo(et) for et in resp.edge_types]
 
     @staticmethod
-    def _validate_property_dict(p: Any, idx: int) -> tuple[str, str, bool, bool]:
-        """Validate a single property dict and return ``(name, type_str, required, unique)``."""
-        if not isinstance(p, dict):
-            raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
-        name = p.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
-        raw_type = p.get("type", "string")
-        if "type" in p and not isinstance(raw_type, str):
-            raise ValueError(f"Property {name!r} must use a string value for 'type'; got {raw_type!r}")
-        type_str = str(raw_type).strip().lower()
-        required = p.get("required", False)
-        unique = p.get("unique", False)
-        if not isinstance(required, bool) or not isinstance(unique, bool):
-            raise ValueError(
-                f"Property {name!r} must use boolean values for 'required' and 'unique'; got "
-                f"required={required!r}, unique={unique!r}"
-            )
-        return name, type_str, required, unique
+    def _property_type_proto(spec: Any, where: str) -> Any:
+        """The wire ``PropertyType`` a type spec names.
+
+        A spec is a scalar type name (``"string"``, ``"int64"``, ``"float64"``,
+        ``"bool"``, ``"timestamp"``, ``"blob"``, ``"binary"``, ``"map"``,
+        ``"geo"``, ``"document"``), or a dict: ``{"type": "vector",
+        "dimensions": 384, "metric": "cosine"}`` (dimensions 0 or absent: any
+        length; metric absent: cosine) or ``{"type": "list", "element": <spec>}``.
+        """
+        from coordinode._proto.coordinode.v1.query.vector_pb2 import DistanceMetric  # type: ignore[import]
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
+            ArrayType,
+            PropertyType,
+            ScalarType,
+            VectorType,
+        )
+
+        scalars = {
+            "string": ScalarType.SCALAR_TYPE_STRING,
+            "int64": ScalarType.SCALAR_TYPE_INT64,
+            "float64": ScalarType.SCALAR_TYPE_FLOAT64,
+            "bool": ScalarType.SCALAR_TYPE_BOOL,
+            "timestamp": ScalarType.SCALAR_TYPE_TIMESTAMP,
+            "blob": ScalarType.SCALAR_TYPE_BLOB,
+            "binary": ScalarType.SCALAR_TYPE_BINARY,
+            "map": ScalarType.SCALAR_TYPE_MAP,
+            "geo": ScalarType.SCALAR_TYPE_GEO,
+            "document": ScalarType.SCALAR_TYPE_DOCUMENT,
+        }
+        metrics = {
+            "cosine": DistanceMetric.DISTANCE_METRIC_COSINE,
+            "l2": DistanceMetric.DISTANCE_METRIC_L2,
+            "dot": DistanceMetric.DISTANCE_METRIC_DOT,
+            "l1": DistanceMetric.DISTANCE_METRIC_L1,
+        }
+        if isinstance(spec, str):
+            name = spec.strip().lower()
+            if name == "vector":
+                return PropertyType(vector=VectorType())
+            if name not in scalars:
+                raise ValueError(
+                    f"Unknown type {spec!r} for {where}; expected one of {sorted(scalars)}, a vector or a list spec"
+                )
+            return PropertyType(scalar=scalars[name])
+        if isinstance(spec, dict):
+            kind = str(spec.get("type", "")).strip().lower()
+            if kind == "vector":
+                dimensions = spec.get("dimensions", 0)
+                if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions < 0:
+                    raise ValueError(f"'dimensions' of {where} must be a non-negative int; got {dimensions!r}")
+                metric = str(spec.get("metric", "cosine")).strip().lower()
+                if metric not in metrics:
+                    raise ValueError(f"Unknown metric {metric!r} for {where}; expected one of {sorted(metrics)}")
+                return PropertyType(vector=VectorType(dimensions=dimensions, metric=metrics[metric]))
+            if kind == "list":
+                if "element" not in spec:
+                    raise ValueError(f"A list type for {where} needs an 'element' type")
+                element = AsyncCoordinodeClient._property_type_proto(spec["element"], f"the elements of {where}")
+                return PropertyType(array=ArrayType(element=element))
+            raise ValueError(f"A dict type for {where} must be a vector or list spec; got {spec!r}")
+        raise ValueError(f"The type of {where} must be a str or dict; got {spec!r}")
 
     @staticmethod
     def _build_property_definitions(
         properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
-        property_type_cls: Any,
-        property_definition_cls: Any,
     ) -> list[Any]:
-        """Convert property dicts to proto PropertyDefinition objects.
+        """Convert property dicts (``name``, ``type``, ``required``, ``default``)
+        to wire ``PropertyDefinition`` messages.
 
-        Shared by :meth:`create_label` and :meth:`create_edge_type` to avoid
-        duplicating the type-map and validation logic.
+        A type definition carries no uniqueness: a ``unique`` key is refused,
+        and uniqueness is declared with :meth:`create_constraint`.
         """
-        # A 1:1 mirror of the wire enum, which is the whole list of types a
-        # property can be *declared* as. Multi-vector and path are not among
-        # them: they are shapes a value takes on its way in or out, carried on
-        # PropertyValue, and no declarable type corresponds to either. Adding
-        # a key here for one of them would name an enum member that does not
-        # exist. Extend this only when the enum itself grows.
-        type_map = {
-            "int64": property_type_cls.PROPERTY_TYPE_INT64,
-            "float64": property_type_cls.PROPERTY_TYPE_FLOAT64,
-            "string": property_type_cls.PROPERTY_TYPE_STRING,
-            "bool": property_type_cls.PROPERTY_TYPE_BOOL,
-            "bytes": property_type_cls.PROPERTY_TYPE_BYTES,
-            "timestamp": property_type_cls.PROPERTY_TYPE_TIMESTAMP,
-            "vector": property_type_cls.PROPERTY_TYPE_VECTOR,
-            "list": property_type_cls.PROPERTY_TYPE_LIST,
-            "map": property_type_cls.PROPERTY_TYPE_MAP,
-        }
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import PropertyDefinition  # type: ignore[import]
+
         if properties is None:
             return []
-        # list | tuple union syntax is valid in isinstance() for Python ≥3.10 (PEP 604).
-        # This project targets Python ≥3.11 (pyproject.toml: requires-python = ">=3.11").
         if not isinstance(properties, list | tuple):
             raise ValueError(
                 f"'properties' must be a list or tuple of property dicts or None; got {type(properties).__name__}"
             )
         result = []
         for idx, p in enumerate(properties):
-            name, type_str, required, unique = AsyncCoordinodeClient._validate_property_dict(p, idx)
-            if type_str not in type_map:
+            if not isinstance(p, dict):
+                raise ValueError(f"Property at index {idx} must be a dict; got {p!r}")
+            name = p.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"Property at index {idx} must have a non-empty 'name' key; got {p!r}")
+            if "unique" in p:
                 raise ValueError(
-                    f"Unknown property type {type_str!r} for property {name!r}. "
-                    f"Expected 'type' to be one of: {sorted(type_map)}"
+                    f"Property {name!r} declares 'unique'; uniqueness is a constraint, "
+                    "declare it with create_constraint(kind='unique')"
                 )
-            result.append(
-                property_definition_cls(
-                    name=name,
-                    type=type_map[type_str],
-                    required=required,
-                    unique=unique,
-                )
+            unknown = set(p) - {"name", "type", "required", "default"}
+            if unknown:
+                raise ValueError(f"Property {name!r} has unknown keys {sorted(unknown)}")
+            required = p.get("required", False)
+            if not isinstance(required, bool):
+                raise ValueError(f"Property {name!r} must use a boolean 'required'; got {required!r}")
+            definition = PropertyDefinition(
+                name=name,
+                type=AsyncCoordinodeClient._property_type_proto(p.get("type", "string"), f"property {name!r}"),
+                required=required,
             )
+            if "default" in p:
+                definition.default_value.CopyFrom(to_property_value(p["default"]))
+            result.append(definition)
         return result
 
     @staticmethod
@@ -1782,24 +1872,31 @@ class AsyncCoordinodeClient:
         properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         *,
         schema_mode: str | int = "strict",
+        temporal: bool = False,
     ) -> LabelInfo:
-        """Create a node label in the schema registry.
+        """Define a node label. A label that already has a definition is refused.
 
         Args:
             name: Label name (e.g. ``"Person"``).
-            properties: Optional list of property dicts with keys
-                ``name`` (str), ``type`` (str), ``required`` (bool),
-                ``unique`` (bool).  Type strings: ``"string"``,
-                ``"int64"``, ``"float64"``, ``"bool"``, ``"bytes"``,
-                ``"timestamp"``, ``"vector"``, ``"list"``, ``"map"``.
+            properties: Optional list of property dicts with keys ``name``
+                (str), ``type`` (a type spec, default ``"string"``; see
+                below), ``required`` (bool) and ``default`` (a value the
+                property reads as when a node lacks it). Uniqueness is not a
+                property fact: declare it with :meth:`create_constraint`.
+                Scalar type names: ``"string"``, ``"int64"``, ``"float64"``,
+                ``"bool"``, ``"timestamp"``, ``"blob"``, ``"binary"``,
+                ``"map"``, ``"geo"``, ``"document"``. ``"vector"`` accepts
+                vectors of any length; ``{"type": "vector", "dimensions": 384,
+                "metric": "cosine"}`` fixes them; ``{"type": "list",
+                "element": "string"}`` declares a list.
             schema_mode: ``"strict"`` (default — reject undeclared props),
                 ``"validated"`` (allow extra props without interning),
                 ``"flexible"`` (no enforcement).
+            temporal: Whether nodes of the label are bitemporal. Fixed once
+                the label is created.
         """
-        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
             CreateLabelRequest,
-            PropertyDefinition,
-            PropertyType,
             SchemaMode,
         )
 
@@ -1810,11 +1907,11 @@ class AsyncCoordinodeClient:
         }
         proto_schema_mode = self._normalize_schema_mode(schema_mode, _mode_map)
 
-        proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateLabelRequest(
             name=name,
-            properties=proto_props,
+            properties=self._build_property_definitions(properties),
             schema_mode=proto_schema_mode,
+            temporal=temporal,
         )
         label = await self._schema_stub.CreateLabel(req, timeout=self._timeout)
         return LabelInfo(label)
@@ -1823,33 +1920,101 @@ class AsyncCoordinodeClient:
         self,
         name: str,
         properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        *,
+        temporal: bool = False,
     ) -> EdgeTypeInfo:
-        """Create an edge type in the schema registry.
+        """Define an edge type. An edge type that already exists is refused.
 
         Args:
             name: Edge type name (e.g. ``"KNOWS"``).
-            properties: Optional list of property dicts with keys
-                ``name`` (str), ``type`` (str), ``required`` (bool),
-                ``unique`` (bool). Same type strings as :meth:`create_label`.
-
-        Note:
-            ``schema_mode`` is not yet supported by the server for edge types
-            (``CreateEdgeTypeRequest`` does not carry that field).  Schema
-            mode enforcement for edge types is planned for a future release.
+            properties: Optional list of property dicts, as for
+                :meth:`create_label`.
+            temporal: Whether edges of the type are temporal. Fixed once the
+                edge type is created.
         """
-        from coordinode._proto.coordinode.v1.graph.schema_pb2 import (  # type: ignore[import]
-            CreateEdgeTypeRequest,
-            PropertyDefinition,
-            PropertyType,
-        )
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import CreateEdgeTypeRequest  # type: ignore[import]
 
-        proto_props = self._build_property_definitions(properties, PropertyType, PropertyDefinition)
         req = CreateEdgeTypeRequest(
             name=name,
-            properties=proto_props,
+            properties=self._build_property_definitions(properties),
+            temporal=temporal,
         )
         et = await self._schema_stub.CreateEdgeType(req, timeout=self._timeout)
         return EdgeTypeInfo(et)
+
+    async def create_constraint(
+        self,
+        label: str,
+        properties: str | list[str] | tuple[str, ...],
+        kind: str,
+        *,
+        name: str = "",
+        property_type: Any = None,
+        if_not_exists: bool = False,
+    ) -> ConstraintInfo:
+        """Create a named constraint on the nodes of ``label``.
+
+        A ``"unique"`` or ``"node_key"`` constraint owns an index and returns
+        once that index is checked against the stored nodes; stored nodes that
+        break any constraint make the call fail with nothing created.
+
+        Args:
+            label: The label whose nodes are constrained.
+            properties: The constrained property, or properties in order.
+                ``"not_null"`` and ``"property_type"`` take exactly one.
+            kind: ``"unique"``, ``"not_null"``, ``"node_key"`` or
+                ``"property_type"``.
+            name: Constraint name, unique in the database; empty: the server
+                derives one.
+            property_type: The required type for ``"property_type"``, as a
+                type spec (see :meth:`create_label`).
+            if_not_exists: Return a constraint of the same name, or an
+                equivalent one, instead of refusing.
+        """
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
+            ConstraintKind,
+            CreateConstraintRequest,
+        )
+
+        kinds = {
+            "unique": ConstraintKind.CONSTRAINT_KIND_UNIQUE,
+            "not_null": ConstraintKind.CONSTRAINT_KIND_NOT_NULL,
+            "node_key": ConstraintKind.CONSTRAINT_KIND_NODE_KEY,
+            "property_type": ConstraintKind.CONSTRAINT_KIND_PROPERTY_TYPE,
+        }
+        key = kind.strip().lower() if isinstance(kind, str) else kind
+        if key not in kinds:
+            raise ValueError(f"kind must be one of {sorted(kinds)}; got {kind!r}")
+        props = [properties] if isinstance(properties, str) else list(properties)
+        if (key == "property_type") != (property_type is not None):
+            raise ValueError("property_type is required for kind 'property_type' and only for it")
+        req = CreateConstraintRequest(
+            name=name,
+            label=label,
+            properties=props,
+            kind=kinds[key],
+            if_not_exists=if_not_exists,
+        )
+        if property_type is not None:
+            req.property_type.CopyFrom(self._property_type_proto(property_type, "the constraint"))
+        created = await self._schema_stub.CreateConstraint(req, timeout=self._timeout)
+        return ConstraintInfo(created)
+
+    async def drop_constraint(self, name: str, *, if_exists: bool = False) -> None:
+        """Drop constraint ``name`` and the index it owns. A missing constraint
+        is refused unless ``if_exists``."""
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import DropConstraintRequest  # type: ignore[import]
+
+        await self._schema_stub.DropConstraint(
+            DropConstraintRequest(name=name, if_exists=if_exists), timeout=self._timeout
+        )
+
+    async def get_constraints(self) -> list[ConstraintInfo]:
+        """Return every constraint with its state and owned index, by name."""
+        from coordinode._proto.coordinode.v2.graph.schema_pb2 import ListConstraintsRequest  # type: ignore[import]
+
+        resp = await self._schema_stub.ListConstraints(ListConstraintsRequest(), timeout=self._timeout)
+        return [ConstraintInfo(c) for c in resp.constraints]
 
     @_tracks_its_call_site
     async def create_text_index(
@@ -2397,17 +2562,50 @@ class CoordinodeClient:
         properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         *,
         schema_mode: str | int = "strict",
+        temporal: bool = False,
     ) -> LabelInfo:
-        """Create a node label in the schema registry."""
-        return self._run(self._async.create_label(name, properties, schema_mode=schema_mode))
+        """Define a node label; see :meth:`AsyncCoordinodeClient.create_label`."""
+        return self._run(self._async.create_label(name, properties, schema_mode=schema_mode, temporal=temporal))
 
     def create_edge_type(
         self,
         name: str,
         properties: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        *,
+        temporal: bool = False,
     ) -> EdgeTypeInfo:
-        """Create an edge type in the schema registry."""
-        return self._run(self._async.create_edge_type(name, properties))
+        """Define an edge type; see :meth:`AsyncCoordinodeClient.create_edge_type`."""
+        return self._run(self._async.create_edge_type(name, properties, temporal=temporal))
+
+    def create_constraint(
+        self,
+        label: str,
+        properties: str | list[str] | tuple[str, ...],
+        kind: str,
+        *,
+        name: str = "",
+        property_type: Any = None,
+        if_not_exists: bool = False,
+    ) -> ConstraintInfo:
+        """Create a named constraint; see :meth:`AsyncCoordinodeClient.create_constraint`."""
+        return self._run(
+            self._async.create_constraint(
+                label,
+                properties,
+                kind,
+                name=name,
+                property_type=property_type,
+                if_not_exists=if_not_exists,
+            )
+        )
+
+    def drop_constraint(self, name: str, *, if_exists: bool = False) -> None:
+        """Drop a constraint and the index it owns."""
+        self._run(self._async.drop_constraint(name, if_exists=if_exists))
+
+    def get_constraints(self) -> list[ConstraintInfo]:
+        """Return every constraint with its state and owned index."""
+        return self._run(self._async.get_constraints())
 
     def create_text_index(
         self,
@@ -2623,7 +2821,7 @@ def _graph_stub(channel: Any) -> Any:
 
 
 def _schema_stub(channel: Any) -> Any:
-    from coordinode._proto.coordinode.v1.graph.schema_pb2_grpc import SchemaServiceStub  # type: ignore[import]
+    from coordinode._proto.coordinode.v2.graph.schema_pb2_grpc import SchemaServiceStub  # type: ignore[import]
 
     return SchemaServiceStub(channel)
 

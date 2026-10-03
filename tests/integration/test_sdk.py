@@ -444,33 +444,21 @@ def test_create_label_returns_label_info(client):
 
 
 def test_create_label_appears_in_get_labels(client):
-    """Label created via create_label() appears in get_labels() once a node exists.
-
-    Known limitation: ListLabels currently returns only labels that have at least
-    one node in the graph. Ideally it should also include schema-only labels
-    registered via create_label() (analogous to Neo4j returning schema-constrained
-    labels even without data). Tracked as a server-side gap.
-    """
+    """A label defined via create_label() is listed as declared, with its type
+    facts, before any node carries it."""
     name = f"CreateLabelVisible{uid()}"
-    tag = uid()
-    # Declare both properties used in the workaround node.  Note: schema_mode
-    # is accepted by the server but not yet enforced in the current image;
-    # the properties are declared here for forward compatibility.
     client.create_label(
         name,
         properties=[
-            {"name": "x", "type": "int64"},
-            {"name": "tag", "type": "string"},
+            {"name": "x", "type": "int64", "required": True},
+            {"name": "tag", "type": "string", "default": "none"},
         ],
     )
-    # Workaround: create a node so the label appears in ListLabels.
-    client.cypher(f"CREATE (n:{name} {{x: 1, tag: $tag}})", params={"tag": tag})
-    try:
-        labels = client.get_labels()
-        names = [lbl.name for lbl in labels]
-        assert name in names, f"{name} not in {names}"
-    finally:
-        client.cypher(f"MATCH (n:{name} {{tag: $tag}}) DELETE n", params={"tag": tag})
+    found = next((lbl for lbl in client.get_labels() if lbl.name == name), None)
+    assert found is not None and found.declared, f"{name} not listed as declared"
+    props = {p.name: p for p in found.properties}
+    assert (props["x"].type, props["x"].required) == ("INT64", True)
+    assert props["tag"].default == "none"
 
 
 def test_create_label_schema_mode_flexible(client):
@@ -512,28 +500,45 @@ def test_create_edge_type_returns_edge_type_info(client):
 
 
 def test_create_edge_type_appears_in_get_edge_types(client):
-    """Edge type created via create_edge_type() appears in get_edge_types() once an edge exists.
-
-    Same known limitation as test_create_label_appears_in_get_labels: ListEdgeTypes
-    currently requires at least one edge of that type to exist in the graph.
-    """
+    """An edge type defined via create_edge_type() is listed as declared before
+    any edge carries it."""
     name = f"VISIBLE_ET_{uid()}".upper()
-    tag = uid()
-    client.create_edge_type(name)
-    # Workaround: create an edge so the type appears in ListEdgeTypes.
-    client.cypher(
-        f"CREATE (a:VisibleEtNode {{tag: $tag}})-[:{name}]->(b:VisibleEtNode {{tag: $tag}})",
-        params={"tag": tag},
-    )
-    try:
-        edge_types = client.get_edge_types()
-        names = [et.name for et in edge_types]
-        assert name in names, f"{name} not in {names}"
-    finally:
-        client.cypher(
-            "MATCH (n:VisibleEtNode {tag: $tag}) DETACH DELETE n",
-            params={"tag": tag},
-        )
+    client.create_edge_type(name, properties=[{"name": "since", "type": "timestamp"}])
+    found = next((et for et in client.get_edge_types() if et.name == name), None)
+    assert found is not None and found.declared, f"{name} not listed as declared"
+    assert [(p.name, p.type) for p in found.properties] == [("since", "TIMESTAMP")]
+
+
+# ── constraints ───────────────────────────────────────────────────────────────
+
+
+def test_unique_constraint_is_created_enforced_listed_and_dropped(client):
+    """Uniqueness is a named constraint created apart from the type: it reports
+    its state and owned index, refuses a duplicate value, and dropping it leaves
+    the type definition as it was."""
+    label = f"UniqueLabel{uid()}"
+    cname = f"uq_{uid()}"
+    client.create_label(label, properties=[{"name": "email", "type": "string"}], schema_mode="flexible")
+    created = client.create_constraint(label, "email", "unique", name=cname)
+    assert (created.kind, created.state, created.backing_index) == ("UNIQUE", "ACTIVE", cname)
+    assert cname in [c.name for c in client.get_constraints()]
+
+    client.cypher(f"CREATE (:{label} {{email: 'a@x'}})")
+    with pytest.raises(Exception):
+        client.cypher(f"CREATE (:{label} {{email: 'a@x'}})")
+
+    client.drop_constraint(cname)
+    assert cname not in [c.name for c in client.get_constraints()]
+    client.drop_constraint(cname, if_exists=True)
+    found = next(lbl for lbl in client.get_labels() if lbl.name == label)
+    assert [p.name for p in found.properties] == ["email"]
+    client.cypher(f"MATCH (n:{label}) DELETE n")
+
+
+def test_property_unique_flag_is_refused_locally(client):
+    """A type definition never declares uniqueness; the SDK points at constraints."""
+    with pytest.raises(ValueError, match="create_constraint"):
+        client.create_label(f"Flagged{uid()}", properties=[{"name": "email", "unique": True}])
 
 
 # ── Vector search ─────────────────────────────────────────────────────────────

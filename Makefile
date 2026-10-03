@@ -35,7 +35,8 @@ proto:
 	@# sed -i.bak is portable: macOS needs empty-string backup arg, GNU sed uses -i alone;
 	@# using .bak suffix works on both, then we clean up the backup files.
 	@find $(PROTO_OUT) -name '*.py' -exec sed -i.bak \
-		's/from coordinode\.v1\./from coordinode._proto.coordinode.v1./g' {} \;
+		-e 's/from coordinode\.v1\./from coordinode._proto.coordinode.v1./g' \
+		-e 's/from coordinode\.v2\./from coordinode._proto.coordinode.v2./g' {} \;
 	@find $(PROTO_OUT) -name '*.py.bak' -delete
 	@echo "==> Proto generation complete: $(PROTO_OUT)/"
 

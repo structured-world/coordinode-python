@@ -9,9 +9,13 @@ import asyncio
 
 import pytest
 
-from coordinode._proto.coordinode.v1.graph import graph_pb2, schema_pb2
+from coordinode._proto.coordinode.v1.graph import graph_pb2
+from coordinode._proto.coordinode.v1.query import vector_pb2
+from coordinode._proto.coordinode.v2.graph import schema_pb2
+from coordinode._types import to_property_value
 from coordinode.client import (
     AsyncCoordinodeClient,
+    ConstraintInfo,
     EdgeResult,
     EdgeTypeInfo,
     LabelInfo,
@@ -23,13 +27,22 @@ from coordinode.client import (
 # ── Real proto message builders ──────────────────────────────────────────────
 
 
-def _prop_def(name: str, type_: int, required: bool = False, unique: bool = False):
-    return schema_pb2.PropertyDefinition(name=name, type=type_, required=required, unique=unique)
+def _scalar(s: int):
+    return schema_pb2.PropertyType(scalar=s)
+
+
+def _prop_def(name: str, type_=None, required: bool = False):
+    return schema_pb2.PropertyDefinition(
+        name=name,
+        type=type_ if type_ is not None else _scalar(schema_pb2.SCALAR_TYPE_STRING),
+        required=required,
+    )
 
 
 def _label(name: str, schema_revision: int = 1, properties=None, schema_mode: int = 0):
     return schema_pb2.Label(
         name=name,
+        declared=True,
         schema_revision=schema_revision,
         properties=properties or [],
         schema_mode=schema_mode,
@@ -37,7 +50,7 @@ def _label(name: str, schema_revision: int = 1, properties=None, schema_mode: in
 
 
 def _edge_type(name: str, schema_revision: int = 1, properties=None):
-    return schema_pb2.EdgeType(name=name, schema_revision=schema_revision, properties=properties or [])
+    return schema_pb2.EdgeType(name=name, declared=True, schema_revision=schema_revision, properties=properties or [])
 
 
 def _node(node_id: int, labels=None, properties=None, element_id: str = ""):
@@ -69,21 +82,30 @@ def _traverse_response(nodes=None, edges=None):
 
 class TestPropertyDefinitionInfo:
     def test_fields_are_mapped(self):
-        # type=3 = PROPERTY_TYPE_STRING (int value from proto enum)
-        p = PropertyDefinitionInfo(_prop_def("name", 3, required=True, unique=False))
+        p = PropertyDefinitionInfo(_prop_def("name", required=True))
         assert p.name == "name"
-        assert p.type == 3
+        assert p.type == "STRING"
         assert p.required is True
-        assert p.unique is False
+        assert p.default is None
+        # A type definition carries no uniqueness; it is a constraint.
+        assert not hasattr(p, "unique")
 
     def test_repr_contains_name(self):
-        p = PropertyDefinitionInfo(_prop_def("age", 1))
+        p = PropertyDefinitionInfo(_prop_def("age", _scalar(schema_pb2.SCALAR_TYPE_INT64)))
         assert "age" in repr(p)
 
-    def test_optional_flags_default_false(self):
-        p = PropertyDefinitionInfo(_prop_def("x", 2))
-        assert p.required is False
-        assert p.unique is False
+    def test_structured_types_render_as_ddl(self):
+        vector = schema_pb2.PropertyType(
+            vector=schema_pb2.VectorType(dimensions=384, metric=vector_pb2.DISTANCE_METRIC_L2)
+        )
+        tags = schema_pb2.PropertyType(array=schema_pb2.ArrayType(element=_scalar(schema_pb2.SCALAR_TYPE_STRING)))
+        assert PropertyDefinitionInfo(_prop_def("emb", vector)).type == "VECTOR(384, L2)"
+        assert PropertyDefinitionInfo(_prop_def("tags", tags)).type == "LIST<STRING>"
+
+    def test_default_value_is_decoded(self):
+        d = _prop_def("status")
+        d.default_value.CopyFrom(to_property_value("active"))
+        assert PropertyDefinitionInfo(d).default == "active"
 
 
 # ── LabelInfo ────────────────────────────────────────────────────────────────
@@ -97,7 +119,7 @@ class TestLabelInfo:
         assert label.properties == []
 
     def test_properties_are_wrapped(self):
-        props = [_prop_def("name", 3), _prop_def("age", 1)]
+        props = [_prop_def("name"), _prop_def("age", _scalar(schema_pb2.SCALAR_TYPE_INT64))]
         label = LabelInfo(_label("User", properties=props))
         assert len(label.properties) == 2
         assert all(isinstance(p, PropertyDefinitionInfo) for p in label.properties)
@@ -138,8 +160,6 @@ class TestLabelInfo:
 
 
 class TestEdgeTypeInfo:
-    PROPERTY_TYPE_TIMESTAMP = 6
-
     def test_basic_fields(self):
         et = EdgeTypeInfo(_edge_type("KNOWS", schema_revision=1))
         assert et.name == "KNOWS"
@@ -147,14 +167,49 @@ class TestEdgeTypeInfo:
         assert et.properties == []
 
     def test_properties_are_wrapped(self):
-        props = [_prop_def("since", self.PROPERTY_TYPE_TIMESTAMP)]
+        props = [_prop_def("since", _scalar(schema_pb2.SCALAR_TYPE_TIMESTAMP))]
         et = EdgeTypeInfo(_edge_type("FOLLOWS", properties=props))
         assert len(et.properties) == 1
         assert et.properties[0].name == "since"
+        assert et.properties[0].type == "TIMESTAMP"
 
     def test_repr_contains_name(self):
         et = EdgeTypeInfo(_edge_type("RATED"))
         assert "RATED" in repr(et)
+
+
+# ── ConstraintInfo ───────────────────────────────────────────────────────────
+
+
+class TestConstraintInfo:
+    def test_unique_constraint_names_its_index(self):
+        c = ConstraintInfo(
+            schema_pb2.Constraint(
+                name="user_email",
+                label="User",
+                properties=["email"],
+                kind=schema_pb2.CONSTRAINT_KIND_UNIQUE,
+                state=schema_pb2.CONSTRAINT_STATE_ACTIVE,
+                backing_index="user_email",
+            )
+        )
+        assert (c.name, c.label, c.properties) == ("user_email", "User", ["email"])
+        assert (c.kind, c.state, c.backing_index) == ("UNIQUE", "ACTIVE", "user_email")
+        assert c.property_type is None
+
+    def test_type_constraint_names_its_type_and_owns_no_index(self):
+        c = ConstraintInfo(
+            schema_pb2.Constraint(
+                name="item_qty",
+                label="Item",
+                properties=["qty"],
+                kind=schema_pb2.CONSTRAINT_KIND_PROPERTY_TYPE,
+                property_type=_scalar(schema_pb2.SCALAR_TYPE_INT64),
+                state=schema_pb2.CONSTRAINT_STATE_VALIDATING,
+            )
+        )
+        assert (c.kind, c.property_type, c.state) == ("PROPERTY_TYPE", "INT64", "VALIDATING")
+        assert c.backing_index is None
 
 
 # ── element_id ───────────────────────────────────────────────────────────────
@@ -232,27 +287,6 @@ class TestTraverseResult:
 # ── traverse() input validation ──────────────────────────────────────────────
 
 
-class _FakePropertyTypeAll:
-    """Complete fake proto PropertyType with all enum values."""
-
-    PROPERTY_TYPE_INT64 = 1
-    PROPERTY_TYPE_FLOAT64 = 2
-    PROPERTY_TYPE_STRING = 3
-    PROPERTY_TYPE_BOOL = 4
-    PROPERTY_TYPE_BYTES = 5
-    PROPERTY_TYPE_TIMESTAMP = 6
-    PROPERTY_TYPE_VECTOR = 7
-    PROPERTY_TYPE_LIST = 8
-    PROPERTY_TYPE_MAP = 9
-
-
-class _FakePropDefCls:
-    """Minimal PropertyDefinition constructor."""
-
-    def __init__(self, **kwargs):
-        pass  # Stub: kwargs intentionally ignored — only used to verify call succeeds
-
-
 class TestBuildPropertyDefinitions:
     """Unit tests for AsyncCoordinodeClient._build_property_definitions() validation.
 
@@ -260,46 +294,93 @@ class TestBuildPropertyDefinitions:
     """
 
     def test_non_dict_property_raises(self):
-        """_build_property_definitions() raises ValueError for non-dict entries."""
-        client = AsyncCoordinodeClient("localhost:0")
         with pytest.raises(ValueError, match="must be a dict"):
-            client._build_property_definitions(["not-a-dict"], _FakePropertyTypeAll, _FakePropDefCls)
+            AsyncCoordinodeClient._build_property_definitions(["not-a-dict"])
 
     def test_missing_name_raises(self):
-        """_build_property_definitions() raises ValueError when 'name' key is absent."""
-        client = AsyncCoordinodeClient("localhost:0")
         with pytest.raises(ValueError, match="non-empty 'name' key"):
-            client._build_property_definitions([{"type": "string"}], _FakePropertyTypeAll, _FakePropDefCls)
+            AsyncCoordinodeClient._build_property_definitions([{"type": "string"}])
 
     def test_non_bool_required_raises(self):
-        """_build_property_definitions() raises ValueError when required is not a bool."""
-        client = AsyncCoordinodeClient("localhost:0")
-        with pytest.raises(ValueError, match="boolean values for 'required' and 'unique'"):
-            client._build_property_definitions(
-                [{"name": "x", "type": "string", "required": "true"}],
-                _FakePropertyTypeAll,
-                _FakePropDefCls,
-            )
+        with pytest.raises(ValueError, match="boolean 'required'"):
+            AsyncCoordinodeClient._build_property_definitions([{"name": "x", "required": "true"}])
 
-    def test_non_bool_unique_raises(self):
-        """_build_property_definitions() raises ValueError when unique is not a bool."""
-        client = AsyncCoordinodeClient("localhost:0")
-        with pytest.raises(ValueError, match="boolean values for 'required' and 'unique'"):
-            client._build_property_definitions(
-                [{"name": "x", "type": "string", "unique": 1}],
-                _FakePropertyTypeAll,
-                _FakePropDefCls,
-            )
+    def test_unique_is_refused_with_a_pointer_to_constraints(self):
+        """Uniqueness is a constraint, never a property flag: even unique=False is refused,
+        so a caller moving from the old API cannot silently lose a guarantee."""
+        for flag in (True, False):
+            with pytest.raises(ValueError, match="create_constraint"):
+                AsyncCoordinodeClient._build_property_definitions([{"name": "x", "unique": flag}])
 
-    def test_valid_bool_properties_accepted(self):
-        """_build_property_definitions() accepts proper bool required/unique values."""
-        client = AsyncCoordinodeClient("localhost:0")
-        result = client._build_property_definitions(
-            [{"name": "x", "type": "string", "required": True, "unique": False}],
-            _FakePropertyTypeAll,
-            _FakePropDefCls,
+    def test_unknown_key_raises(self):
+        with pytest.raises(ValueError, match="unknown keys"):
+            AsyncCoordinodeClient._build_property_definitions([{"name": "x", "nullable": True}])
+
+    def test_unknown_type_raises(self):
+        with pytest.raises(ValueError, match="Unknown type"):
+            AsyncCoordinodeClient._build_property_definitions([{"name": "x", "type": "bytes"}])
+
+    def test_types_defaults_and_requiredness_reach_the_wire(self):
+        defs = AsyncCoordinodeClient._build_property_definitions(
+            [
+                {"name": "name", "required": True},
+                {"name": "emb", "type": {"type": "vector", "dimensions": 384, "metric": "l2"}},
+                {"name": "tags", "type": {"type": "list", "element": "string"}},
+                {"name": "status", "type": "string", "default": "active"},
+            ]
         )
-        assert len(result) == 1
+        assert [d.name for d in defs] == ["name", "emb", "tags", "status"]
+        assert defs[0].required and defs[0].type.scalar == schema_pb2.SCALAR_TYPE_STRING
+        assert (defs[1].type.vector.dimensions, defs[1].type.vector.metric) == (
+            384,
+            vector_pb2.DISTANCE_METRIC_L2,
+        )
+        assert defs[2].type.array.element.scalar == schema_pb2.SCALAR_TYPE_STRING
+        assert defs[3].HasField("default_value") and not defs[0].HasField("default_value")
+
+
+class TestCreateConstraint:
+    """create_constraint() validates the shape locally and sends what it was given."""
+
+    @staticmethod
+    def _client():
+        from unittest.mock import AsyncMock
+
+        client = AsyncCoordinodeClient("localhost:0")
+        client._schema_stub = type(
+            "FakeStub",
+            (),
+            {"CreateConstraint": AsyncMock(return_value=schema_pb2.Constraint(name="c", label="L"))},
+        )()
+        return client
+
+    def test_unknown_kind_raises(self):
+        async def _inner() -> None:
+            with pytest.raises(ValueError, match="kind must be one of"):
+                await self._client().create_constraint("L", "p", "check")
+
+        asyncio.run(_inner())
+
+    def test_property_type_only_with_its_kind(self):
+        async def _inner() -> None:
+            client = self._client()
+            with pytest.raises(ValueError, match="property_type"):
+                await client.create_constraint("L", "p", "unique", property_type="string")
+            with pytest.raises(ValueError, match="property_type"):
+                await client.create_constraint("L", "p", "property_type")
+
+        asyncio.run(_inner())
+
+    def test_request_carries_the_declaration(self):
+        async def _inner() -> None:
+            client = self._client()
+            await client.create_constraint("L", ["a", "b"], "node_key", name="l_key", if_not_exists=True)
+            sent = client._schema_stub.CreateConstraint.call_args.args[0]
+            assert (sent.name, sent.label, list(sent.properties)) == ("l_key", "L", ["a", "b"])
+            assert sent.kind == schema_pb2.CONSTRAINT_KIND_NODE_KEY and sent.if_not_exists
+            assert not sent.HasField("property_type")
+
+        asyncio.run(_inner())
 
 
 class TestCreateLabelSchemaMode:

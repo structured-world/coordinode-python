@@ -22,6 +22,7 @@ from coordinode._types import MultiVector, Path
 from coordinode.client import (
     AsyncCoordinodeClient,
     AsyncTransaction,
+    ConstraintInfo,
     CoordinodeClient,
     EdgeResult,
     EdgeTypeInfo,
@@ -62,6 +63,7 @@ __all__ = [
     "LabelInfo",
     "EdgeTypeInfo",
     "PropertyDefinitionInfo",
+    "ConstraintInfo",
     "TextIndexInfo",
     "TraverseResult",
 ]
