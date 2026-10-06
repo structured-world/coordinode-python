@@ -1,12 +1,59 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
+# The proto and coordinode-rs submodules and the server image are left out on
+# purpose: they name one server release and move together, by hand. The
+# docker-compose files hold only that image, so they get no updater either.
 updates:
-  - package-ecosystem: "" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  # tool.uv.required-version asks for uv 0.12.12 or newer; Dependabot's uv
+  # updater already runs against it (it produced the uv.lock security updates).
+  - package-ecosystem: "uv"
+    directory: "/"
     schedule:
       interval: "weekly"
-
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "build(deps)"
+  - package-ecosystem: "cargo"
+    directory: "/coordinode-embedded"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "build(deps)"
+  # coordinode-embedded is not a member of the uv workspace, so its own
+  # pyproject.toml (numpy, maturin) needs an updater of its own. Widen only:
+  # the NumPy lower bound is the oldest ABI the wheels build against, and
+  # raising it would drop users for nothing.
+  - package-ecosystem: "pip"
+    directory: "/coordinode-embedded"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "widen"
+    commit-message:
+      prefix: "build(deps)"
+  # The demo's Jupyter base image.
+  - package-ecosystem: "docker"
+    directory: "/demo"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "build(deps)"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci(deps)"
