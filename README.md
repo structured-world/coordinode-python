@@ -239,7 +239,7 @@ Copyright 2026 Dmitry Prudnikov.
 
 Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Every published package carries its own copy of both.
 
-Contributions are accepted under the [Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are accepted under the [Structured World Contributor License Agreement](https://sw.foundation/cla); see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
