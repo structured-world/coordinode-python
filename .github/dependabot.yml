@@ -1,7 +1,10 @@
 version: 2
 # The proto and coordinode-rs submodules and the server image are left out on
-# purpose: they name one server release and move together, by hand.
+# purpose: they name one server release and move together, by hand. The
+# docker-compose files hold only that image, so they get no updater either.
 updates:
+  # tool.uv.required-version asks for uv 0.12.12 or newer; Dependabot's uv
+  # updater already runs against it (it produced the uv.lock security updates).
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
@@ -28,6 +31,24 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    commit-message:
+      prefix: "build(deps)"
+  # coordinode-embedded is not a member of the uv workspace, so its own
+  # pyproject.toml (numpy, maturin) needs an updater of its own. Widen only:
+  # the NumPy lower bound is the oldest ABI the wheels build against, and
+  # raising it would drop users for nothing.
+  - package-ecosystem: "pip"
+    directory: "/coordinode-embedded"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "widen"
+    commit-message:
+      prefix: "build(deps)"
+  # The demo's Jupyter base image.
+  - package-ecosystem: "docker"
+    directory: "/demo"
+    schedule:
+      interval: "weekly"
     commit-message:
       prefix: "build(deps)"
   - package-ecosystem: "github-actions"

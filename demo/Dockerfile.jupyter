@@ -1,4 +1,6 @@
-FROM jupyter/scipy-notebook:python-3.11.6
+# quay.io is where Project Jupyter publishes its images now; the Docker Hub
+# copy stopped receiving updates in October 2023.
+FROM quay.io/jupyter/scipy-notebook:python-3.13.15
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends gcc git && rm -rf /var/lib/apt/lists/*
