@@ -44,24 +44,9 @@ updates:
     versioning-strategy: "widen"
     commit-message:
       prefix: "build(deps)"
-  # The demo's Python stack, the hashed lock compiled from requirements.in.
-  # grpcio, grpcio-tools and protobuf match uv.lock exactly (the generated
-  # stubs require it), so they move with uv.lock, not on their own.
-  - package-ecosystem: "pip"
-    directory: "/demo"
-    schedule:
-      interval: "weekly"
-    ignore:
-      - dependency-name: "grpcio"
-      - dependency-name: "grpcio-tools"
-      - dependency-name: "protobuf"
-    groups:
-      demo:
-        patterns:
-          - "*"
-    commit-message:
-      prefix: "build(deps)"
-  # The demo's Jupyter base image.
+  # The demo's Jupyter base image and the uv image it exports the lock with.
+  # Its Python stack is the demo group of uv.lock, kept current by the uv
+  # updater above.
   - package-ecosystem: "docker"
     directory: "/demo"
     schedule:

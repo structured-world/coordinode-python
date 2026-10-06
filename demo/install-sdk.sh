@@ -10,9 +10,12 @@ set -e
 # An editable install builds from source by design, so `--only-binary :all:`
 # is not applicable here. The rule guards against running setup code from
 # untrusted packages; these three are this repository, mounted at /sdk.
+# Their dependencies and their build backend (hatchling, hatch-vcs) are
+# already in the image from uv.lock, so --no-deps and --no-build-isolation keep
+# the index out of it: nothing is resolved or downloaded at container start.
 # The suppression has to sit on the pip line itself, so the command stays on
 # one line rather than wrapping.
-pip install --no-cache-dir -e /sdk/coordinode -e /sdk/llama-index-coordinode -e /sdk/langchain-coordinode  # NOSONAR
+pip install --no-cache-dir --no-deps --no-build-isolation -e /sdk/coordinode -e /sdk/llama-index-coordinode -e /sdk/langchain-coordinode  # NOSONAR
 
 # The generated proto stubs are gitignored and no build hook produces them, so
 # an editable install of the mounted checkout has none. Every call the notebooks
