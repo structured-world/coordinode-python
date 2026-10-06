@@ -575,8 +575,7 @@ def test_vector_settings_are_accepted_per_statement(client, mode):
     )
     try:
         rows = client.cypher(
-            "MATCH (n:VecSettings {tag: $tag}) "
-            "RETURN n.name AS name ORDER BY vector_distance(n.embedding, $q) LIMIT 1",
+            "MATCH (n:VecSettings {tag: $tag}) RETURN n.name AS name ORDER BY vector_distance(n.embedding, $q) LIMIT 1",
             params={"tag": tag, "q": near},
             vector_consistency=mode,
             vector_build_wait_ms=0,
