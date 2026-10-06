@@ -102,8 +102,9 @@ with CoordinodeClient("localhost:7080") as db:
         raise
 ```
 
-Requires a CoordiNode server of **v0.6.0 or newer** — the release this client
-is integration-tested against. `health()` exercises a different service, so a
+Requires a CoordiNode server of **v0.7.0 or newer** — the release this client
+is integration-tested against; schema management uses the v2 schema service
+that release introduced. `health()` exercises a different service, so a
 server without the transaction RPCs passes the health check and then refuses
 `transaction()`.
 
