@@ -8,31 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc git && rm -
 # Copy and chmod install script while still root
 COPY install-sdk.sh /tmp/install-sdk.sh
 RUN chmod +x /tmp/install-sdk.sh
+COPY requirements.txt /tmp/demo-requirements.txt
 
 USER ${NB_UID}
 
-# Core graph + LLM orchestration stack
-RUN pip install --no-cache-dir \
-    # build tools for SDK editable installs (hatch-vcs reads git tags for versioning)
-    hatchling \
-    hatch-vcs \
-    nest_asyncio \
-    # LlamaIndex core + graph store protocol
-    llama-index-core \
-    llama-index-llms-openai \
-    llama-index-embeddings-openai \
-    # LangChain + LangGraph
-    langchain \
-    langchain-openai \
-    langchain-community \
-    langgraph \
-    # coordinode SDK packages (installed from mounted /sdk). Pinned to the
-    # versions uv.lock resolves: install-sdk.sh generates the proto stubs into
-    # the mounted checkout, and gRPC stubs refuse to import under a grpcio
-    # older than the grpcio-tools that generated them. An unpinned, newer
-    # grpcio-tools here would break the host's own test runs on the same tree.
-    grpcio==1.83.1 \
-    grpcio-tools==1.83.1 \
-    protobuf==7.36.0
+# The graph + LLM orchestration stack, from the hashed lock compiled from
+# requirements.in, and wheels only, so no package runs setup code here.
+RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r /tmp/demo-requirements.txt
 
 WORKDIR /home/jovyan/work

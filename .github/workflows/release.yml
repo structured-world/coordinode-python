@@ -10,8 +10,10 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
+# Read-only by default; the jobs that publish carry their own grants
+# (GitHub Release: contents write, PyPI: id-token write).
 permissions:
-  contents: write
+  contents: read
 
 # ── Pure-Python packages (coordinode, langchain-coordinode, llama-index) ──────
 
