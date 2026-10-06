@@ -56,6 +56,20 @@ def test_fit_returns_contiguous_id_range() -> None:
     assert len(idx) == 15
 
 
+@pytest.mark.parametrize("m", [32, 33, 48, 96])
+def test_a_wide_m_builds_and_searches(m: int) -> None:
+    """An M whose layer-0 fan-out (2*M) exceeds the engine's neighbour-list
+    capacity is held to that capacity, as the engine documents: the index
+    takes vectors and answers queries instead of panicking on the first
+    insert and leaving its lock poisoned."""
+    idx = ce.Hnsw(dim=4, metric="cosine", M=m, ef_construction=40)
+    vectors = np.eye(4, dtype=np.float32)
+    assert idx.fit(vectors) == (0, 4)
+    assert idx.knn_query(vectors[2], k=1)[0] == 2
+    # The index is still usable afterwards.
+    assert idx.fit(vectors) == (4, 8)
+
+
 def test_recall_at_10_geq_0_95() -> None:
     """N=10 000, dim=16, gaussian random — at ef ≥ 50 recall@10 must clear 0.95.
 

@@ -11,7 +11,7 @@
 use std::sync::Mutex;
 
 use coordinode_core::graph::types::VectorMetric;
-use coordinode_vector::hnsw::{HnswConfig, HnswIndex};
+use coordinode_vector::hnsw::{HnswConfig, HnswIndex, M_MAX0};
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -73,6 +73,8 @@ impl Hnsw {
     ///   Spellings track ann-benchmarks and VectorDBBench so existing
     ///   harnesses pass their `space` argument unchanged.
     /// * `M` — max connections per element per layer (HNSW spec). Default 16.
+    ///   Layer 0 keeps `2 * M` connections, at most 64, so an `M` above 32
+    ///   widens the upper layers only.
     /// * `ef_construction` — candidate list size during build. Default 200.
     /// * `max_elements` — hint to pre-allocate node storage. Default 1_000_000.
     #[new]
@@ -99,6 +101,11 @@ impl Hnsw {
         let m_max0 = M.checked_mul(2).ok_or_else(|| {
             PyValueError::new_err(format!("M={M} is too large; M * 2 overflows usize"))
         })?;
+        // A node's layer-0 neighbour list holds at most M_MAX0 entries. The
+        // engine documents a larger request as held to that cap, but asserts on
+        // it instead when the first vector arrives, which would panic mid-`fit`
+        // and poison the index lock. Cap it here, as the engine means to.
+        let m_max0 = m_max0.min(M_MAX0);
         let config = HnswConfig {
             m: M,
             m_max0,

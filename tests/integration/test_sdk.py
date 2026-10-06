@@ -560,6 +560,61 @@ def test_vector_search_returns_results(client):
         client.cypher("MATCH (n:VecSDKTest {tag: $tag}) DELETE n", params={"tag": tag})
 
 
+@pytest.mark.parametrize("mode", ["current", "snapshot", "exact"])
+def test_vector_settings_steer_an_indexed_search(client, mode):
+    """Each consistency mode answers a nearest-neighbour search served by a
+    vector index that is still building when the statement arrives, as long
+    as the statement may wait for the build; the modes trade freshness and
+    cost, not the result on a quiet label."""
+    tag = uid()
+    label = f"VecSettings_{tag}"
+    index = f"vec_settings_{tag}"
+    near = [1.0, 0.0, 0.0, 0.0]
+    far = [0.0, 0.0, 0.0, 1.0]
+    # The far node goes in first, so a search that skipped the ordering
+    # would return it.
+    client.cypher(f"CREATE (:{label} {{name: 'far', embedding: $v}})", params={"v": far})
+    client.cypher(f"CREATE (:{label} {{name: 'near', embedding: $v}})", params={"v": near})
+    client.cypher(f"CREATE VECTOR INDEX {index} ON :{label}(embedding) OPTIONS {{metric: 'l2', dimensions: 4}}")
+    try:
+        # Ordering by the projected distance with a LIMIT is the shape the
+        # planner serves from the index.
+        rows = client.cypher(
+            f"MATCH (n:{label}) RETURN n.name AS name, vector_distance(n.embedding, $q) AS d ORDER BY d LIMIT 1",
+            params={"q": near},
+            vector_consistency=mode,
+            vector_build_wait_ms=10_000,
+        )
+        assert rows == [{"name": "near", "d": 0.0}]
+    finally:
+        client.cypher(f"DROP VECTOR INDEX {index}")
+        client.cypher(f"MATCH (n:{label}) DELETE n")
+
+
+def test_exact_search_does_not_wait_for_a_building_index(client):
+    """An exact search reads the vectors directly, so a zero build wait does
+    not refuse it even right after the index was created."""
+    tag = uid()
+    label = f"VecExact_{tag}"
+    index = f"vec_exact_{tag}"
+    near = [1.0, 0.0, 0.0, 0.0]
+    far = [0.0, 0.0, 0.0, 1.0]
+    client.cypher(f"CREATE (:{label} {{name: 'far', embedding: $v}})", params={"v": far})
+    client.cypher(f"CREATE (:{label} {{name: 'near', embedding: $v}})", params={"v": near})
+    client.cypher(f"CREATE VECTOR INDEX {index} ON :{label}(embedding) OPTIONS {{metric: 'l2', dimensions: 4}}")
+    try:
+        rows = client.cypher(
+            f"MATCH (n:{label}) RETURN n.name AS name, vector_distance(n.embedding, $q) AS d ORDER BY d LIMIT 1",
+            params={"q": near},
+            vector_consistency="exact",
+            vector_build_wait_ms=0,
+        )
+        assert rows == [{"name": "near", "d": 0.0}]
+    finally:
+        client.cypher(f"DROP VECTOR INDEX {index}")
+        client.cypher(f"MATCH (n:{label}) DELETE n")
+
+
 # ── Full-text search ──────────────────────────────────────────────────────────
 
 
