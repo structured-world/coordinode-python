@@ -1301,7 +1301,8 @@ class AsyncCoordinodeClient:
           include writes newer than the read's snapshot), ``"snapshot"`` (index candidates
           filtered by visibility at the snapshot) or ``"exact"`` (every vector of the label at
           the snapshot, without the index; cost grows with the label). Omitted, the mode the
-          read consistency implies.
+          read consistency implies: this call runs outside a server session, so no session
+          setting sits in between.
         - ``vector_build_wait_ms``: how long a vector search waits for an index still being
           built, in milliseconds; ``0`` refuses a building index at once. Omitted, the server's
           ``vector_build_wait_ms``.
