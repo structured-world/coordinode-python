@@ -25,22 +25,15 @@ tests need a running CoordiNode server; see `docker-compose.yml`.
 
 ## Contributor License Agreement (CLA)
 
-Before a first pull request can be merged, you sign the
-[Contributor License Agreement](CLA.md). Signing happens in the pull request:
-a bot posts the request, you reply with the sentence it asks for, and the
-signature is recorded in `signatures/` in this repository. It is a one-time
-step per GitHub account.
+Before a first pull request can be merged, you sign the Structured World
+Contributor License Agreement once, at <https://sw.foundation/cla>. It covers
+every repository of the organisation and takes a minute: sign in with GitHub,
+confirm your e-mail address, sign. The `CLA` status on your pull request then
+turns green by itself.
 
-In short, the CLA says that you keep the copyright in your contribution, that
-you grant the project's copyright holder (and any successor the copyright is
-assigned to) a perpetual, worldwide, royalty-free, irrevocable licence to use,
-modify, distribute and sublicense it under any terms, and that you are entitled
-to make that grant. The project promises in return that your contribution stays
-available under Apache-2.0 and that you remain free to do anything with your
-own work.
-
-If your employer owns what you write, ask them to confirm they permit the
-contribution before you sign.
+You keep the copyright in your contribution. If you contribute as part of your
+job, your employer may also need to sign the corporate agreement; the page
+above explains when.
 
 ## Questions
 
