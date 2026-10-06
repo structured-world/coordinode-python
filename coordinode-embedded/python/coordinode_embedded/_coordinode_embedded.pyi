@@ -21,6 +21,8 @@ class Hnsw:
                   - dot product:       ``"dot"``, ``"dot_product"``, ``"ip"``, ``"inner_product"``
                   - Manhattan (L1):    ``"manhattan"``, ``"l1"``
         M: Max connections per element per layer (HNSW spec). Default 16.
+            Layer 0 keeps ``2 * M`` connections, at most 64, so an ``M`` above
+            32 widens the upper layers only.
         ef_construction: Candidate list size during build. Default 200.
         max_elements: Hint to pre-allocate node storage. Default 1_000_000.
 
