@@ -3,6 +3,8 @@
   "release-type": "python",
   "tag-separator": "",
   "include-component-in-tag": false,
+  "_always_update_comment": "Rebuild the release PR on every push to main, not only when the changelog changes: commits that never reach the changelog (dependency bumps, chores) would otherwise leave it behind main, where up-to-date branches are required, and the uv.lock refresh in release-please.yml would not run for it.",
+  "always-update": true,
   "packages": {
     ".": {
       "_comment": "Single shared version for every package this repo ships: the three Python packages (coordinode, langchain-coordinode, llama-index-graph-stores-coordinode) and the compiled extension coordinode-embedded. release.yml builds and publishes all four from one tag.",
