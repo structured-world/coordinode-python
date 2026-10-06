@@ -1263,6 +1263,8 @@ class AsyncCoordinodeClient:
         read_preference: str | None = None,
         after_index: int | None = None,
         at_timestamp: int | None = None,
+        vector_consistency: str | None = None,
+        vector_build_wait_ms: int | None = None,
         _source_location: _source.SourceLocation | None = None,
     ) -> list[dict[str, Any]]:
         """Execute an OpenCypher query. Returns rows as list of dicts.
@@ -1291,6 +1293,18 @@ class AsyncCoordinodeClient:
           non-zero ``after_index``: waiting for a new write and reading a fixed past are
           opposite requests, and the pair is rejected. Zero is rejected too: it is how the
           wire says "no pin", so it cannot also ask for one.
+
+        Vector search settings of this statement (a ``vector_consistency`` or
+        ``vector_build_wait`` hint in the query itself wins over both):
+
+        - ``vector_consistency``: ``"current"`` (the index as it is: fastest, best recall, may
+          include writes newer than the read's snapshot), ``"snapshot"`` (index candidates
+          filtered by visibility at the snapshot) or ``"exact"`` (every vector of the label at
+          the snapshot, without the index; cost grows with the label). Omitted, the mode the
+          read consistency implies.
+        - ``vector_build_wait_ms``: how long a vector search waits for an index still being
+          built, in milliseconds; ``0`` refuses a building index at once. Omitted, the server's
+          ``vector_build_wait_ms``.
 
         The call site is read when this method is called rather than when its
         body runs, because everything that starts a coroutine as a task runs
@@ -1336,6 +1350,10 @@ class AsyncCoordinodeClient:
             req.write_concern.CopyFrom(_make_write_concern(write_concern))
         if read_preference is not None:
             req.read_preference = _make_read_preference(read_preference)
+        if vector_consistency is not None:
+            req.vector_consistency = _make_vector_consistency(vector_consistency)
+        if vector_build_wait_ms is not None:
+            req.vector_build_wait_ms = _check_build_wait_ms(vector_build_wait_ms)
         resp = await _execute_cypher(
             self._cypher_stub,
             req,
@@ -2408,8 +2426,11 @@ class CoordinodeClient:
         read_preference: str | None = None,
         after_index: int | None = None,
         at_timestamp: int | None = None,
+        vector_consistency: str | None = None,
+        vector_build_wait_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute an OpenCypher query. See :meth:`AsyncCoordinodeClient.cypher` for consistency args."""
+        """Execute an OpenCypher query. See :meth:`AsyncCoordinodeClient.cypher` for consistency
+        and vector search args."""
         return self._run(
             self._async.cypher(
                 query,
@@ -2419,6 +2440,8 @@ class CoordinodeClient:
                 read_preference=read_preference,
                 after_index=after_index,
                 at_timestamp=at_timestamp,
+                vector_consistency=vector_consistency,
+                vector_build_wait_ms=vector_build_wait_ms,
                 # Read here rather than inside the coroutine: the coroutine
                 # body runs from the event loop, by which time the frame that
                 # called this method has already returned.
@@ -2682,6 +2705,11 @@ _READ_PREFERENCE_MAP = {
     "secondary_preferred": "READ_PREFERENCE_SECONDARY_PREFERRED",
     "nearest": "READ_PREFERENCE_NEAREST",
 }
+_VECTOR_CONSISTENCY_MAP = {
+    "current": "VECTOR_CONSISTENCY_CURRENT",
+    "snapshot": "VECTOR_CONSISTENCY_SNAPSHOT",
+    "exact": "VECTOR_CONSISTENCY_EXACT",
+}
 
 
 def _rows_to_dicts(resp: Any) -> list[dict[str, Any]]:
@@ -2791,6 +2819,21 @@ def _make_read_preference(pref: str) -> Any:
     from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
 
     return getattr(pb, _normalize_consistency_key(pref, "read_preference", _READ_PREFERENCE_MAP))
+
+
+def _make_vector_consistency(mode: str) -> Any:
+    from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb  # type: ignore[import]
+
+    return getattr(pb, _normalize_consistency_key(mode, "vector_consistency", _VECTOR_CONSISTENCY_MAP))
+
+
+def _check_build_wait_ms(ms: Any) -> int:
+    # The wire field is a uint32; a value outside it would fail inside the
+    # protobuf encoder with a message that names neither the argument nor
+    # the range.
+    if not isinstance(ms, int) or isinstance(ms, bool) or not 0 <= ms <= _UINT32_MAX:
+        raise ValueError(f"vector_build_wait_ms must be a non-negative 32-bit integer, got {ms!r}")
+    return ms
 
 
 # ── Stub factories (deferred import) ─────────────────────────────────────────

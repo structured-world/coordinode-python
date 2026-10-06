@@ -199,6 +199,17 @@ Accepted values:
 - ``read_concern``: ``local`` (default) · ``majority`` · ``linearizable`` · ``snapshot``. Causal reads (``after_index`` > 0) require ``majority`` here.
 - ``write_concern``: ``"majority"`` (default) · a member count (``1`` leader only, ``0`` fire-and-forget) · ``WriteConcern(w, journal, timeout_ms)`` with ``journal`` one of ``journal`` (default) · ``cache`` · ``memory``. The volatile ``cache`` and ``memory`` states are accepted only with ``w`` of 0 or 1.
 - ``read_preference``: ``primary`` (default) · ``primary_preferred`` · ``secondary`` · ``secondary_preferred`` · ``nearest``
+- ``vector_consistency``: ``current`` (the index as it is: fastest, may include writes newer than the read) · ``snapshot`` (index candidates filtered at the read's snapshot) · ``exact`` (every vector of the label, without the index). Omitted, the mode the read concern implies. A ``vector_consistency`` hint in the query wins.
+- ``vector_build_wait_ms``: how long a vector search waits for an index still being built; ``0`` refuses a building index at once. Omitted, the server's default.
+
+```python
+db.cypher(
+    "MATCH (d:Doc) RETURN d.title AS title ORDER BY vector_distance(d.embedding, $q) LIMIT 5",
+    params={"q": query_vector},
+    vector_consistency="exact",
+    vector_build_wait_ms=0,
+)
+```
 
 ## Related Packages
 

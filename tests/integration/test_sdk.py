@@ -560,6 +560,32 @@ def test_vector_search_returns_results(client):
         client.cypher("MATCH (n:VecSDKTest {tag: $tag}) DELETE n", params={"tag": tag})
 
 
+@pytest.mark.parametrize("mode", ["current", "snapshot", "exact"])
+def test_vector_settings_are_accepted_per_statement(client, mode):
+    """The server takes each vector consistency mode and a build-wait bound,
+    including zero, on a statement and answers the same nearest node: the
+    modes trade freshness and cost, not the result on a quiet label."""
+    tag = uid()
+    near = [1.0, 0.0, 0.0, 0.0]
+    far = [0.0, 0.0, 0.0, 1.0]
+    client.cypher(
+        "CREATE (:VecSettings {tag: $tag, name: 'near', embedding: $near}), "
+        "(:VecSettings {tag: $tag, name: 'far', embedding: $far})",
+        params={"tag": tag, "near": near, "far": far},
+    )
+    try:
+        rows = client.cypher(
+            "MATCH (n:VecSettings {tag: $tag}) "
+            "RETURN n.name AS name ORDER BY vector_distance(n.embedding, $q) LIMIT 1",
+            params={"tag": tag, "q": near},
+            vector_consistency=mode,
+            vector_build_wait_ms=0,
+        )
+        assert rows == [{"name": "near"}]
+    finally:
+        client.cypher("MATCH (n:VecSettings {tag: $tag}) DELETE n", params={"tag": tag})
+
+
 # ── Full-text search ──────────────────────────────────────────────────────────
 
 

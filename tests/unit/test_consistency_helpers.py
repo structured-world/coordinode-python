@@ -7,8 +7,10 @@ import pytest
 from coordinode._proto.coordinode.v1.replication import consistency_pb2 as pb
 from coordinode.client import (
     WriteConcern,
+    _check_build_wait_ms,
     _make_read_concern,
     _make_read_preference,
+    _make_vector_consistency,
     _make_write_concern,
 )
 
@@ -210,3 +212,42 @@ class TestReadPreference:
     def test_rejects_blank_or_non_string(self, bad: object) -> None:
         with pytest.raises(ValueError, match="read_preference must be a non-empty string"):
             _make_read_preference(bad)  # type: ignore[arg-type]
+
+
+class TestVectorConsistency:
+    """The per-statement vector search mode maps to the wire enum, and a mode
+    the server does not know is refused before the round trip."""
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            ("current", pb.VECTOR_CONSISTENCY_CURRENT),
+            ("snapshot", pb.VECTOR_CONSISTENCY_SNAPSHOT),
+            (" EXACT ", pb.VECTOR_CONSISTENCY_EXACT),
+        ],
+    )
+    def test_valid(self, mode: str, expected: int) -> None:
+        assert _make_vector_consistency(mode) == expected
+
+    def test_invalid_raises(self) -> None:
+        with pytest.raises(ValueError, match="invalid vector_consistency"):
+            _make_vector_consistency("eventual")
+
+    @pytest.mark.parametrize("bad", ["", None, 1])
+    def test_rejects_blank_or_non_string(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="vector_consistency must be a non-empty string"):
+            _make_vector_consistency(bad)  # type: ignore[arg-type]
+
+
+class TestBuildWait:
+    """The build-wait bound is a uint32 of milliseconds on the wire; zero is a
+    real value (refuse a building index at once), not "unset"."""
+
+    @pytest.mark.parametrize("ms", [0, 1, 5_000, 0xFFFF_FFFF])
+    def test_valid(self, ms: int) -> None:
+        assert _check_build_wait_ms(ms) == ms
+
+    @pytest.mark.parametrize("bad", [-1, 0x1_0000_0000, True, 1.5, "100", None])
+    def test_out_of_range_or_wrong_type_raises(self, bad: object) -> None:
+        with pytest.raises(ValueError, match="vector_build_wait_ms must be a non-negative 32-bit integer"):
+            _check_build_wait_ms(bad)
