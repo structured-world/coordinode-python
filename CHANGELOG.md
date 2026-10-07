@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.0.0](https://github.com/structured-world/coordinode-python/compare/v3.0.0...v4.0.0) (2026-10-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **schema:** the 'unique' key of a property dict and PropertyDefinitionInfo.unique are removed, and PropertyDefinitionInfo.type is a string; declare uniqueness with create_constraint(label, property, 'unique').
+
+### Features
+
+* **schema:** move schema management to the v2 service ([86da004](https://github.com/structured-world/coordinode-python/commit/86da0046c5ab340409bea51ca34499bbe8ccbe8e))
+* track the current CoordiNode server and its vector settings ([#109](https://github.com/structured-world/coordinode-python/issues/109)) ([1052551](https://github.com/structured-world/coordinode-python/commit/1052551e49482e387bb3e88e4c86ac012ac8c92c)), closes [#108](https://github.com/structured-world/coordinode-python/issues/108)
+
 ## [3.0.0](https://github.com/structured-world/coordinode-python/compare/v2.1.1...v3.0.0) (2026-09-24)
 
 

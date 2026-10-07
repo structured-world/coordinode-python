@@ -4,7 +4,7 @@
 
 [project]
 name = "coordinode-workspace"
-version = "3.0.0"
+version = "4.0.0"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Dmitry Prudnikov", email = "mail@polaz.com" }]
 requires-python = ">=3.11"
