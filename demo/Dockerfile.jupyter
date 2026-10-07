@@ -1,3 +1,9 @@
+# Built from the repository root (see demo/docker-compose.yml), so the image's
+# Python stack comes from the same uv.lock the tests run on.
+
+# uv exports the lock; only its binary is copied into the image.
+FROM ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc AS uv
+
 # quay.io is where Project Jupyter publishes its images now; the Docker Hub
 # copy stopped receiving updates in October 2023.
 FROM quay.io/jupyter/scipy-notebook:python-3.13.15
@@ -6,33 +12,19 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends gcc git && rm -rf /var/lib/apt/lists/*
 
 # Copy and chmod install script while still root
-COPY install-sdk.sh /tmp/install-sdk.sh
+COPY demo/install-sdk.sh /tmp/install-sdk.sh
 RUN chmod +x /tmp/install-sdk.sh
 
 USER ${NB_UID}
 
-# Core graph + LLM orchestration stack
-RUN pip install --no-cache-dir \
-    # build tools for SDK editable installs (hatch-vcs reads git tags for versioning)
-    hatchling \
-    hatch-vcs \
-    nest_asyncio \
-    # LlamaIndex core + graph store protocol
-    llama-index-core \
-    llama-index-llms-openai \
-    llama-index-embeddings-openai \
-    # LangChain + LangGraph
-    langchain \
-    langchain-openai \
-    langchain-community \
-    langgraph \
-    # coordinode SDK packages (installed from mounted /sdk). Pinned to the
-    # versions uv.lock resolves: install-sdk.sh generates the proto stubs into
-    # the mounted checkout, and gRPC stubs refuse to import under a grpcio
-    # older than the grpcio-tools that generated them. An unpinned, newer
-    # grpcio-tools here would break the host's own test runs on the same tree.
-    grpcio==1.83.1 \
-    grpcio-tools==1.83.1 \
-    protobuf==7.36.0
+# The demo dependency group of uv.lock, hashed and wheels only, so no package
+# runs setup code here. The export reads the lock alone: the workspace
+# members' own dependencies are in it, the members themselves are left out
+# and installed from the mounted checkout by install-sdk.sh.
+COPY --from=uv /uv /usr/local/bin/uv
+COPY pyproject.toml uv.lock /tmp/lock/
+RUN uv export --frozen --directory /tmp/lock --all-packages --no-default-groups --group demo \
+        --no-emit-workspace --format requirements-txt -o /tmp/demo-requirements.txt \
+    && pip install --no-cache-dir --only-binary :all: --require-hashes -r /tmp/demo-requirements.txt
 
 WORKDIR /home/jovyan/work

@@ -23,10 +23,11 @@ services:
 
   jupyter:
     build:
-      context: .
-      # Dockerfile.jupyter lives in demo/ (same context directory as this file).
-      # It builds a Jupyter Lab image with the SDK installed from the SDK source mount.
-      dockerfile: Dockerfile.jupyter
+      # The repository root, so the image installs its stack from uv.lock;
+      # Dockerfile.jupyter.dockerignore keeps the context to the files it copies.
+      # The SDK itself is installed from the source mount at start.
+      context: ..
+      dockerfile: demo/Dockerfile.jupyter
     container_name: demo-jupyter
     ports:
       - "127.0.0.1:38888:8888"   # Jupyter Lab (localhost-only)

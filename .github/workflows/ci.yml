@@ -119,6 +119,43 @@ jobs:
             exit 1
           fi
 
+  demo-stack:
+    # The demo image's install, without Docker: the demo group of uv.lock,
+    # hashed wheels only, on the image's Python, then the SDK the way
+    # install-sdk.sh puts it in (no dependencies, no build isolation, so
+    # nothing reaches the index). A lock change that breaks the demo fails
+    # here instead of at someone's container start.
+    name: Demo stack
+    runs-on: ubuntu-latest
+    env:
+      # hatch-vcs reads the version from tags, which a shallow checkout lacks;
+      # the demo container sets the same value.
+      SETUPTOOLS_SCM_PRETEND_VERSION: "999.0.0"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          submodules: recursive
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4
+        with:
+          python-version: "3.13"
+
+      - name: Install the demo group from the lock
+        run: |
+          uv export --frozen --all-packages --no-default-groups --group demo \
+            --no-emit-workspace --format requirements-txt -o "$RUNNER_TEMP/demo-requirements.txt"
+          uv venv --seed --python 3.13 "$RUNNER_TEMP/demo"
+          "$RUNNER_TEMP/demo/bin/python" -m pip install --only-binary :all: --require-hashes \
+            -r "$RUNNER_TEMP/demo-requirements.txt"
+
+      - name: Install the SDK as the container does
+        # Editable installs of this repository build from source by design;
+        # the rule against setup scripts targets third-party packages.
+        run: |
+          "$RUNNER_TEMP/demo/bin/python" -m pip install --no-deps --no-build-isolation -e coordinode -e llama-index-coordinode -e langchain-coordinode  # NOSONAR
+          make proto PYTHON="$RUNNER_TEMP/demo/bin/python"
+          "$RUNNER_TEMP/demo/bin/python" -c "import coordinode, langchain_coordinode, llama_index.graph_stores.coordinode; from coordinode._proto.coordinode.v1.query.cypher_pb2 import ExecuteCypherRequest; ExecuteCypherRequest(query='RETURN 1')"
+
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest

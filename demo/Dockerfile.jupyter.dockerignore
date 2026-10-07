@@ -1,0 +1,6 @@
+# The demo image is built from the repository root; send it only what the
+# Dockerfile copies, not the submodules, virtual environments or build output.
+*
+!pyproject.toml
+!uv.lock
+!demo/install-sdk.sh
