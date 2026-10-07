@@ -64,7 +64,7 @@ jobs:
           submodules: recursive
 
       - name: Build (maturin / Linux x86_64)
-        uses: PyO3/maturin-action@32307a466a178317e8c2ae343b38e73896a047be  # v1.47.0
+        uses: PyO3/maturin-action@53965ae436bfa278197425c78ac1e3eeebc7cc33  # v1.47.0
         with:
           command: build
           args: >-
