@@ -117,9 +117,18 @@ jobs:
 
       # The metadata step is skipped for a foreign push, so its outputs are
       # empty there and this condition is false: approval happens only on a run
-      # Dependabot itself triggered. Major updates stay for a maintainer.
-      - name: Approve and enable auto-merge for minor/patch updates
-        if: steps.metadata.outputs.update-type == 'version-update:semver-minor' || steps.metadata.outputs.update-type == 'version-update:semver-patch'
+      # Dependabot itself triggered.
+      #
+      # Every update merges once CI is green, majors included, except a major
+      # GitHub Actions update: several actions run only in release.yml, which
+      # runs on a tag, so a green pull request proves nothing about them and a
+      # breaking change would surface at the next release. Python and Rust
+      # updates are what the test, integration, embedded and demo jobs run on.
+      - name: Approve and enable auto-merge
+        if: >-
+          steps.metadata.outcome == 'success'
+          && !(steps.metadata.outputs.package-ecosystem == 'github_actions'
+               && steps.metadata.outputs.update-type == 'version-update:semver-major')
         # Both operations name the head this run actually inspected, rather than
         # just the pull request: the approval is recorded against a commit id,
         # and the merge refuses outright if the head has moved.
