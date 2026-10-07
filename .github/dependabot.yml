@@ -34,14 +34,16 @@ updates:
     commit-message:
       prefix: "build(deps)"
   # coordinode-embedded is not a member of the uv workspace, so its own
-  # pyproject.toml (numpy, maturin) needs an updater of its own. Widen only:
-  # the NumPy lower bound is the oldest ABI the wheels build against, and
-  # raising it would drop users for nothing.
+  # pyproject.toml (numpy, maturin) needs an updater of its own. A range is
+  # changed only when a new release falls outside it (an upper cap such as
+  # maturin <2): the NumPy lower bound is the oldest ABI the wheels build
+  # against, and raising it would drop users for nothing. ("widen" is not a
+  # value the pip ecosystem accepts.)
   - package-ecosystem: "pip"
     directory: "/coordinode-embedded"
     schedule:
       interval: "weekly"
-    versioning-strategy: "widen"
+    versioning-strategy: "increase-if-necessary"
     commit-message:
       prefix: "build(deps)"
   # The demo's Jupyter base image and the uv image it exports the lock with.
