@@ -6,7 +6,9 @@ name: Dependabot Auto-Merge
 # RELEASER_APP_* secrets resolve to empty strings and the App token step fails
 # before it does anything. `pull_request_target` runs in the base branch's
 # context, where those secrets are available, which is also GitHub's own
-# recommendation for this pattern.
+# recommendation for this pattern. This is observed, not assumed: the same
+# workflow in the organisation's other repositories, on runs Dependabot
+# triggered, logs "Secret source: Actions" and mints the App token.
 #
 # That context carries write-capable credentials, so this workflow must never
 # execute code from the pull request. It does not: there is no checkout, and
@@ -52,7 +54,10 @@ jobs:
           private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
           # Least privilege: `pull-requests` to approve, to read whether
           # auto-merge is armed and to disarm it; `contents` because the
-          # squash-merge writes to the default branch.
+          # squash-merge writes to the default branch. No `actions` grant: the
+          # merge is made by the App installation, which holds the workflows
+          # permission, and the organisation's other repositories auto-merge
+          # Dependabot updates to workflow files with exactly these two.
           permission-contents: write
           permission-pull-requests: write
 
@@ -65,7 +70,9 @@ jobs:
       #
       # So the run a foreign push triggers disarms rather than skips. The
       # approval is left to the repository's stale-review dismissal, which is
-      # the setting that exists for it.
+      # the setting that exists for it. The push itself cannot merge in the
+      # meantime: the ruleset requires up-to-date, passing checks, which rerun
+      # on the new head and take minutes, while this job disarms in seconds.
       #
       # `github.actor` is who caused the event, and a rerun keeps it: rerunning
       # a Dependabot run leaves `actor` as dependabot with `triggering_actor`
@@ -113,20 +120,23 @@ jobs:
       - name: Dependabot metadata
         id: metadata
         if: github.actor == 'dependabot[bot]'
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.1
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       # The metadata step is skipped for a foreign push, so its outputs are
       # empty there and this condition is false: approval happens only on a run
       # Dependabot itself triggered.
       #
-      # Every update merges once CI is green, majors included, except a major
-      # GitHub Actions update: several actions run only in release.yml, which
-      # runs on a tag, so a green pull request proves nothing about them and a
-      # breaking change would surface at the next release. Python and Rust
-      # updates are what the test, integration, embedded and demo jobs run on.
+      # Every update merges once CI is green, majors included, where CI runs
+      # what changed: Python and Rust updates are what the test, integration,
+      # embedded and demo jobs run on. Two stay manual. A major GitHub Actions
+      # update: several actions run only in release.yml, on a tag, so a green
+      # pull request proves nothing about them. Any Docker update: no job
+      # builds the demo image (the demo job installs the lock without Docker),
+      # so a base-image change is untested until someone builds it.
       - name: Approve and enable auto-merge
         if: >-
           steps.metadata.outcome == 'success'
+          && steps.metadata.outputs.package-ecosystem != 'docker'
           && !(steps.metadata.outputs.package-ecosystem == 'github_actions'
                && steps.metadata.outputs.update-type == 'version-update:semver-major')
         # Both operations name the head this run actually inspected, rather than
