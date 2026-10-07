@@ -26,16 +26,17 @@ classifiers = [
 # backward compatible with older runtimes: the pb2 modules call
 # ValidateProtobufRuntimeVersion(7.35.1) and the grpc stubs refuse to import
 # below their own generated version. A lower floor here resolves happily and
-# then fails at first import.
+# then fails at first import. tests/unit/test_runtime_floors.py holds them to
+# the generated code, so moving grpcio-tools in uv.lock moves these too.
 dependencies = [
-    "grpcio>=1.83.1",
+    "grpcio>=1.84.0",
     "protobuf>=7.35.1",
     "googleapis-common-protos>=1.74.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "grpcio-tools>=1.83.1",
+    "grpcio-tools>=1.84.0",
     "pytest>=9",
     "pytest-asyncio>=1.4",
     "ruff>=0.16",
