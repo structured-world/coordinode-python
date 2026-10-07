@@ -77,10 +77,11 @@ jobs:
       # `github.actor` is who caused the event, and a rerun keeps it: rerunning
       # a Dependabot run leaves `actor` as dependabot with `triggering_actor`
       # set to whoever asked, and rerunning a foreign-push run keeps the pusher
-      # in `actor`. So the actor alone says whether the head moved under
-      # someone else, on the first attempt and on every rerun alike.
+      # in `actor`. So the actor of a `synchronize` event says whether the head
+      # moved under someone else, on the first attempt and on every rerun
+      # alike. A reopen moves no head, so it never disarms; see below.
       - name: Disarm auto-merge when someone else moved the head
-        if: github.actor != 'dependabot[bot]'
+        if: github.event.action == 'synchronize' && github.actor != 'dependabot[bot]'
         # The head is checked because disarming has no precondition of its own:
         # `--match-head-commit` maps to `expectedHeadOid`, which the mutation
         # behind `--disable-auto` does not take. Without the check, a slow run
@@ -117,14 +118,21 @@ jobs:
       # maintainer rerunning a failed Dependabot run must be able to restore the
       # approval and auto-merge, and both are bound to the head SHA below, so
       # the rerun cannot approve anything Dependabot did not push.
+      #
+      # A reopen by a maintainer runs this too: closing the pull request
+      # disarmed its auto-merge, and nothing else would arm it again until
+      # Dependabot's next push. That is safe because this action verifies that
+      # every commit on the pull request is Dependabot's and fails otherwise,
+      # so a branch someone else pushed to is never approved on reopen.
       - name: Dependabot metadata
         id: metadata
-        if: github.actor == 'dependabot[bot]'
+        if: github.actor == 'dependabot[bot]' || github.event.action == 'reopened'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       # The metadata step is skipped for a foreign push, so its outputs are
       # empty there and this condition is false: approval happens only on a run
-      # Dependabot itself triggered.
+      # Dependabot itself triggered, or on a reopen of a branch holding only
+      # Dependabot's commits.
       #
       # Every update merges once CI is green, majors included, where CI runs
       # what changed: Python and Rust updates are what the test, integration,
