@@ -24,8 +24,8 @@ crate-type = ["cdylib"]
 # are resolved by THIS lock: an engine release that needs a newer storage
 # engine still compiles against whatever version the lock names, and fails on
 # the API it expected to find.
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
-numpy = "0.24"
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
+numpy = "0.29"
 coordinode-embed = { path = "../coordinode-rs/crates/coordinode-embed" }
 coordinode-core = { path = "../coordinode-rs/crates/coordinode-core" }
 coordinode-vector = { path = "../coordinode-rs/crates/coordinode-vector" }
