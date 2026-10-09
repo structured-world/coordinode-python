@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "coordinode>=1.0.6",
-    "llama-index-core>=0.14",
+    "llama-index-core>=0.14.25",
 ]
 
 [project.urls]
