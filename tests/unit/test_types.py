@@ -4,6 +4,8 @@ Both directions are exercised against the real generated messages, so a change
 to the PropertyValue oneof shows up here rather than in user code.
 """
 
+from datetime import UTC, datetime, timedelta, timezone
+
 import pytest
 
 from coordinode._proto.coordinode.v1.common.types_pb2 import (
@@ -13,7 +15,10 @@ from coordinode._proto.coordinode.v1.common.types_pb2 import (
     PropertyValue,
     Vector,
 )
-from coordinode._types import from_property_value, to_property_value
+from coordinode._proto.coordinode.v1.common.types_pb2 import (
+    Timestamp as TimestampProto,
+)
+from coordinode._types import Timestamp, from_property_value, to_property_value
 
 # Proto generation is part of `make install`, so a missing stub is a broken
 # checkout rather than a reason to quietly skip these.
@@ -184,3 +189,58 @@ class TestFromPropertyValue:
         """Only a value that came back as one re-encodes as one."""
         pv = to_property_value({"nodes": [1, 2], "rels": []})
         assert pv.WhichOneof("value") == "map_value"
+
+
+# ── timestamps ──────────────────────────────────────────────────────────────
+
+
+class TestTimestamp:
+    def test_decodes_to_epoch_microseconds(self):
+        """A timestamp reads as the microsecond count the embedded client returns.
+
+        It used to come back as a {"wall_time", "logical"} dict, a shape no
+        other path produced and that nothing could write back.
+        """
+        pv = PropertyValue(timestamp_value=TimestampProto(unix_micros=1_700_000_000_123_456))
+        decoded = from_property_value(pv)
+        assert decoded == 1_700_000_000_123_456
+        assert isinstance(decoded, Timestamp)
+
+    def test_an_instant_before_1970_is_negative(self):
+        pv = PropertyValue(timestamp_value=TimestampProto(unix_micros=-86_400_000_000))
+        assert from_property_value(pv) == -86_400_000_000
+
+    def test_survives_a_round_trip(self):
+        """Reading a timestamp and writing it back keeps its wire type.
+
+        As an ordinary int it would re-encode as an integer, and a TIMESTAMP
+        property rejects that.
+        """
+        original = PropertyValue(timestamp_value=TimestampProto(unix_micros=-1))
+        re_encoded = to_property_value(from_property_value(original))
+        assert re_encoded.WhichOneof("value") == "timestamp_value"
+        assert re_encoded.timestamp_value.unix_micros == -1
+
+    def test_a_plain_int_is_not_a_timestamp(self):
+        """Only a value that came back as one, or was built as one, encodes as one."""
+        assert to_property_value(1_700_000_000_000_000).WhichOneof("value") == "int_value"
+
+    def test_an_aware_datetime_encodes_exactly(self):
+        moment = datetime(1969, 7, 20, 20, 17, 40, 123456, tzinfo=timezone(timedelta(hours=2)))
+        pv = to_property_value(moment)
+        assert pv.WhichOneof("value") == "timestamp_value"
+        assert pv.timestamp_value.unix_micros == -14_190_139_876_544
+
+    def test_a_naive_datetime_is_refused(self):
+        """A naive datetime names no instant until a zone is chosen for it."""
+        with pytest.raises(ValueError):
+            to_property_value(datetime(2024, 1, 1))
+
+    def test_to_datetime_is_utc(self):
+        assert Timestamp(951_782_400_000_000).to_datetime() == datetime(2000, 2, 29, tzinfo=UTC)
+        assert Timestamp(-1).to_datetime() == datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)
+
+    def test_from_datetime_round_trips(self):
+        moment = datetime(2023, 11, 14, 22, 13, 20, 123456, tzinfo=UTC)
+        assert Timestamp.from_datetime(moment) == 1_700_000_000_123_456
+        assert Timestamp.from_datetime(moment).to_datetime() == moment

@@ -18,7 +18,7 @@ Async::
         result = await db.cypher("MATCH (n) RETURN count(n) AS total")
 """
 
-from coordinode._types import MultiVector, Path
+from coordinode._types import MultiVector, Path, Timestamp
 from coordinode.client import (
     AsyncCoordinodeClient,
     AsyncTransaction,
@@ -50,10 +50,12 @@ __all__ = [
     "Transaction",
     "AsyncTransaction",
     # Values whose wire type only a tag can carry: a plain nested list encodes
-    # as a list and a plain dict as a map, so sending either of these types
-    # requires the constructor, not just the shape.
+    # as a list, a plain dict as a map and a plain int as an integer, so
+    # sending one of these types requires the constructor, not just the shape.
+    # An aware datetime encodes as a timestamp too.
     "MultiVector",
     "Path",
+    "Timestamp",
     # How a write is acknowledged: member count or majority, and how durably.
     "WriteConcern",
     "NodeResult",
