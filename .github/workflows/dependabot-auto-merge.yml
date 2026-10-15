@@ -8,7 +8,12 @@ name: Dependabot Auto-Merge
 # context, where those secrets are available, which is also GitHub's own
 # recommendation for this pattern. This is observed, not assumed: the same
 # workflow in the organisation's other repositories, on runs Dependabot
-# triggered, logs "Secret source: Actions" and mints the App token.
+# triggered, logs "Secret source: Actions" and mints the App token. For
+# example coordinode-lsm-tree run 38696382130 (event `pull_request_target`,
+# actor and triggering actor `dependabot[bot]`) generated the App token and
+# armed auto-merge. The restriction GitHub documents for Dependabot-triggered
+# `pull_request_target` applies when the base ref was created by Dependabot;
+# here the base is the default branch.
 #
 # That context carries write-capable credentials, so this workflow must never
 # execute code from the pull request. It does not: there is no checkout, and
@@ -57,7 +62,9 @@ jobs:
           # squash-merge writes to the default branch. No `actions` grant: the
           # merge is made by the App installation, which holds the workflows
           # permission, and the organisation's other repositories auto-merge
-          # Dependabot updates to workflow files with exactly these two.
+          # Dependabot updates to workflow files with exactly these two: in
+          # coordinode-lsm-tree, #909 (changes .github/workflows/benchmark.yml)
+          # and #693 were merged by the App through auto-merge armed this way.
           permission-contents: write
           permission-pull-requests: write
 
@@ -141,6 +148,11 @@ jobs:
       # pull request proves nothing about them. Any Docker update: no job
       # builds the demo image (the demo job installs the lock without Docker),
       # so a base-image change is untested until someone builds it.
+      #
+      # `package-ecosystem` is `github_actions`, with an underscore: the action
+      # takes it from the second segment of the Dependabot branch name
+      # (`dependabot/github_actions/...`), not from the `github-actions` key
+      # of dependabot.yml.
       - name: Approve and enable auto-merge
         if: >-
           steps.metadata.outcome == 'success'
