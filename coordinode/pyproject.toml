@@ -39,7 +39,7 @@ dev = [
     "grpcio-tools>=1.84.0",
     "pytest>=9",
     "pytest-asyncio>=1.4",
-    "ruff>=0.16",
+    "ruff>=0.17.0",
 ]
 
 [project.urls]
