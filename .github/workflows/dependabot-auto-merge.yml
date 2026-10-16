@@ -137,10 +137,16 @@ jobs:
         if: github.actor == 'dependabot[bot]' || github.event.action == 'reopened'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
-      # Every commit of the pull request is Dependabot's and carries a verified
-      # signature, and the last of them is the head this run approves, so the
-      # history checked is the history of that head. The list endpoint stops at
-      # 250 commits; a longer history then ends before the head and is refused.
+      # Every commit of the pull request is Dependabot's, and the last of them
+      # is the head this run approves, so the history checked is the history of
+      # that head. The list endpoint stops at 250 commits; a longer history then
+      # ends before the head and is refused.
+      #
+      # The author alone proves nothing: it is whatever the commit claims, and a
+      # signature verifies the signer, not the author. A genuine Dependabot
+      # commit is committed and signed by GitHub itself (committer `web-flow`),
+      # so a commit someone signed with their own key, under Dependabot's name,
+      # shows that person as the committer and is refused.
       - name: Verify every commit is Dependabot's
         id: commits
         if: steps.metadata.outcome == 'success'
@@ -150,6 +156,7 @@ jobs:
               | ($c | length) > 0
               and $c[-1].sha == env.HEAD_SHA
               and all($c[]; .author.login == "dependabot[bot]"
+                            and .committer.login == "web-flow"
                             and .commit.verification.verified == true)'
         env:
           GH_TOKEN: ${{ github.token }}
