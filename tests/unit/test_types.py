@@ -244,3 +244,38 @@ class TestTimestamp:
         moment = datetime(2023, 11, 14, 22, 13, 20, 123456, tzinfo=UTC)
         assert Timestamp.from_datetime(moment) == 1_700_000_000_123_456
         assert Timestamp.from_datetime(moment).to_datetime() == moment
+
+    def test_zero_is_the_epoch(self):
+        assert Timestamp(0).to_datetime() == datetime(1970, 1, 1, tzinfo=UTC)
+        pv = to_property_value(Timestamp(0))
+        assert pv.WhichOneof("value") == "timestamp_value"
+        assert pv.timestamp_value.unix_micros == 0
+
+    def test_from_datetime_before_epoch_is_negative(self):
+        moment = datetime(1969, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)
+        assert Timestamp.from_datetime(moment) == -1
+
+    def test_from_datetime_refuses_naive(self):
+        with pytest.raises(ValueError):
+            Timestamp.from_datetime(datetime(2024, 1, 1))
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            [Timestamp(1_700_000_000_123_456), Timestamp(-1)],
+            [Timestamp(1_700_000_000_123_456), 7],
+        ],
+    )
+    def test_a_list_holding_timestamps_keeps_them(self, values):
+        """A list read back with timestamps in it writes back as that list.
+
+        Timestamp is an int, so a run of them used to pass for a Vector and
+        went out as floats: another wire type, and microseconds lost to the
+        float's mantissa.
+        """
+        pv = to_property_value(values)
+        assert pv.WhichOneof("value") == "list_value"
+        assert from_property_value(pv) == values
+        kinds = [v.WhichOneof("value") for v in pv.list_value.values]
+        assert kinds[0] == "timestamp_value"
+        assert pv.list_value.values[0].timestamp_value.unix_micros == 1_700_000_000_123_456

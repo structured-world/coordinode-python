@@ -99,15 +99,17 @@ def _set_sequence(pv: Any, values: Any) -> None:
     """Encode a Python sequence into the field that matches what it holds.
 
     A non-empty run of plain numbers is a Vector; anything else is a list of
-    values. bool is a subclass of int, so it is excluded explicitly: [True,
-    False] is a list of booleans, not a Vector of 1.0 and 0.0.
+    values. bool and Timestamp are subclasses of int, so they are excluded
+    explicitly: [True, False] is a list of booleans, not a Vector of 1.0 and
+    0.0, and a list holding timestamps keeps them as timestamps rather than
+    rounding their microseconds into floats.
     """
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
         PropertyList,
         Vector,
     )
 
-    if values and all(isinstance(v, int | float) and not isinstance(v, bool) for v in values):
+    if values and all(isinstance(v, int | float) and not isinstance(v, bool | Timestamp) for v in values):
         pv.vector_value.CopyFrom(Vector(values=[float(v) for v in values]))
     else:
         pv.list_value.CopyFrom(PropertyList(values=[to_property_value(v) for v in values]))

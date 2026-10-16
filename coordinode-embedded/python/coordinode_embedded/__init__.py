@@ -22,6 +22,6 @@ Example::
 """
 
 from ._coordinode_embedded import Hnsw, LocalClient
-from ._types import MultiVector, Path
+from ._types import MultiVector, Path, Timestamp
 
-__all__ = ["Hnsw", "LocalClient", "MultiVector", "Path"]
+__all__ = ["Hnsw", "LocalClient", "MultiVector", "Path", "Timestamp"]
