@@ -21,7 +21,7 @@ use coordinode_core::graph::types::{GeoValue, PathRel, PathValue, Value};
 use coordinode_embed::{Database, DatabaseError};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rmpv::Value as MsgpackValue;
 
@@ -45,7 +45,7 @@ use rmpv::Value as MsgpackValue;
 /// permanent. Retrying costs the two lookups again on a path that only runs
 /// when the module is missing, which cannot happen while it ships in this
 /// package.
-static MULTI_VECTOR_TYPE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+static MULTI_VECTOR_TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
     tag_type(py, &MULTI_VECTOR_TYPE, "MultiVector")
@@ -57,7 +57,7 @@ fn multi_vector_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
 /// tag a path read back is an ordinary mapping, and writing it out again would
 /// store a map.
 /// Resolved and remembered on the same terms as [`MULTI_VECTOR_TYPE`].
-static PATH_TYPE: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+static PATH_TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
     tag_type(py, &PATH_TYPE, "Path")
@@ -69,7 +69,7 @@ fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
 /// next value rather than deciding the wire type for the rest of the process.
 fn tag_type<'py>(
     py: Python<'py>,
-    cell: &GILOnceCell<Py<PyAny>>,
+    cell: &PyOnceLock<Py<PyAny>>,
     name: &str,
 ) -> Option<Bound<'py, PyAny>> {
     if let Some(tag) = cell.get(py) {
@@ -84,7 +84,7 @@ fn tag_type<'py>(
     Some(tag)
 }
 
-fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
+fn value_to_py(py: Python<'_>, v: Value) -> PyResult<Py<PyAny>> {
     match v {
         Value::Null => Ok(py.None()),
         // bool is interned in Python (True/False are singletons) — into_pyobject
@@ -172,7 +172,7 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<PyObject> {
 
 // ── rmpv::Value → PyObject (for Document values) ─────────────────────────────
 
-fn msgpack_to_py(py: Python<'_>, v: MsgpackValue) -> PyResult<PyObject> {
+fn msgpack_to_py(py: Python<'_>, v: MsgpackValue) -> PyResult<Py<PyAny>> {
     match v {
         MsgpackValue::Nil => Ok(py.None()),
         MsgpackValue::Boolean(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
@@ -236,12 +236,12 @@ fn py_dict_to_path(d: &Bound<'_, PyDict>) -> PyResult<PathValue> {
         .get_item("rels")?
         .ok_or_else(|| bad("is missing 'rels'"))?;
     let rels_list = rels_obj
-        .downcast::<PyList>()
+        .cast::<PyList>()
         .map_err(|_| bad("'rels' must be a list"))?;
     let mut rels = Vec::with_capacity(rels_list.len());
     for item in rels_list.iter() {
         let hop = item
-            .downcast::<PyDict>()
+            .cast::<PyDict>()
             .map_err(|_| bad("hops must be dicts"))?;
         let field = |key: &str| {
             hop.get_item(key)
@@ -281,7 +281,7 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(s) = obj.extract::<String>() {
         return Ok(Value::String(s));
     }
-    if let Ok(list) = obj.downcast::<PyList>() {
+    if let Ok(list) = obj.cast::<PyList>() {
         // A tagged multi-vector before the generic list branch: it IS a list,
         // so the branch below would take it and write back an array, changing
         // the property's type on a read-modify-write.
@@ -300,7 +300,7 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         let items: PyResult<Vec<Value>> = list.iter().map(|x| py_to_value(&x)).collect();
         return Ok(Value::Array(items?));
     }
-    if let Ok(d) = obj.downcast::<PyDict>() {
+    if let Ok(d) = obj.cast::<PyDict>() {
         // A tagged path before the generic dict branch, for the same reason as
         // the multi-vector above: it IS a dict, so the map branch would take it
         // and rewrite the property as a map.
@@ -417,7 +417,7 @@ impl LocalClient {
         py: Python<'_>,
         query: &str,
         params: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let mut guard = self.state.lock().unwrap();
         let db = guard.get_mut()?;
 
@@ -459,7 +459,7 @@ impl LocalClient {
         slf
     }
 
-    fn __exit__(&self, _exc_type: PyObject, _exc_val: PyObject, _exc_tb: PyObject) -> bool {
+    fn __exit__(&self, _exc_type: Py<PyAny>, _exc_val: Py<PyAny>, _exc_tb: Py<PyAny>) -> bool {
         self.close();
         false // do not suppress exceptions
     }
@@ -483,7 +483,7 @@ fn _coordinode_embedded(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // demand") triggers `import numpy.core` lazily the first time a
     // PyArray operation runs.  An explicit init step would be a no-op —
     // the crate exposes no public initializer (verified against the
-    // 0.23/0.24 lines, and that policy is unlikely to change while the
+    // 0.23/0.24 and 0.29 lines, and that policy is unlikely to change while the
     // crate's lazy-import design holds).
     m.add_class::<LocalClient>()?;
     m.add_class::<hnsw::Hnsw>()?;

@@ -170,7 +170,7 @@ impl Hnsw {
         let end_id = *next;
         drop(next);
 
-        py.allow_threads(|| -> PyResult<()> {
+        py.detach(|| -> PyResult<()> {
             let mut index = self
                 .inner
                 .lock()
@@ -211,7 +211,7 @@ impl Hnsw {
             )));
         }
         let q: Vec<f32> = q_view.iter().copied().collect();
-        let labels = py.allow_threads(|| -> PyResult<Vec<i64>> {
+        let labels = py.detach(|| -> PyResult<Vec<i64>> {
             let index = self
                 .inner
                 .lock()
