@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.0.1](https://github.com/structured-world/coordinode-python/compare/v4.0.0...v4.0.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **schema:** keep a default constraint wait inside the call deadline ([#144](https://github.com/structured-world/coordinode-python/issues/144)) ([59301d6](https://github.com/structured-world/coordinode-python/commit/59301d6b8db502e6bd671db5b2d0560a398ac64d)), closes [#143](https://github.com/structured-world/coordinode-python/issues/143)
+* **types:** read and write timestamps as epoch microseconds ([#133](https://github.com/structured-world/coordinode-python/issues/133)) ([547c66d](https://github.com/structured-world/coordinode-python/commit/547c66d7e81f4e3bee48dc741a55412620c0d3bd)), closes [#132](https://github.com/structured-world/coordinode-python/issues/132)
+
 ## [4.0.0](https://github.com/structured-world/coordinode-python/compare/v3.0.0...v4.0.0) (2026-10-07)
 
 
