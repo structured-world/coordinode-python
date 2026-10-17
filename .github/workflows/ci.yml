@@ -162,10 +162,10 @@ jobs:
     services:
       coordinode:
         # Pinned by digest, not by tag: the proto submodule pins a server
-        # version, and a tag can be re-pushed, so `:0.7.0` alone does not name
-        # one fixed server. The digest below is 0.7.0; bump both together with
+        # version, and a tag can be re-pushed, so `:0.7.2` alone does not name
+        # one fixed server. The digest below is 0.7.2; bump both together with
         # the submodule.
-        image: ghcr.io/structured-world/coordinode@sha256:2e76528dde460fd715549a8ff06e52c5187b12ff03cdbca59b371f46fa664829
+        image: ghcr.io/structured-world/coordinode@sha256:3a3657306cbb050f9ab9562965e7645f332d63a30b360813128434559c6cfae7
         ports:
           - 7080:7080
           - 7084:7084

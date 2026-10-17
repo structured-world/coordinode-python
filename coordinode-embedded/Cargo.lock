@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-cluster"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "coordinode-storage",
  "coordinode-workspace-hack",
@@ -644,8 +644,9 @@ dependencies = [
 
 [[package]]
 name = "coordinode-core"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
+ "atomic-waker",
  "bytes",
  "crc32c",
  "rmp",
@@ -663,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-embed"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "coordinode-core",
  "coordinode-lsm-tree",
@@ -700,9 +701,9 @@ dependencies = [
 
 [[package]]
 name = "coordinode-lsm-tree"
-version = "5.11.16"
+version = "5.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc3bc9ff6ba54549c8bc4e562c3c9bb0c776b97af8796694b3837e407e8aa008"
+checksum = "b5f4f179a6dfb6bf7757603318757f8e5b389e651e1da4c7a667ee34ee776720"
 dependencies = [
  "arc-swap",
  "cpufeatures 0.3.1",
@@ -726,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-modality"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "coordinode-core",
  "coordinode-lsm-tree",
@@ -743,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-query"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "coordinode-cluster",
@@ -772,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-raft"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "bytes",
  "coordinode-core",
@@ -797,9 +798,10 @@ dependencies = [
 
 [[package]]
 name = "coordinode-search"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "aes-gcm 0.11.1",
+ "coordinode-core",
  "coordinode-storage",
  "coordinode-workspace-hack",
  "hmac 0.13.0",
@@ -815,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-storage"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "byteorder-lite",
  "bytes",
@@ -827,7 +829,7 @@ dependencies = [
  "crc32fast",
  "dashmap",
  "flume",
- "fs4",
+ "fs4 1.1.0",
  "log",
  "lz4_flex 0.14.0",
  "metrics",
@@ -847,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "coordinode-vector"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "coordinode-core",
  "coordinode-storage",
@@ -866,17 +868,27 @@ dependencies = [
 
 [[package]]
 name = "coordinode-wire"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
+ "arc-swap",
  "bytes",
  "coordinode-workspace-hack",
+ "futures-util",
+ "hyper-util",
+ "metrics",
+ "parking_lot",
  "prost",
  "rustls",
  "rustls-pki-types",
  "rustls-rustcrypto",
+ "rustls-webpki 0.103.15",
  "structured-zstd",
  "thiserror",
+ "tokio",
+ "tokio-rustls",
  "tonic",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1003,7 +1015,8 @@ dependencies = [
  "fnv",
  "foldhash 0.1.5",
  "foldhash 0.2.0",
- "fs4",
+ "fs4 0.13.1",
+ "fs4 1.1.0",
  "futures-channel",
  "futures-core",
  "futures-macro",
@@ -1243,6 +1256,7 @@ dependencies = [
  "tonic-build",
  "tonic-prost",
  "tonic-prost-build",
+ "tonic-types",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1851,6 +1865,16 @@ checksum = "8640e34b88f7652208ce9e88b1a37a2ae95227d84abec377ccd3c5cfeb141ed4"
 dependencies = [
  "rustix",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "fs4"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e72ed92b67c146290f88e9c89d60ca163ea417a446f61ffd7b72df3e7f1dfd5"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4092,9 +4116,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "structured-zstd"
-version = "0.0.58"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a19112515370199811e7e499f32b633b93a2525ea2cf6f7aa3b1e758d65fd932"
+checksum = "ddca575bd714f7e8e2ad3d2c3ce8f99f8589d6128d219659831c74e1bbbc4f83"
 dependencies = [
  "fastrand",
  "twox-hash",
@@ -4153,7 +4177,7 @@ dependencies = [
  "downcast-rs",
  "fastdivide",
  "fnv",
- "fs4",
+ "fs4 0.13.1",
  "htmlescape",
  "itertools 0.14.0",
  "levenshtein_automata",
