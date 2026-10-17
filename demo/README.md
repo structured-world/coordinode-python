@@ -19,8 +19,9 @@ Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 > alternative was filtering model-written Cypher by a session tag, which leaks
 > the first time the filter misses a case. `COORDINODE_AGENT_DB` moves that
 > file; deleting it starts the agent with no memory.
-> The Docker Compose stack below pins the CoordiNode **server** image v0.7.0 by
-> digest. Do not move it below that: the client manages schema through the v2
+> The Docker Compose stack below pins the CoordiNode **server** image v0.7.2 by
+> digest. Do not move it below that: the client reads timestamps in the signed
+> epoch-microsecond form 0.7.2 introduced, manages schema through the v2
 > schema service 0.7 introduced, and speaks the two-axis write concern 0.6
 > introduced, which an older server ignores in favour of its own default.
 >

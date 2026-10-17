@@ -4,11 +4,12 @@ Python-friendly type wrappers and PropertyValue conversion.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 # We import proto types lazily to avoid hard-fail when stubs aren't generated yet.
 
-PyValue = int | float | str | bool | bytes | list[float] | list[Any] | dict[str, Any] | None
+PyValue = int | float | str | bool | bytes | datetime | list[float] | list[Any] | dict[str, Any] | None
 
 
 class MultiVector(list):
@@ -23,6 +24,35 @@ class MultiVector(list):
     """
 
     __slots__ = ()
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+class Timestamp(int):
+    """An instant: microseconds since the Unix epoch, negative before 1970.
+
+    A plain ``int``, so it reads, compares and does arithmetic like the
+    microsecond count the embedded client returns. As with
+    :class:`MultiVector`, the type exists to carry the distinction back to the
+    wire: a value that arrived as a timestamp re-encodes as one, while an
+    ordinary int stays an integer.
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def from_datetime(cls, moment: datetime) -> Timestamp:
+        """The instant a timezone-aware datetime names. A naive one names none."""
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValueError("a naive datetime names no instant; attach a timezone")
+        # Integer arithmetic on the timedelta: a float of seconds loses
+        # microseconds this far from the epoch.
+        return cls((moment - _EPOCH) // timedelta(microseconds=1))
+
+    def to_datetime(self) -> datetime:
+        """This instant as a UTC datetime. Raises OverflowError outside years 1..9999."""
+        return _EPOCH + timedelta(microseconds=int(self))
 
 
 class Path(dict):
@@ -69,15 +99,17 @@ def _set_sequence(pv: Any, values: Any) -> None:
     """Encode a Python sequence into the field that matches what it holds.
 
     A non-empty run of plain numbers is a Vector; anything else is a list of
-    values. bool is a subclass of int, so it is excluded explicitly: [True,
-    False] is a list of booleans, not a Vector of 1.0 and 0.0.
+    values. bool and Timestamp are subclasses of int, so they are excluded
+    explicitly: [True, False] is a list of booleans, not a Vector of 1.0 and
+    0.0, and a list holding timestamps keeps them as timestamps rather than
+    rounding their microseconds into floats.
     """
     from coordinode._proto.coordinode.v1.common.types_pb2 import (  # type: ignore[import]
         PropertyList,
         Vector,
     )
 
-    if values and all(isinstance(v, int | float) and not isinstance(v, bool) for v in values):
+    if values and all(isinstance(v, int | float) and not isinstance(v, bool | Timestamp) for v in values):
         pv.vector_value.CopyFrom(Vector(values=[float(v) for v in values]))
     else:
         pv.list_value.CopyFrom(PropertyList(values=[to_property_value(v) for v in values]))
@@ -96,6 +128,11 @@ def to_property_value(py_val: PyValue) -> Any:
         pass  # unset oneof → null semantics
     elif isinstance(py_val, bool):
         pv.bool_value = py_val
+    elif isinstance(py_val, Timestamp):
+        # Before the int branch below, which would otherwise take it.
+        pv.timestamp_value.unix_micros = int(py_val)
+    elif isinstance(py_val, datetime):
+        pv.timestamp_value.unix_micros = int(Timestamp.from_datetime(py_val))
     elif isinstance(py_val, int):
         pv.int_value = py_val
     elif isinstance(py_val, float):
@@ -145,8 +182,7 @@ def from_property_value(pv: Any) -> PyValue:
     elif kind == "bytes_value":
         return pv.bytes_value
     elif kind == "timestamp_value":
-        ts = pv.timestamp_value
-        return {"wall_time": ts.wall_time, "logical": ts.logical}
+        return Timestamp(pv.timestamp_value.unix_micros)
     elif kind == "vector_value":
         return list(pv.vector_value.values)
     elif kind == "list_value":

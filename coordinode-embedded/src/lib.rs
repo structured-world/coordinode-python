@@ -22,7 +22,7 @@ use coordinode_embed::{Database, DatabaseError};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 use rmpv::Value as MsgpackValue;
 
 // ── Value → PyObject conversion ──────────────────────────────────────────────
@@ -63,6 +63,70 @@ fn path_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
     tag_type(py, &PATH_TYPE, "Path")
 }
 
+/// The `Timestamp` tag, from this package's own `_types` module.
+///
+/// An int subclass, for the same reason as [`multi_vector_type`]: without the
+/// tag a timestamp read back is an ordinary int, and writing it out again
+/// would store an integer. It also turns a timezone-aware `datetime` into the
+/// instant it names. Resolved and remembered on the same terms as
+/// [`MULTI_VECTOR_TYPE`].
+static TIMESTAMP_TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+fn timestamp_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
+    tag_type(py, &TIMESTAMP_TYPE, "Timestamp")
+}
+
+/// `datetime.datetime`, remembered on the same terms as the tags. Looked up
+/// through the module rather than `PyDateTime`, which the stable ABI this
+/// extension is built for does not expose.
+static DATETIME_TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+fn datetime_type(py: Python<'_>) -> Option<Bound<'_, PyAny>> {
+    if let Some(cls) = DATETIME_TYPE.get(py) {
+        return Some(cls.bind(py).clone());
+    }
+    let cls = py
+        .import("datetime")
+        .and_then(|module| module.getattr("datetime"))
+        .ok()?;
+    // A racing thread may have set it first; either value is the same class.
+    let _ = DATETIME_TYPE.set(py, cls.clone().unbind());
+    Some(cls)
+}
+
+/// The instant a tagged timestamp or a timezone-aware `datetime` names, in
+/// microseconds since the epoch; `None` for any other value. A naive
+/// `datetime` is refused: it names no instant until a zone is chosen for it.
+fn py_timestamp(obj: &Bound<'_, PyAny>) -> PyResult<Option<i64>> {
+    // The common parameters are none of these and are known by their exact
+    // type, without the tag lookup and two instance checks below.
+    if obj.is_exact_instance_of::<PyInt>()
+        || obj.is_exact_instance_of::<PyFloat>()
+        || obj.is_exact_instance_of::<PyString>()
+    {
+        return Ok(None);
+    }
+    let py = obj.py();
+    let Some(cls) = timestamp_type(py) else {
+        return Ok(None);
+    };
+    if obj.is_instance(&cls)? {
+        return obj.extract::<i64>().map(Some);
+    }
+    let Some(datetime) = datetime_type(py) else {
+        return Ok(None);
+    };
+    if obj.is_instance(&datetime)? {
+        // The tag's own conversion: one definition of the epoch arithmetic,
+        // and the same refusal of a naive datetime the gRPC client gives.
+        return cls
+            .call_method1("from_datetime", (obj,))?
+            .extract::<i64>()
+            .map(Some);
+    }
+    Ok(None)
+}
+
 /// Fetch a tag class from this package's `_types`, remembering it in `cell`.
 ///
 /// The cell holds successes only, so a lookup that fails is retried on the
@@ -93,8 +157,12 @@ fn value_to_py(py: Python<'_>, v: Value) -> PyResult<Py<PyAny>> {
         Value::Int(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
         Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Value::String(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
-        // Timestamp: expose as raw microseconds; callers use datetime.fromtimestamp(ts/1e6)
-        Value::Timestamp(ts) => Ok(ts.into_pyobject(py)?.into_any().unbind()),
+        // Microseconds since the epoch, tagged so a value read here and written
+        // straight back stays a timestamp instead of becoming an integer.
+        Value::Timestamp(ts) => match timestamp_type(py) {
+            Some(cls) => Ok(cls.call1((ts,))?.unbind()),
+            None => Ok(ts.into_pyobject(py)?.into_any().unbind()),
+        },
         // Sized from the vector's length in one go. Growing by append costs a
         // reallocation every time the list outgrows its capacity, and an
         // embedding is the one value here that routinely runs to hundreds or
@@ -271,6 +339,11 @@ fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(b) = obj.extract::<bool>() {
         // bool before int — Python bool is a subclass of int
         return Ok(Value::Bool(b));
+    }
+    // Before int as well: a tagged timestamp is an int subclass, and the int
+    // branch would store it as an integer.
+    if let Some(micros) = py_timestamp(obj)? {
+        return Ok(Value::Timestamp(micros));
     }
     if let Ok(i) = obj.extract::<i64>() {
         return Ok(Value::Int(i));

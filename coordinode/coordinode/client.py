@@ -5,6 +5,7 @@ CoordinodeClient: synchronous and asynchronous gRPC client for CoordiNode.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import functools
 import inspect
 import logging
@@ -438,6 +439,7 @@ class ConstraintInfo:
         from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
             ConstraintKind,
             ConstraintState,
+            IndexBuildState,
         )
 
         self.name: str = proto_constraint.name
@@ -455,11 +457,22 @@ class ConstraintInfo:
         self.state: str = ConstraintState.Name(proto_constraint.state).removeprefix("CONSTRAINT_STATE_")
         #: The index the constraint owns, for ``UNIQUE`` and ``NODE_KEY``; else ``None``.
         self.backing_index: str | None = proto_constraint.backing_index or None
+        has_build = proto_constraint.HasField("build")
+        #: Operation id of the build that checks the owned index against stored
+        #: data and decides a ``VALIDATING`` constraint; ``None`` for the kinds
+        #: checked on each node alone.
+        self.build_operation: int | None = proto_constraint.build.operation if has_build else None
+        #: ``"ACCEPTED"``, ``"RUNNING"``, ``"PUBLISHED"``, ``"FAILED"`` or
+        #: ``"CANCELLED"``; ``None`` without a build.
+        self.build_state: str | None = (
+            IndexBuildState.Name(proto_constraint.build.state).removeprefix("INDEX_BUILD_STATE_") if has_build else None
+        )
 
     def __repr__(self) -> str:
         return (
             f"ConstraintInfo(name={self.name!r}, label={self.label!r}, properties={self.properties!r}, "
-            f"kind={self.kind!r}, state={self.state!r}, backing_index={self.backing_index!r})"
+            f"kind={self.kind!r}, state={self.state!r}, backing_index={self.backing_index!r}, "
+            f"build_operation={self.build_operation!r}, build_state={self.build_state!r})"
         )
 
 
@@ -1970,12 +1983,18 @@ class AsyncCoordinodeClient:
         name: str = "",
         property_type: Any = None,
         if_not_exists: bool = False,
+        wait: float | None = None,
     ) -> ConstraintInfo:
         """Create a named constraint on the nodes of ``label``.
 
-        A ``"unique"`` or ``"node_key"`` constraint owns an index and returns
-        once that index is checked against the stored nodes; stored nodes that
-        break any constraint make the call fail with nothing created.
+        A ``"unique"`` or ``"node_key"`` constraint owns an index. It is
+        enforced on every write from the start, while a build checks the index
+        against the stored nodes. The call waits for that build up to ``wait``:
+        it returns the constraint ``ACTIVE`` once the build finished, or
+        ``VALIDATING`` with the build still running when the wait ran out; the
+        build then goes on without the call, and :meth:`get_constraints` shows
+        its outcome. Stored nodes that break the constraint within the wait
+        make the call fail with nothing created.
 
         Args:
             label: The label whose nodes are constrained.
@@ -1988,7 +2007,13 @@ class AsyncCoordinodeClient:
             property_type: The required type for ``"property_type"``, as a
                 type spec (see :meth:`create_label`).
             if_not_exists: Return a constraint of the same name, or an
-                equivalent one, instead of refusing.
+                equivalent one, instead of refusing; one still validating is
+                returned with its running build, so a retry after a lost reply
+                does not start a second build.
+            wait: Seconds to wait for the build of the owned index. ``None``:
+                the server's default. ``0``: return once the constraint and its
+                build are admitted. The call's deadline is extended by it, so
+                the deadline does not expire while the server is still waiting.
         """
         from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
             ConstraintKind,
@@ -2007,6 +2032,8 @@ class AsyncCoordinodeClient:
         props = [properties] if isinstance(properties, str) else list(properties)
         if (key == "property_type") != (property_type is not None):
             raise ValueError("property_type is required for kind 'property_type' and only for it")
+        if wait is not None and wait < 0:
+            raise ValueError(f"wait must be zero or more seconds; got {wait!r}")
         req = CreateConstraintRequest(
             name=name,
             label=label,
@@ -2016,7 +2043,12 @@ class AsyncCoordinodeClient:
         )
         if property_type is not None:
             req.property_type.CopyFrom(self._property_type_proto(property_type, "the constraint"))
-        created = await self._schema_stub.CreateConstraint(req, timeout=self._timeout)
+        timeout = self._timeout
+        if wait is not None:
+            # A zero wait is sent too: absent takes the server's default.
+            req.wait.FromTimedelta(datetime.timedelta(seconds=wait))
+            timeout += wait
+        created = await self._schema_stub.CreateConstraint(req, timeout=timeout)
         return ConstraintInfo(created)
 
     async def drop_constraint(self, name: str, *, if_exists: bool = False) -> None:
@@ -2610,6 +2642,7 @@ class CoordinodeClient:
         name: str = "",
         property_type: Any = None,
         if_not_exists: bool = False,
+        wait: float | None = None,
     ) -> ConstraintInfo:
         """Create a named constraint; see :meth:`AsyncCoordinodeClient.create_constraint`."""
         return self._run(
@@ -2620,6 +2653,7 @@ class CoordinodeClient:
                 name=name,
                 property_type=property_type,
                 if_not_exists=if_not_exists,
+                wait=wait,
             )
         )
 
