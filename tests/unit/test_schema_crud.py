@@ -211,6 +211,38 @@ class TestConstraintInfo:
         assert (c.kind, c.property_type, c.state) == ("PROPERTY_TYPE", "INT64", "VALIDATING")
         assert c.backing_index is None
 
+    def test_validating_constraint_reports_its_build(self):
+        # A create whose wait ran out returns the constraint VALIDATING with
+        # its build still running; the caller needs the build to follow it.
+        c = ConstraintInfo(
+            schema_pb2.Constraint(
+                name="c",
+                label="L",
+                kind=schema_pb2.CONSTRAINT_KIND_UNIQUE,
+                state=schema_pb2.CONSTRAINT_STATE_VALIDATING,
+                backing_index="c_idx",
+                build=schema_pb2.IndexBuild(
+                    operation=42,
+                    state=schema_pb2.INDEX_BUILD_STATE_RUNNING,
+                    indexed=7,
+                ),
+            )
+        )
+        assert c.state == "VALIDATING"
+        assert (c.build_operation, c.build_state) == (42, "RUNNING")
+
+    def test_constraint_without_a_build(self):
+        # NOT_NULL is checked on each node alone and has no build.
+        c = ConstraintInfo(
+            schema_pb2.Constraint(
+                name="c",
+                label="L",
+                kind=schema_pb2.CONSTRAINT_KIND_NOT_NULL,
+                state=schema_pb2.CONSTRAINT_STATE_ACTIVE,
+            )
+        )
+        assert (c.build_operation, c.build_state) == (None, None)
+
 
 # ── element_id ───────────────────────────────────────────────────────────────
 
@@ -379,6 +411,40 @@ class TestCreateConstraint:
             assert (sent.name, sent.label, list(sent.properties)) == ("l_key", "L", ["a", "b"])
             assert sent.kind == schema_pb2.CONSTRAINT_KIND_NODE_KEY and sent.if_not_exists
             assert not sent.HasField("property_type")
+            # No wait named: the server's own default applies, so none is sent.
+            assert not sent.HasField("wait")
+
+        asyncio.run(_inner())
+
+    def test_wait_is_sent_and_extends_the_deadline(self):
+        # The server holds the call for up to `wait` while the backing index
+        # builds. A deadline of the client's timeout alone would expire first
+        # and report a failure for a constraint the server went on to create.
+        async def _inner() -> None:
+            client = self._client()
+            await client.create_constraint("L", "email", "unique", wait=2.5)
+            call = client._schema_stub.CreateConstraint.call_args
+            sent = call.args[0]
+            assert (sent.wait.seconds, sent.wait.nanos) == (2, 500_000_000)
+            assert call.kwargs["timeout"] == pytest.approx(client._timeout + 2.5)
+
+        asyncio.run(_inner())
+
+    def test_zero_wait_is_sent_rather_than_dropped(self):
+        # Zero means "return once admitted", unlike an absent wait, which
+        # takes the server's default; dropping it would change the meaning.
+        async def _inner() -> None:
+            client = self._client()
+            await client.create_constraint("L", "email", "unique", wait=0)
+            sent = client._schema_stub.CreateConstraint.call_args.args[0]
+            assert sent.HasField("wait") and sent.wait.ToTimedelta().total_seconds() == 0
+
+        asyncio.run(_inner())
+
+    def test_negative_wait_raises(self):
+        async def _inner() -> None:
+            with pytest.raises(ValueError, match="wait"):
+                await self._client().create_constraint("L", "email", "unique", wait=-1)
 
         asyncio.run(_inner())
 
