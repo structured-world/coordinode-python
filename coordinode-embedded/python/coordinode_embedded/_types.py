@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+# Both packages ship from this repository at one version: the tags come from
+# `coordinode` whole.
 try:  # pragma: no cover - exercised by whichever install shape is in use
     from coordinode._types import MultiVector, Path, Timestamp
 except ImportError:
