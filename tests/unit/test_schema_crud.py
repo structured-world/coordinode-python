@@ -411,8 +411,23 @@ class TestCreateConstraint:
             assert (sent.name, sent.label, list(sent.properties)) == ("l_key", "L", ["a", "b"])
             assert sent.kind == schema_pb2.CONSTRAINT_KIND_NODE_KEY and sent.if_not_exists
             assert not sent.HasField("property_type")
-            # No wait named: the server's own default applies, so none is sent.
-            assert not sent.HasField("wait")
+
+        asyncio.run(_inner())
+
+    def test_default_wait_ends_before_the_deadline(self):
+        # With no wait named, the server's own default applies (60 s on
+        # 0.7.2, operator-tunable), longer than the client's 30 s timeout: a
+        # build between the two ended the call with DEADLINE_EXCEEDED while
+        # the server went on to create the constraint. The client's timeout
+        # is sent as the wait instead, and the deadline covers it.
+        async def _inner() -> None:
+            client = self._client()
+            await client.create_constraint("L", "email", "unique")
+            call = client._schema_stub.CreateConstraint.call_args
+            sent = call.args[0]
+            assert sent.HasField("wait")
+            assert sent.wait.ToTimedelta().total_seconds() == pytest.approx(client._timeout)
+            assert call.kwargs["timeout"] > client._timeout
 
         asyncio.run(_inner())
 

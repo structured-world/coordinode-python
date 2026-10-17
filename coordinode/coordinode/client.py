@@ -2011,9 +2011,10 @@ class AsyncCoordinodeClient:
                 returned with its running build, so a retry after a lost reply
                 does not start a second build.
             wait: Seconds to wait for the build of the owned index. ``None``:
-                the server's default. ``0``: return once the constraint and its
-                build are admitted. The call's deadline is extended by it, so
-                the deadline does not expire while the server is still waiting.
+                as long as the client's timeout. ``0``: return once the
+                constraint and its build are admitted. The call's deadline is
+                extended by it, so the deadline does not expire while the
+                server is still waiting.
         """
         from coordinode._proto.coordinode.v2.graph.schema_pb2 import (  # type: ignore[import]
             ConstraintKind,
@@ -2043,12 +2044,13 @@ class AsyncCoordinodeClient:
         )
         if property_type is not None:
             req.property_type.CopyFrom(self._property_type_proto(property_type, "the constraint"))
-        timeout = self._timeout
-        if wait is not None:
-            # A zero wait is sent too: absent takes the server's default.
-            req.wait.FromTimedelta(datetime.timedelta(seconds=wait))
-            timeout += wait
-        created = await self._schema_stub.CreateConstraint(req, timeout=timeout)
+        # Always sent: an absent wait takes the server's default, which this
+        # client cannot see and may exceed its deadline. Without one named,
+        # the server waits as long as this client's timeout.
+        if wait is None:
+            wait = self._timeout
+        req.wait.FromTimedelta(datetime.timedelta(seconds=wait))
+        created = await self._schema_stub.CreateConstraint(req, timeout=self._timeout + wait)
         return ConstraintInfo(created)
 
     async def drop_constraint(self, name: str, *, if_exists: bool = False) -> None:
