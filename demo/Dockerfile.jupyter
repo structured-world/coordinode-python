@@ -6,7 +6,7 @@ FROM ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef302
 
 # quay.io is where Project Jupyter publishes its images now; the Docker Hub
 # copy stopped receiving updates in October 2023.
-FROM quay.io/jupyter/scipy-notebook:python-3.13.16
+FROM quay.io/jupyter/scipy-notebook:python-3.13.17
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends gcc git && rm -rf /var/lib/apt/lists/*
