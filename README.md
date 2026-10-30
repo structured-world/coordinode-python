@@ -1,5 +1,26 @@
 # coordinode-python
 
+## Status: Archived
+
+structured-world is ending its investment in Python development and maintenance,
+including the CoordiNode Python connector.
+
+Following PyPI's rejection of our application to establish a `structured-world`
+organization, we have decided to stop allocating our engineering time to Python
+projects and contributions. Our development resources will focus on Rust and
+TypeScript.
+
+All four packages in this repository are archived: `coordinode`,
+`coordinode-embedded`, `langchain-coordinode`, and
+`llama-index-graph-stores-coordinode`. They will receive no further releases,
+compatibility updates, bug fixes, or security fixes. Existing source code and
+releases remain available under their existing licenses. Compatibility with
+future CoordiNode versions is not guaranteed.
+
+CoordiNode development continues. This decision concerns structured-world's
+participation in the Python ecosystem. The documentation below is retained as
+a reference for the archived implementation, not a promise of current support.
+
 [![CI](https://github.com/structured-world/coordinode-python/actions/workflows/ci.yml/badge.svg)](https://github.com/structured-world/coordinode-python/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coordinode)](https://pypi.org/project/coordinode/)
 [![Python](https://img.shields.io/pypi/pyversions/coordinode)](https://pypi.org/project/coordinode/)
@@ -241,13 +262,13 @@ Copyright 2026 Dmitry Prudnikov.
 
 Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Every published package carries its own copy of both.
 
-Contributions are accepted under the [Structured World Contributor License Agreement](https://sw.foundation/cla); see [CONTRIBUTING.md](CONTRIBUTING.md).
+This archived repository no longer accepts contributions; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
 ## Support the Project
 
-The SDK and the [CoordiNode](https://github.com/structured-world/coordinode) server are developed by [Dmitry Prudnikov](https://github.com/polaz) and contributors. Donations go directly to the maintainer and fund development time.
+The [CoordiNode](https://github.com/structured-world/coordinode) server continues to be developed by [Dmitry Prudnikov](https://github.com/polaz) and contributors. Donations support that continuing work, not maintenance of these archived Python packages.
 
 If you believe graph + vector + full-text retrieval should live in one engine under a genuine open-source license, you can support the work:
 

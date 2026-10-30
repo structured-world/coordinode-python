@@ -1,5 +1,9 @@
 # CoordiNode Demo Notebooks
 
+> **Archived:** These Python notebooks and their SDK dependencies are no longer
+> maintained. They are retained as historical examples, with no compatibility or
+> support commitment. See the [archival announcement](../README.md#status-archived).
+
 Interactive notebooks for LlamaIndex, LangChain, and LangGraph integrations.
 
 ## Open in Google Colab

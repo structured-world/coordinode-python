@@ -1,5 +1,11 @@
 # llama-index-graph-stores-coordinode
 
+> **Archived:** This LlamaIndex integration is no longer maintained and will
+> receive no further releases, compatibility updates, bug fixes, or security
+> fixes. Existing releases remain available under their existing licenses. See
+> the [archival announcement](https://github.com/structured-world/coordinode-python#status-archived).
+> The documentation below describes the archived implementation.
+
 [![PyPI](https://img.shields.io/pypi/v/llama-index-graph-stores-coordinode)](https://pypi.org/project/llama-index-graph-stores-coordinode/)
 [![Python](https://img.shields.io/pypi/pyversions/llama-index-graph-stores-coordinode)](https://pypi.org/project/llama-index-graph-stores-coordinode/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/structured-world/coordinode-python/blob/main/LICENSE)

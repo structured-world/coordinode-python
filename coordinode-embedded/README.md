@@ -1,5 +1,11 @@
 # coordinode-embedded
 
+> **Archived:** The Python embedded binding is no longer maintained and will
+> receive no further releases, compatibility updates, bug fixes, or security
+> fixes. This does not end development of the Rust CoordiNode engine. See the
+> [archival announcement](https://github.com/structured-world/coordinode-python#status-archived).
+> The documentation below describes the archived implementation.
+
 In-process CoordiNode graph database for Python — no server, no Docker required.
 
 ```python
